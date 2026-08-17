@@ -35,6 +35,20 @@ module Cybort
       @action_item = action_item
       @info = info
     end
+
+    def to_h
+      {
+        instance_id: instance_id,
+        canonical_id: canonical_id,
+        urls: urls,
+        fetched_at: fetched_at.utc.iso8601(6),
+        remote_created_at: remote_created_at&.utc&.iso8601(6),
+        title: title,
+        body: body,
+        priority: priority,
+        action_item: action_item,
+        info: info
+      }
+    end
   end
 end
-
