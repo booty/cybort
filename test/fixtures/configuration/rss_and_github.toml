@@ -1,0 +1,17 @@
+schema_version = 1
+
+[instances.rss]
+name = "Example RSS"
+adapter = "rss"
+ttl_minutes = 30
+num_items_to_fetch = 5
+url = "https://example.test/feed.xml"
+
+[instances.github]
+name = "GitHub Notifications"
+adapter = "github"
+ttl_minutes = 30
+num_items_to_fetch = 5
+api_url = "https://api.example.test/notifications"
+token = "secret"
+
