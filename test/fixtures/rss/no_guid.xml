@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Example Feed</title>
+    <item>
+      <title>Hash article</title>
+      <link>https://example.test/hash</link>
+      <description>Hash body</description>
+      <pubDate>Sun, 16 Aug 2026 11:00:00 GMT</pubDate>
+    </item>
+  </channel>
+</rss>
+

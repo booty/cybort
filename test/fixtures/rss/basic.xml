@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Example Feed</title>
+    <item>
+      <guid isPermaLink="false">guid-1</guid>
+      <title>First article</title>
+      <link>https://example.test/first</link>
+      <description>First article body</description>
+      <pubDate>Sun, 16 Aug 2026 11:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <guid isPermaLink="false">guid-2</guid>
+      <title>Second article</title>
+      <link>https://example.test/second</link>
+      <description>Second article body</description>
+      <pubDate>Sun, 16 Aug 2026 10:00:00 GMT</pubDate>
+    </item>
+  </channel>
+</rss>
+
