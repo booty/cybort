@@ -1,0 +1,31 @@
+[
+  {
+    "id": "1001",
+    "reason": "mention",
+    "updated_at": "2026-08-16T11:00:00Z",
+    "subject": {
+      "title": "Mentioned in issue",
+      "url": "https://api.github.com/repos/john/project/issues/1",
+      "type": "Issue"
+    },
+    "repository": {
+      "full_name": "john/project",
+      "html_url": "https://github.com/john/project"
+    }
+  },
+  {
+    "id": "1002",
+    "reason": "review_requested",
+    "updated_at": "2026-08-16T10:00:00Z",
+    "subject": {
+      "title": "Review requested",
+      "url": "https://api.github.com/repos/john/project/pulls/2",
+      "type": "PullRequest"
+    },
+    "repository": {
+      "full_name": "john/project",
+      "html_url": "https://github.com/john/project"
+    }
+  }
+]
+

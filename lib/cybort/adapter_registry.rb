@@ -1,7 +1,10 @@
 module Cybort
   class AdapterRegistry
     def self.default
-      new.tap { |registry| registry.register("rss", Adapters::RSS) }
+      new.tap do |registry|
+        registry.register("rss", Adapters::RSS)
+        registry.register("github", Adapters::GitHub)
+      end
     end
 
     def initialize
@@ -32,4 +35,3 @@ module Cybort
     end
   end
 end
-
