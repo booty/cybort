@@ -1,0 +1,34 @@
+GEM
+  remote: https://rubygems.org/
+  specs:
+    drb (2.2.3)
+    minitest (6.0.6)
+      drb (~> 2.0)
+      prism (~> 1.5)
+    prism (1.9.0)
+    racc (1.8.1)
+    rake (13.4.2)
+    sqlite3 (2.9.6-arm64-darwin)
+    tomlrb (2.0.4)
+
+PLATFORMS
+  arm64-darwin
+
+DEPENDENCIES
+  minitest
+  racc
+  rake
+  sqlite3
+  tomlrb
+
+CHECKSUMS
+  drb (2.2.3)
+  minitest (6.0.6)
+  prism (1.9.0)
+  racc (1.8.1)
+  rake (13.4.2)
+  sqlite3 (2.9.6-arm64-darwin)
+  tomlrb (2.0.4)
+
+BUNDLED WITH
+  4.0.6
