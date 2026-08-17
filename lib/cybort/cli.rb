@@ -6,10 +6,10 @@ module Cybort
   module CLI
     module_function
 
-    def start(argv, out: $stdout, err: $stderr, home: Dir.home, http_client: nil, registry: nil, clock: -> { Time.now.utc })
+    def start(argv, out: $stdout, err: $stderr, home: Dir.home, input: $stdin, http_client: nil, registry: nil, clock: -> { Time.now.utc })
       args = argv.dup
       if args.first == "init"
-        return initialize_installation(args[1] || File.join(home, ".cybort"), out: out, clock: clock)
+        return initialize_installation(args[1] || File.join(home, ".cybort"), input: input, out: out, clock: clock)
       end
 
       options = parse_options(args, out)
@@ -54,14 +54,19 @@ module Cybort
       options
     end
 
-    def initialize_installation(path, out:, clock:)
-      FileUtils.mkdir_p(path)
-      config_path = File.join(path, "cybort.toml")
-      File.write(config_path, "schema_version = 1\n") unless File.exist?(config_path)
-      Persistence.new(File.join(path, "cybort.sqlite3"), clock: clock).setup!
-      out.puts "Initialized Cybort at #{path}"
-      0
+    def initialize_installation(path, input:, out:, clock:)
+      io = Struct.new(:input, :output) do
+        def gets
+          input.gets
+        end
+
+        def puts(message = "")
+          output.puts(message)
+        end
+      end.new(input, out)
+      result = Installer.new(io: io, clock: clock).run(location: path)
+      out.puts "Initialized Cybort at #{path}" if %i[created reset reset_with_config].include?(result)
+      %i[created kept reset reset_with_config].include?(result) ? 0 : 1
     end
   end
 end
-
