@@ -45,6 +45,25 @@ class OrchestratorTest < Minitest::Test
     end
   end
 
+  class ForceRecordingAdapter
+    def initialize(instance:, calls:, **)
+      @instance = instance
+      @calls = calls
+    end
+
+    def fetch(force_fetch:)
+      @calls << force_fetch
+      Cybort::FetchResult.success(
+        instance_id: @instance.id,
+        items: [],
+        sync_state: {},
+        started_at: Time.utc(2026, 8, 16, 12),
+        finished_at: Time.utc(2026, 8, 16, 12, 1),
+        source_fetched: true
+      )
+    end
+  end
+
   def instance(id)
     Cybort::Configuration::Instance.new(
       id: id,
@@ -85,5 +104,18 @@ class OrchestratorTest < Minitest::Test
     assert_equal :success, result.overall_status
     assert_equal %w[one two], persistence.writes.map(&:instance_id).sort
     assert_empty persistence.failures
+  end
+
+  def test_force_fetch_is_passed_to_every_adapter
+    calls = []
+    registry = Cybort::AdapterRegistry.new
+    registry.register("force", ->(**kwargs) { ForceRecordingAdapter.new(**kwargs, calls: calls) })
+    configuration = Struct.new(:instances).new({ "one" => instance("one").tap { |value| value.adapter = "force" } })
+    persistence = PersistenceSpy.new
+    orchestrator = Cybort::Orchestrator.new(configuration: configuration, persistence: persistence, registry: registry, http_client: nil)
+
+    orchestrator.run(force_fetch: true)
+
+    assert_equal [true], calls
   end
 end

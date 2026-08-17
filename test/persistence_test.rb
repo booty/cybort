@@ -145,5 +145,38 @@ class PersistenceTest < Minitest::Test
       assert_nil persistence.context_for(instance_id: "rss").fetch(:sync_state)
     end
   end
-end
 
+  def test_empty_successful_result_updates_state_and_history
+    with_database do |path|
+      persistence = Cybort::Persistence.new(path)
+      persistence.setup!
+      persistence.register_instance(instance)
+
+      persistence.write_fetch_result(result(items: [], sync_state: { cursor: "empty-page" }))
+
+      assert_empty persistence.items_for(instance_id: "rss")
+      assert_equal({ cursor: "empty-page" }, persistence.context_for(instance_id: "rss").fetch(:sync_state))
+      assert_equal "successful", persistence.fetch_runs_for(instance_id: "rss").first.fetch("status")
+    end
+  end
+
+  def test_failed_result_does_not_advance_existing_sync_state
+    with_database do |path|
+      persistence = Cybort::Persistence.new(path)
+      persistence.setup!
+      persistence.register_instance(instance)
+      persistence.write_fetch_result(result(sync_state: { cursor: "old" }))
+
+      invalid_item = Struct.new(:instance_id, :canonical_id, :urls, :fetched_at,
+                                 :remote_created_at, :title, :body, :priority,
+                                 :action_item, :info).new(
+        "rss", "bad", [], Time.utc(2026, 8, 16, 13), nil, nil, nil, nil, {}
+      )
+      failed_write = result(items: [invalid_item], sync_state: { cursor: "new" })
+
+      assert_raises(Cybort::ValidationError) { persistence.write_fetch_result(failed_write) }
+
+      assert_equal({ cursor: "old" }, persistence.context_for(instance_id: "rss").fetch(:sync_state))
+    end
+  end
+end

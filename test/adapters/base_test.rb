@@ -93,6 +93,21 @@ class BaseAdapterTest < Minitest::Test
     assert_equal 1, adapter_instance.source_calls
   end
 
+  def test_cache_at_exact_ttl_boundary_is_stale
+    adapter_instance = adapter(
+      context: {
+        items: [],
+        last_successful_fetch: Time.utc(2026, 8, 16, 11, 30),
+        sync_state: { cursor: "old" }
+      }
+    )
+
+    result = adapter_instance.fetch
+
+    assert result.source_fetched
+    assert_equal 1, adapter_instance.source_calls
+  end
+
   def test_source_error_becomes_failure_result
     adapter_instance = adapter(context: { items: [], last_successful_fetch: nil, sync_state: nil })
     adapter_instance.define_singleton_method(:fetch_from_source) { raise "boom" }
@@ -104,4 +119,3 @@ class BaseAdapterTest < Minitest::Test
     assert_equal [], result.items
   end
 end
-
