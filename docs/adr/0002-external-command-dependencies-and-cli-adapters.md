@@ -23,16 +23,19 @@ Cybort will support a hybrid connector model:
 - a connector may use an external CLI when the CLI removes substantial
   authentication or protocol code;
 - adapters declare their executable dependencies through the adapter registry;
-- startup preflight checks every dependency required by configured adapter
-  instances, aggregates missing tools into one actionable error, and fails with
-  configuration/usage status before starting fetch threads; and
+- context-aware startup preflight resolves and version-checks dependencies for
+  instances that need a remote fetch, then converts unavailable dependencies
+  into per-instance failures before those threads start; and
 - command-backed adapters invoke an injectable `CommandRunner` using argument
   vectors, never shell interpolation.
 
-The first command-backed connector will use the `gws` Google Workspace CLI for
-Gmail. Cybort will not own Gmail OAuth flows, token refresh, or credential
-storage. The existing RSS and GitHub adapters will not be rewritten solely to
-use CLIs.
+The first command-backed connector will use the Google-maintained
+`googleworkspace/cli` project and its `gws` executable for Gmail. Its upstream
+README explicitly says it is not an officially supported Google product and is
+pre-1.0, so Cybort will support a tested version range and manually verify the
+OAuth scope contract. Cybort will not own Gmail OAuth flows, token refresh, or
+credential storage. The existing RSS and GitHub adapters will not be rewritten
+solely to use CLIs.
 
 ## Alternatives considered
 
@@ -66,27 +69,36 @@ Rejected as a default. Ruby already parses JSON, and adding a runtime `jq`
 dependency would increase installation and preflight surface without reducing
 connector complexity.
 
+### Require every configured connector dependency before any cache read
+
+Rejected. A missing tool must not make a fresh cached source unavailable or
+prevent healthy adapters from running. Dependency readiness is evaluated per
+instance only when that instance needs a remote fetch; `--force-fetch` makes
+every configured instance require its remote dependency.
+
 ## Consequences
 
 Positive consequences:
 
 - Gmail OAuth complexity is delegated to a tool the user can authenticate once.
-- Dependency failures are detected before concurrent work and reported
-  together.
+- Dependency failures are detected before the affected adapter starts and
+  reported without blocking healthy sources.
 - HTTP and command adapters retain one result, caching, and persistence model.
 - Command execution can be fully faked in tests.
 
 Negative consequences:
 
-- Gmail depends on the external `gws` command and its evolving interface.
+- Gmail depends on the Google-maintained `googleworkspace/cli` project and its
+  evolving interface; its own README says it is not an officially supported
+  Google product and warns of pre-1.0 breaking changes.
 - Users must install and authenticate that command separately.
 - Cybort needs a small subprocess abstraction and dependency preflight layer.
-- Authentication errors occur at command execution time unless a future
-  connector adds an explicit readiness probe.
+- Authentication errors occur at command execution time and are reported as
+  source failures with bounded safe diagnostics.
 
 ## Implementation notes
 
-The design and implementation plan define the exact registry metadata,
-`DependencyChecker`, `CommandRunner`, Gmail command contract, fixtures, and
-CLI guidance. This ADR is the architectural rationale; those documents may
-specify details without changing this decision.
+The accompanying design and implementation plan define the exact registry
+metadata, `DependencyChecker`, `CommandRunner`, Gmail command contract,
+fixtures, and CLI guidance. This ADR is the architectural rationale; those
+documents may specify details without changing this decision.
