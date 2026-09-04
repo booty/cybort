@@ -37,12 +37,12 @@ class BaseAdapterTest < Minitest::Test
     )
   end
 
-  def adapter(context:, now: Time.utc(2026, 8, 16, 12))
+  def adapter(context:, now: Time.utc(2026, 8, 16, 12), clock: nil)
     StubAdapter.new(
       instance: instance,
       context: context,
       http_client: nil,
-      clock: -> { now }
+      clock: clock || -> { now }
     )
   end
 
@@ -117,5 +117,45 @@ class BaseAdapterTest < Minitest::Test
     refute result.success?
     assert_equal "RuntimeError", result.error.class.name
     assert_equal [], result.items
+  end
+
+  def test_plan_captures_stale_mode_once
+    adapter_instance = adapter(
+      context: {
+        items: [],
+        last_successful_fetch: Time.utc(2026, 8, 16, 11),
+        sync_state: { cursor: "old" }
+      }
+    )
+
+    plan = adapter_instance.plan(force_fetch: false, planned_at: Time.utc(2026, 8, 16, 12))
+
+    assert_equal :remote, plan.fetch_mode
+    assert_equal Time.utc(2026, 8, 16, 12), plan.planned_at
+  end
+
+  def test_fetch_uses_frozen_plan_after_clock_crosses_ttl_boundary
+    current_time = [Time.utc(2026, 8, 16, 12, 29, 59)]
+    adapter_instance = adapter(
+      context: {
+        items: [cached_item],
+        last_successful_fetch: Time.utc(2026, 8, 16, 12),
+        sync_state: { cursor: "old" }
+      },
+      clock: -> { current_time.fetch(0) }
+    )
+    plan = adapter_instance.plan(force_fetch: false, planned_at: current_time.fetch(0))
+    current_time[0] = Time.utc(2026, 8, 16, 12, 30, 1)
+
+    result = adapter_instance.fetch(fetch_mode: plan.fetch_mode, planned_at: plan.planned_at)
+
+    refute result.source_fetched
+    assert_equal 0, adapter_instance.source_calls
+  end
+
+  private
+
+  def cached_item
+    Cybort::Item.new(instance_id: "stub", canonical_id: "cached", fetched_at: Time.utc(2026, 8, 16, 11), title: "Cached")
   end
 end

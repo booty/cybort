@@ -23,14 +23,14 @@ module Cybort
       )
     end
 
-    def self.failure(instance_id:, error:, started_at:, finished_at:)
+    def self.failure(instance_id:, error:, started_at:, finished_at:, metadata: {})
       new(
         instance_id: instance_id,
         items: [],
         sync_state: nil,
         started_at: started_at,
         finished_at: finished_at,
-        metadata: {},
+        metadata: metadata,
         source_fetched: false,
         error: error
       )
@@ -45,4 +45,3 @@ module Cybort
     end
   end
 end
-

@@ -31,5 +31,17 @@ class FetchResultTest < Minitest::Test
     assert result.failure?
     assert_same error, result.error
   end
-end
 
+  def test_failure_result_preserves_safe_metadata
+    metadata = { tool: "gws", exit_category: "nonzero", exit_code: 1 }
+    result = Cybort::FetchResult.failure(
+      instance_id: "gmail",
+      error: Cybort::CommandError.new("gws command failed", metadata: metadata),
+      started_at: Time.utc(2026, 8, 16, 12),
+      finished_at: Time.utc(2026, 8, 16, 12, 1),
+      metadata: metadata
+    )
+
+    assert_equal metadata, result.metadata
+  end
+end
