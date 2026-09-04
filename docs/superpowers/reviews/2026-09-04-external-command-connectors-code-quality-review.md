@@ -1,10 +1,15 @@
 # Adversarial Code-Quality Review: External Command Connectors
 
-**Review date:** 2026-09-04  
-**Baseline SHA:** `d78dff9`  
-**Implementation SHA reviewed:** `a6512fd6c9d70e7cc5ea11b79c3f5d881882ca7c`  
-**Branch:** `main`  
-**Working-tree state at start:** clean  
+**Review date:** 2026-09-04
+
+**Baseline SHA:** `d78dff9`
+
+**Implementation SHA reviewed:** `a6512fd6c9d70e7cc5ea11b79c3f5d881882ca7c`
+
+**Branch:** `main`
+
+**Working-tree state at start:** clean
+
 **Verdict:** Request changes; do not treat the Gmail connector or generic
 command-runner boundary as releasable at this SHA.
 
