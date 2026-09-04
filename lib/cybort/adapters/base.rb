@@ -32,6 +32,10 @@ module Cybort
         @monotonic_clock = monotonic_clock
       end
 
+      def dependency_resolutions=(resolutions)
+        @dependency_resolutions = (resolutions || {}).dup.freeze
+      end
+
       def plan(force_fetch:, planned_at:)
         mode = force_fetch || !fresh_cache_at?(planned_at) ? :remote : :cached
         AdapterPlan.new(

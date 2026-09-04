@@ -8,6 +8,7 @@ database, and presents cached or freshly fetched data through the CLI.
 
 - Ruby 4.0.1 (the current development runtime)
 - Bundler
+- macOS/POSIX for command-backed connectors in this slice
 
 Install the declared dependencies:
 
@@ -60,6 +61,46 @@ token = "..."
 
 `num_items_to_fetch` limits a source request. It is not a retention policy.
 
+### Gmail connector (experimental)
+
+Gmail uses the `gws` executable from the Google-maintained
+[`googleworkspace/cli`](https://github.com/googleworkspace/cli) project. It is
+in the Google Workspace GitHub organization, but its own README says it is not
+an officially supported Google product and is under pre-1.0 development.
+
+Install and authenticate it outside Cybort:
+
+```bash
+brew install googleworkspace-cli
+gws auth setup
+gws auth login --scopes https://www.googleapis.com/auth/gmail.readonly
+gws auth status
+```
+
+`gws auth setup` can use `gcloud` to automate Google Cloud project and
+credential creation. If `gcloud` is unavailable, complete the equivalent
+manual Cloud Console setup described by `gws`, then run `gws auth login`.
+Cybort never performs an interactive login or stores OAuth credentials.
+
+Configure a read-only Gmail instance like this:
+
+```toml
+[instances.personal_gmail]
+name = "Personal Gmail"
+adapter = "gmail"
+ttl_minutes = 60
+num_items_to_fetch = 25
+user_id = "me"
+query = "in:anywhere"
+```
+
+Before a stale or forced fetch, Cybort checks the required executable and its
+tested version range. Missing or unsupported dependencies fail only the
+affected source and include Homebrew/authentication guidance in the JSON
+result; fresh cached data remains available. The Gmail connector remains
+experimental until an authenticated contract smoke test verifies the
+installed `gws` version, read-only scopes, and list/detail response shapes.
+
 ## Fetch data
 
 Use cached data when each adapter’s TTL is still fresh:
@@ -74,10 +115,10 @@ Ignore TTL checks and request fresh source data:
 bundle exec bin/cybort --force-fetch
 ```
 
-The command emits one JSON document containing overall status, per-instance
-status, and persisted items. A source failure produces a partial-failure exit
-status while preserving successful results and the failed source’s last-known-
-good data.
+The command emits one JSON document containing overall status, grouped
+unavailable-dependency guidance, per-instance status, and persisted items. A
+source failure produces a partial-failure exit status while preserving
+successful results and the failed source’s last-known-good data.
 
 ## Architecture
 
@@ -95,11 +136,14 @@ Run the complete test suite:
 bundle exec rake test
 ```
 
-Tests use local fixtures and injected HTTP clients; they do not contact external
-services.
+Tests use local fixtures and injected HTTP/command clients; they do not contact
+external services or invoke `gws`.
 
 ## Design records
 
 - [Core design](docs/superpowers/specs/2026-08-16-cybort-core-design.md)
 - [Persistence ADR](docs/adr/0001-persistence-storage-and-write-ownership.md)
+- [External command connector ADR](docs/adr/0002-external-command-dependencies-and-cli-adapters.md)
+- [External command connector design](docs/superpowers/specs/2026-09-04-external-command-connectors-design.md)
+- [External command connector implementation plan](docs/superpowers/plans/2026-09-04-external-command-connectors.md)
 - [Implementation plan](docs/superpowers/plans/2026-08-16-cybort-core-implementation.md)

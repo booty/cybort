@@ -98,7 +98,10 @@ Negative consequences:
 
 ## Implementation notes
 
-The accompanying design and implementation plan define the exact registry
-metadata, `DependencyChecker`, `CommandRunner`, Gmail command contract,
-fixtures, and CLI guidance. This ADR is the architectural rationale; those
-documents may specify details without changing this decision.
+The accompanying [design specification](../superpowers/specs/2026-09-04-external-command-connectors-design.md)
+and [implementation plan](../superpowers/plans/2026-09-04-external-command-connectors.md)
+define the exact registry metadata, `DependencyChecker`, `CommandRunner`,
+Gmail command contract, fixtures, and CLI guidance. This ADR is the
+architectural rationale; those documents may specify details without changing
+this decision. The decision remains Proposed until the authenticated `gws`
+contract smoke test documented in those records succeeds.

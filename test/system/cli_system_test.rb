@@ -17,6 +17,61 @@ class CliSystemTest < Minitest::Test
     end
   end
 
+  FakeStatus = Struct.new(:success?, :exitstatus)
+
+  class FakeGwsRunner
+    attr_reader :calls
+
+    def initialize(list_body:, details:, failure: nil)
+      @list_body = list_body
+      @details = details
+      @failure = failure
+      @calls = []
+    end
+
+    def run(argv, **options)
+      @calls << [argv, options]
+      return Cybort::CommandResult.new(
+        argv: argv, stdout: "redacted@example.test", stderr: "token=redacted", status: FakeStatus.new(false, 7),
+        timed_out: false, stdout_truncated: false, stderr_truncated: false, spawn_error_category: nil
+      ) if @failure
+
+      params = JSON.parse(argv.fetch(-1))
+      body = if argv.include?("list")
+        @list_body
+      else
+        JSON.generate(@details.fetch(params.fetch("id")))
+      end
+      Cybort::CommandResult.new(
+        argv: argv, stdout: body, stderr: "", status: FakeStatus.new(true, 0),
+        timed_out: false, stdout_truncated: false, stderr_truncated: false, spawn_error_category: nil
+      )
+    end
+  end
+
+  class FakeDependencyChecker
+    attr_reader :calls
+
+    def initialize(available:)
+      @available = available
+      @calls = []
+    end
+
+    def resolve(dependency, env: ENV.to_h)
+      @calls << dependency.executable
+      Cybort::DependencyResolution.new(
+        dependency: dependency,
+        path: @available ? "/usr/local/bin/gws" : nil,
+        version: @available ? "0.22.5" : nil,
+        error: @available ? nil : { category: "missing", executable: dependency.executable, purpose: dependency.purpose, install_hint: dependency.install_hint }
+      )
+    end
+
+    def validate_version!(_dependency, resolution)
+      resolution
+    end
+  end
+
   def rss_body
     File.read(File.expand_path("../fixtures/rss/basic.xml", __dir__))
   end
@@ -51,6 +106,31 @@ class CliSystemTest < Minitest::Test
       num_items_to_fetch = 5
       url = "#{RSS_URL}"
     TOML
+  end
+
+  def write_gmail_config(root, ttl_minutes: 30, id: "gmail")
+    FileUtils.mkdir_p(root)
+    File.write(File.join(root, "cybort.toml"), <<~TOML)
+      schema_version = 1
+
+      [instances.#{id}]
+      name = "Gmail"
+      adapter = "gmail"
+      ttl_minutes = #{ttl_minutes}
+      num_items_to_fetch = 2
+      query = "in:anywhere"
+    TOML
+  end
+
+  def gmail_runner(failure: nil)
+    FakeGwsRunner.new(
+      list_body: File.read(File.expand_path("../fixtures/gmail/list_valid.json", __dir__)),
+      details: {
+        "one" => JSON.parse(File.read(File.expand_path("../fixtures/gmail/details/valid_one.json", __dir__))),
+        "two" => JSON.parse(File.read(File.expand_path("../fixtures/gmail/details/valid_two.json", __dir__)))
+      },
+      failure: failure
+    )
   end
 
   def client
@@ -112,5 +192,89 @@ class CliSystemTest < Minitest::Test
       refute_empty rss_instance.fetch("items")
     end
   end
-end
 
+  def test_fresh_gmail_cache_remains_available_when_gws_is_missing
+    Dir.mktmpdir do |directory|
+      root = File.join(directory, ".cybort")
+      write_gmail_config(root)
+      clock = -> { Time.utc(2026, 9, 4, 12) }
+      first_output = StringIO.new
+      first = Cybort::CLI.start(
+        ["--force-fetch"], out: first_output, err: StringIO.new, home: directory,
+        clock: clock, command_runner: gmail_runner, dependency_checker: FakeDependencyChecker.new(available: true)
+      )
+      output = StringIO.new
+      second = Cybort::CLI.start(
+        [], out: output, err: StringIO.new, home: directory,
+        clock: clock, dependency_checker: FakeDependencyChecker.new(available: false)
+      )
+
+      assert_equal 0, first
+      assert_equal 0, second
+      payload = JSON.parse(output.string)
+      assert_equal "cached", payload.fetch("instances").first.fetch("status")
+      assert_equal "Quarterly review", payload.fetch("instances").first.fetch("items").first.fetch("title")
+    end
+  end
+
+  def test_stale_gmail_dependency_failure_does_not_block_rss
+    Dir.mktmpdir do |directory|
+      root = File.join(directory, ".cybort")
+      write_gmail_config(root)
+      File.open(File.join(root, "cybort.toml"), "a") do |file|
+        file.puts <<~TOML
+
+          [instances.rss]
+          name = "RSS"
+          adapter = "rss"
+          ttl_minutes = 30
+          num_items_to_fetch = 1
+          url = "#{RSS_URL}"
+        TOML
+      end
+      current_time = [Time.utc(2026, 9, 4, 12)]
+      first = Cybort::CLI.start(
+        ["--force-fetch"], out: StringIO.new, err: StringIO.new, home: directory,
+        clock: -> { current_time.fetch(0) }, http_client: client,
+        command_runner: gmail_runner, dependency_checker: FakeDependencyChecker.new(available: true)
+      )
+      current_time[0] += 3_601
+      output = StringIO.new
+      second = Cybort::CLI.start(
+        ["--force-fetch"], out: output, err: StringIO.new, home: directory,
+        clock: -> { current_time.fetch(0) }, http_client: client,
+        dependency_checker: FakeDependencyChecker.new(available: false)
+      )
+
+      assert_equal 0, first
+      assert_equal 1, second
+      payload = JSON.parse(output.string)
+      assert_equal %w[failure success], payload.fetch("instances").map { |value| value.fetch("status") }
+      assert_equal ["gmail"], payload.fetch("unavailable_dependencies").first.fetch("instances")
+      assert_equal "First article", payload.fetch("instances").find { |value| value.fetch("id") == "rss" }.fetch("items").first.fetch("title")
+    end
+  end
+
+  def test_gmail_command_failure_keeps_last_known_good_items
+    Dir.mktmpdir do |directory|
+      root = File.join(directory, ".cybort")
+      write_gmail_config(root)
+      Cybort::CLI.start(
+        ["--force-fetch"], out: StringIO.new, err: StringIO.new, home: directory,
+        command_runner: gmail_runner, dependency_checker: FakeDependencyChecker.new(available: true)
+      )
+      output = StringIO.new
+      status = Cybort::CLI.start(
+        ["--force-fetch"], out: output, err: StringIO.new, home: directory,
+        command_runner: gmail_runner(failure: true), dependency_checker: FakeDependencyChecker.new(available: true)
+      )
+
+      payload = JSON.parse(output.string)
+      assert_equal 1, status
+      assert_equal "failure", payload.fetch("instances").first.fetch("status")
+      assert_equal "Quarterly review", payload.fetch("instances").first.fetch("items").first.fetch("title")
+      refute_includes output.string, "token=redacted"
+      refute_includes output.string, "redacted@example.test"
+    end
+  end
+end

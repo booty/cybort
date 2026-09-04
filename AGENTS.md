@@ -31,6 +31,13 @@ invariants and workflow rules here, not session-by-session narration.
 - The CLI supports `init`, a normal fetch, and `--force-fetch`; it emits JSON.
   Exit status `0` means success, `1` means source failure or partial failure,
   and `2` means configuration or usage error.
+- Command-backed adapters declare executable dependencies. Startup validates all
+  source configuration before persistence registration, freezes each cache vs
+  remote decision once, and resolves each unique executable/version once per
+  run only for instances that need remote data. Missing tools fail only the
+  affected source and include safe, grouped install/auth guidance. This slice
+  supports macOS/POSIX process semantics; Windows support requires a separate
+  design.
 - Tests use local fixtures and injected clients; they must not contact external
   services. Run them with `bundle exec rake test`.
 - `docs/initial-spitballing.md` is historical exploratory material. Treat the
