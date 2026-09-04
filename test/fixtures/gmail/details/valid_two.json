@@ -1,0 +1,12 @@
+{
+  "id": "two",
+  "threadId": "thread-two",
+  "labelIds": ["SENT"],
+  "internalDate": "not-a-date",
+  "payload": {
+    "headers": [
+      {"name": "Subject", "value": "   "},
+      {"name": "From", "value": "other@example.test"}
+    ]
+  }
+}

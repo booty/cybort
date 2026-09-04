@@ -1,0 +1,7 @@
+{
+  "messages": [
+    {"id": "one", "threadId": "thread-one"},
+    {"id": "one", "threadId": "thread-one"},
+    {"id": "two", "threadId": "thread-two"}
+  ]
+}

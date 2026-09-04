@@ -6,6 +6,20 @@ module Cybort
       new.tap do |registry|
         registry.register("rss", Adapters::RSS)
         registry.register("github", Adapters::GitHub)
+        registry.register(
+          "gmail",
+          Adapters::Gmail,
+          dependencies: [
+            Dependency.new(
+              executable: "gws",
+              purpose: "Google-maintained Google Workspace CLI",
+              install_hint: "brew install googleworkspace-cli",
+              auth_hint: "Run gws auth setup, then gws auth login --scopes https://www.googleapis.com/auth/gmail.readonly",
+              version_requirement: ">= 0.22.5, < 0.23.0",
+              environment_keys: %w[XDG_CONFIG_HOME HTTPS_PROXY HTTP_PROXY NO_PROXY SSL_CERT_FILE SSL_CERT_DIR]
+            )
+          ]
+        )
       end
     end
 
