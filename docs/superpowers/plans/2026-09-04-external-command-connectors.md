@@ -322,7 +322,7 @@ Do not preflight fresh cache hits. Do not rescue a configuration validation erro
 Construct one `CommandRunner` and one `DependencyChecker` (the latter receives the runner) in `CLI.start`, and pass them to `Orchestrator`; preserve optional test injection by adding keyword arguments with defaults. Add `metadata` to `InstanceRunStatus` and `unavailable_dependencies` to `RunResult`. The CLI JSON shape is:
 
 ```json
-{"status":"partial_failure","instances":[{"id":"mail_a","status":"failure","source_fetched":false,"item_count":0,"error":"Cybort::SourceError: dependency unavailable","metadata":{"tool":"gws","category":"missing"},"items":[]}],"unavailable_dependencies":[{"tool":"gws","instances":["mail_a","mail_b"],"purpose":"Google-maintained Google Workspace CLI","install_hint":"brew install googleworkspace-cli","auth_hint":"Run gws auth setup, then gws auth login with the documented read-only scope."}]}
+{"status":"partial_failure","instances":[{"id":"mail_a","status":"failure","source_fetched":false,"item_count":0,"error":"Cybort::SourceError: dependency unavailable","metadata":{"tool":"gws","category":"missing"},"items":[]}],"unavailable_dependencies":[{"tool":"gws","instances":["mail_a","mail_b"],"purpose":"Google-maintained Google Workspace CLI","install_hint":"brew install googleworkspace-cli","auth_hint":"Run gws auth setup, then gws auth login --scopes https://www.googleapis.com/auth/gmail.readonly."}]}
 ```
 
 Group guidance by tool/category/purpose/install/auth hint, sort groups and instance IDs, and emit no raw subprocess output or extra stderr for source failures. Configuration errors continue to emit only the safe message on stderr and status `2`.

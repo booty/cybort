@@ -25,9 +25,11 @@ invariants and workflow rules here, not session-by-session narration.
   transaction spanning all adapter instances.
 - A failed source must not discard successful results from other sources.
 - Item identity is scoped by `(adapter_instance_id, canonical_id)`.
-- The current implemented adapters are RSS and GitHub. Gmail, scheduling,
-  retention policies, dashboards, and analysis/LLM workflows are not currently
-  implemented or architected.
+- RSS and GitHub adapters use direct HTTP APIs. Gmail has an experimental
+  command-backed adapter for Google's `gws` CLI; it remains gated on a real
+  authenticated smoke test because `gws` is not installed in every environment.
+  Scheduling, retention policies, dashboards, and analysis/LLM workflows are
+  not currently implemented or architected.
 - The CLI supports `init`, a normal fetch, and `--force-fetch`; it emits JSON.
   Exit status `0` means success, `1` means source failure or partial failure,
   and `2` means configuration or usage error.

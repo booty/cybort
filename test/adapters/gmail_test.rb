@@ -68,6 +68,9 @@ class GmailAdapterTest < Minitest::Test
     assert_equal({ "userId" => "me", "maxResults" => 7, "q" => "in:anywhere" }, list_params)
     assert_equal 30, list_options.fetch(:timeout_seconds)
     assert_equal "/usr/local/bin/gws", list_argv.first
+    assert_equal [
+      "/usr/local/bin/gws", "gmail", "users", "messages", "list", "--params", list_argv.fetch(-1)
+    ], list_argv
 
     runner = StubCommandRunner.new(
       list_body: JSON.generate({ "messages" => [{ "id" => "one" }] }),
@@ -76,6 +79,9 @@ class GmailAdapterTest < Minitest::Test
     adapter(runner).fetch
     detail_argv, = runner.calls.last
     detail_params = JSON.parse(detail_argv.fetch(-1))
+    assert_equal [
+      "/usr/local/bin/gws", "gmail", "users", "messages", "get", "--params", detail_argv.fetch(-1)
+    ], detail_argv
     assert_equal "metadata", detail_params.fetch("format")
     assert_equal ["Subject", "From", "Date", "Message-ID"], detail_params.fetch("metadataHeaders")
   end
@@ -163,6 +169,19 @@ class GmailAdapterTest < Minitest::Test
     assert_equal 3, runner.calls.length
   end
 
+  def test_deduplicates_before_applying_fetch_limit
+    runner = StubCommandRunner.new(
+      list_body: JSON.generate({ "messages" => [{ "id" => "one" }, { "id" => "one" }, { "id" => "two" }] }),
+      details: { "one" => fixture_json("details/valid_one.json"), "two" => fixture_json("details/valid_two.json") }
+    )
+
+    result = adapter(runner, num_items_to_fetch: 2).fetch
+
+    assert result.success?
+    assert_equal %w[one two], result.items.map(&:canonical_id)
+    assert_equal 3, runner.calls.length
+  end
+
   def test_converts_command_failures_into_safe_metadata
     runner = StubCommandRunner.new(
       list_body: "ignored",
@@ -187,10 +206,47 @@ class GmailAdapterTest < Minitest::Test
     assert_equal 30, runner.calls.first.last.fetch(:timeout_seconds)
   end
 
+  def test_fails_before_detail_spawn_when_aggregate_budget_is_exhausted
+    times = [0.0, 0.0, 300.0]
+    runner = StubCommandRunner.new(
+      list_body: JSON.generate({ "messages" => [{ "id" => "one" }] }),
+      details: { "one" => fixture_json("details/valid_one.json") }
+    )
+
+    result = adapter(runner, monotonic_clock: -> { times.shift || 300.0 }).fetch
+
+    refute result.success?
+    assert_equal "timeout", result.metadata.fetch(:exit_category)
+    assert_equal 1, runner.calls.length
+  end
+
   def test_rejects_num_items_above_gmail_limit
     instance = instance(num_items_to_fetch: 501)
 
     assert_raises(Cybort::ConfigurationError) { Cybort::Adapters::Gmail.validate_configuration!(instance) }
+  end
+
+  def test_records_actual_detail_command_index_for_shape_failures
+    runner = StubCommandRunner.new(
+      list_body: JSON.generate({ "messages" => [{ "id" => "one" }] }),
+      detail_results: { "one" => command_result(stdout: fixture("details/malformed.json")) }
+    )
+
+    result = adapter(runner).fetch
+
+    assert_equal 2, result.metadata.fetch(:command_index)
+  end
+
+  def test_does_not_accept_numeric_internal_date
+    detail = fixture_json("details/valid_two.json").merge("internalDate" => 1_786_878_000_000)
+    runner = StubCommandRunner.new(
+      list_body: JSON.generate({ "messages" => [{ "id" => "two" }] }),
+      details: { "two" => detail }
+    )
+
+    result = adapter(runner).fetch
+
+    assert_nil result.items.first.remote_created_at
   end
 
   private

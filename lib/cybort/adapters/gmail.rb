@@ -8,6 +8,7 @@ module Cybort
       COMMAND_TIMEOUT_SECONDS = 30
       ADAPTER_BUDGET_SECONDS = 300
       DEFAULT_USER_ID = "me"
+      AUTH_HINT = "Run gws auth setup, then gws auth login --scopes https://www.googleapis.com/auth/gmail.readonly; verify with gws auth status."
 
       def self.validate_configuration!(instance)
         user_id = instance.options.fetch(:user_id, DEFAULT_USER_ID)
@@ -39,7 +40,7 @@ module Cybort
         raw_messages = parsed_list.key?("messages") ? parsed_list.fetch("messages") : []
         raise_command_error("list", "invalid_json", dependency) unless raw_messages.is_a?(Array)
 
-        ids = raw_messages.first(instance.num_items_to_fetch).map { |message| message_id!(message, dependency) }.uniq
+        ids = raw_messages.map { |message| message_id!(message, dependency) }.uniq.first(instance.num_items_to_fetch)
         items = ids.map.with_index do |message_id, index|
           detail = run_gws(
             dependency,
@@ -47,8 +48,8 @@ module Cybort
             ["gmail", "users", "messages", "get", "--params", JSON.generate(detail_params(message_id))],
             deadline
           )
-          message = parse_json!(detail, "get", command_index: index + 1)
-          item_from(message, message_id, fetched_at, dependency, command_index: index + 1)
+          message = parse_json!(detail, "get")
+          item_from(message, message_id, fetched_at, dependency, command_index: @command_index)
         end
 
         {
@@ -105,7 +106,7 @@ module Cybort
 
         @command_index += 1
         result = command_runner.run(
-          [gws_path(dependency), *argv.drop(1)],
+          [gws_path(dependency), *argv],
           allowed_env_keys: dependency.dependency.environment_keys,
           timeout_seconds: [COMMAND_TIMEOUT_SECONDS, remaining].min,
           max_output_bytes: 1_048_576
@@ -170,7 +171,7 @@ module Cybort
       end
 
       def parse_internal_date(value)
-        return nil unless value.to_s.match?(/\A[1-9]\d*\z/)
+        return nil unless value.is_a?(String) && value.match?(/\A[1-9]\d*\z/)
 
         Time.at(value.to_i / 1_000.0).utc
       rescue ArgumentError, RangeError
@@ -198,7 +199,8 @@ module Cybort
             command_index: command_index,
             exit_category: category,
             exit_code: exit_code,
-            tool_version: dependency.version
+            tool_version: dependency.version,
+            auth_hint: AUTH_HINT
           }
         )
       end

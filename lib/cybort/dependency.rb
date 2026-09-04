@@ -19,10 +19,10 @@ module Cybort
       end
       requirement = version_requirement && Gem::Requirement.new(*requirement_parts)
       super(
-        executable: executable,
-        purpose: purpose,
-        install_hint: install_hint&.to_s,
-        auth_hint: auth_hint&.to_s,
+        executable: executable.dup.freeze,
+        purpose: purpose.dup.freeze,
+        install_hint: install_hint&.to_s&.dup&.freeze,
+        auth_hint: auth_hint&.to_s&.dup&.freeze,
         version_requirement: requirement,
         environment_keys: environment_keys.map(&:to_s).freeze
       )

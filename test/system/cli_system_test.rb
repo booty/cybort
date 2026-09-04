@@ -122,6 +122,27 @@ class CliSystemTest < Minitest::Test
     TOML
   end
 
+  def write_two_gmail_config(root)
+    FileUtils.mkdir_p(root)
+    File.write(File.join(root, "cybort.toml"), <<~TOML)
+      schema_version = 1
+
+      [instances.z_mail]
+      name = "Z Gmail"
+      adapter = "gmail"
+      ttl_minutes = 30
+      num_items_to_fetch = 1
+      query = "in:anywhere"
+
+      [instances.a_mail]
+      name = "A Gmail"
+      adapter = "gmail"
+      ttl_minutes = 30
+      num_items_to_fetch = 1
+      query = "is:unread"
+    TOML
+  end
+
   def gmail_runner(failure: nil)
     FakeGwsRunner.new(
       list_body: File.read(File.expand_path("../fixtures/gmail/list_valid.json", __dir__)),
@@ -273,8 +294,68 @@ class CliSystemTest < Minitest::Test
       assert_equal 1, status
       assert_equal "failure", payload.fetch("instances").first.fetch("status")
       assert_equal "Quarterly review", payload.fetch("instances").first.fetch("items").first.fetch("title")
+      assert_includes output.string, "gws auth setup"
       refute_includes output.string, "token=redacted"
       refute_includes output.string, "redacted@example.test"
+    end
+  end
+
+  def test_force_fetch_of_fresh_gmail_cache_still_requires_gws
+    Dir.mktmpdir do |directory|
+      root = File.join(directory, ".cybort")
+      write_gmail_config(root)
+      first = Cybort::CLI.start(
+        ["--force-fetch"], out: StringIO.new, err: StringIO.new, home: directory,
+        command_runner: gmail_runner, dependency_checker: FakeDependencyChecker.new(available: true)
+      )
+      output = StringIO.new
+      second = Cybort::CLI.start(
+        ["--force-fetch"], out: output, err: StringIO.new, home: directory,
+        dependency_checker: FakeDependencyChecker.new(available: false)
+      )
+
+      assert_equal 0, first
+      assert_equal 1, second
+      assert_equal "failure", JSON.parse(output.string).fetch("instances").first.fetch("status")
+    end
+  end
+
+  def test_groups_missing_gws_guidance_for_multiple_instances_in_sorted_order
+    Dir.mktmpdir do |directory|
+      root = File.join(directory, ".cybort")
+      write_two_gmail_config(root)
+      output = StringIO.new
+
+      status = Cybort::CLI.start(
+        ["--force-fetch"], out: output, err: StringIO.new, home: directory,
+        dependency_checker: FakeDependencyChecker.new(available: false)
+      )
+
+      payload = JSON.parse(output.string)
+      assert_equal 1, status
+      assert_equal ["a_mail", "z_mail"], payload.fetch("unavailable_dependencies").first.fetch("instances")
+      assert_equal %w[failure failure], payload.fetch("instances").map { |value| value.fetch("status") }
+    end
+  end
+
+  def test_persists_only_safe_command_failure_metadata
+    Dir.mktmpdir do |directory|
+      root = File.join(directory, ".cybort")
+      write_gmail_config(root)
+      Cybort::CLI.start(
+        ["--force-fetch"], out: StringIO.new, err: StringIO.new, home: directory,
+        command_runner: gmail_runner, dependency_checker: FakeDependencyChecker.new(available: true)
+      )
+      Cybort::CLI.start(
+        ["--force-fetch"], out: StringIO.new, err: StringIO.new, home: directory,
+        command_runner: gmail_runner(failure: true), dependency_checker: FakeDependencyChecker.new(available: true)
+      )
+
+      persistence = Cybort::Persistence.new(File.join(root, "cybort.sqlite3"))
+      metadata = persistence.fetch_runs_for(instance_id: "gmail").last.fetch("metadata_json")
+      assert_includes metadata, "gws auth setup"
+      refute_includes metadata, "token=redacted"
+      refute_includes metadata, "redacted@example.test"
     end
   end
 end

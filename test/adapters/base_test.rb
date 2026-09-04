@@ -153,6 +153,15 @@ class BaseAdapterTest < Minitest::Test
     assert_equal 0, adapter_instance.source_calls
   end
 
+  def test_plan_freezes_nested_context_collections
+    plan = adapter(context: { items: [], last_successful_fetch: nil, sync_state: {} }).plan(
+      force_fetch: false, planned_at: Time.utc(2026, 8, 16, 12)
+    )
+
+    assert_raises(FrozenError) { plan.context.fetch(:items) << cached_item }
+    assert_raises(FrozenError) { plan.context.fetch(:sync_state)[:cursor] = "new" }
+  end
+
   private
 
   def cached_item

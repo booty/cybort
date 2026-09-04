@@ -59,10 +59,20 @@ class CommandRunnerTest < Minitest::Test
   end
 
   def test_terminates_descendant_that_keeps_output_pipes_open
-    script = "pid = fork { sleep 10 }; Process.detach(pid); exit 0"
-    result = @runner.run([@ruby, "-e", script], timeout_seconds: 0.1, max_output_bytes: 32)
+    Dir.mktmpdir do |directory|
+      pid_file = File.join(directory, "descendant.pid")
+      script = "pid = fork { Signal.trap('TERM') {}; path = ARGV.fetch(0); loop { File.write(path, Process.clock_gettime(Process::CLOCK_MONOTONIC).to_s); sleep 0.02 } }; Process.detach(pid); exit 0"
+      result = @runner.run([@ruby, "-e", script, pid_file], timeout_seconds: 0.1, max_output_bytes: 32)
 
-    assert result.timed_out
+      assert result.timed_out
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 1
+      until File.file?(pid_file) || Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+        sleep 0.01
+      end
+      refute_empty heartbeat = (File.read(pid_file) if File.file?(pid_file))
+      sleep 0.1
+      assert_equal heartbeat, File.read(pid_file)
+    end
   end
 
   def test_does_not_inherit_parent_secret
@@ -84,6 +94,43 @@ class CommandRunnerTest < Minitest::Test
     assert_equal "enabled\n", result.stdout
   end
 
+  def test_forwards_declared_environment_value_from_runner_snapshot
+    previous = ENV["XDG_CONFIG_HOME"]
+    ENV["XDG_CONFIG_HOME"] = "/tmp/cybort-test-config"
+    runner = Cybort::CommandRunner.new
+    result = runner.run(
+      [@ruby, "-e", "puts ENV.fetch('XDG_CONFIG_HOME', 'missing')"],
+      allowed_env_keys: ["XDG_CONFIG_HOME"]
+    )
+
+    assert_equal ENV.fetch("XDG_CONFIG_HOME", "missing") + "\n", result.stdout
+  ensure
+    previous ? ENV["XDG_CONFIG_HOME"] = previous : ENV.delete("XDG_CONFIG_HOME")
+  end
+
+  def test_exact_output_limit_is_not_truncated
+    result = @runner.run([@ruby, "-e", "print 'x' * 32"], max_output_bytes: 32)
+
+    assert_equal 32, result.stdout.bytesize
+    refute result.stdout_truncated
+  end
+
+  def test_exact_stderr_limit_is_not_truncated
+    result = @runner.run([@ruby, "-e", "$stderr.write('x' * 32)"], max_output_bytes: 32)
+
+    assert_equal 32, result.stderr.bytesize
+    refute result.stderr_truncated
+  end
+
+  def test_zero_output_limit_keeps_streams_empty_and_marks_nonempty_output_truncated
+    result = @runner.run([@ruby, "-e", "print 'x'; warn 'y'"], max_output_bytes: 0)
+
+    assert_empty result.stdout
+    assert_empty result.stderr
+    assert result.stdout_truncated
+    assert result.stderr_truncated
+  end
+
   def test_classifies_spawn_failures_without_exposing_path
     result = @runner.run(["/definitely/missing/cybort-command"])
 
@@ -96,4 +143,5 @@ class CommandRunnerTest < Minitest::Test
     assert_raises(ArgumentError) { @runner.run([@ruby, "-e", ""], timeout_seconds: 0) }
     assert_raises(ArgumentError) { @runner.run([@ruby, "-e", ""], max_output_bytes: -1) }
   end
+
 end

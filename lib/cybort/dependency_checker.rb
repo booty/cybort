@@ -13,11 +13,8 @@ module Cybort
       return unavailable(dependency, "missing") unless path
       return available(dependency, path, nil) unless dependency.version_requirement
 
-      result = @command_runner.run([path, "--version"], allowed_env_keys: dependency.environment_keys)
-      return unavailable(dependency, "version_check_failed") unless version_result_usable?(result)
-
-      version = parse_version(result.stdout)
-      return unavailable(dependency, "version_check_failed") unless version
+      version = version_for(dependency, path)
+      return unavailable(dependency, "version_check_failed", path: path) unless version
 
       resolution = available(dependency, path, version)
       validate_version!(dependency, resolution)
@@ -26,10 +23,14 @@ module Cybort
     end
 
     def validate_version!(dependency, resolution)
-      return resolution unless resolution.available? && dependency.version_requirement
-      return resolution if dependency.version_requirement.satisfied_by?(Gem::Version.new(resolution.version))
+      return resolution unless resolution.path
+      return available(dependency, resolution.path, resolution.version) unless dependency.version_requirement
 
-      unavailable(dependency, "unsupported_version", path: resolution.path, version: resolution.version)
+      version = resolution.version || version_for(dependency, resolution.path)
+      return unavailable(dependency, "version_check_failed", path: resolution.path) unless version
+      return available(dependency, resolution.path, version) if dependency.version_requirement.satisfied_by?(Gem::Version.new(version))
+
+      unavailable(dependency, "unsupported_version", path: resolution.path, version: version)
     rescue ArgumentError
       unavailable(dependency, "version_check_failed", path: resolution.path, version: resolution.version)
     end
@@ -52,6 +53,13 @@ module Cybort
     def version_result_usable?(result)
       result && result.spawn_error_category.nil? && !result.timed_out &&
         !result.stdout_truncated && !result.stderr_truncated && result.status&.success?
+    end
+
+    def version_for(dependency, path)
+      result = @command_runner.run([path, "--version"], allowed_env_keys: dependency.environment_keys)
+      return unless version_result_usable?(result)
+
+      parse_version(result.stdout)
     end
 
     def parse_version(output)

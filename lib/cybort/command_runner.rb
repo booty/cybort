@@ -13,9 +13,10 @@ module Cybort
     TERM_GRACE_SECONDS = 0.25
     DRAIN_GRACE_SECONDS = 0.25
 
-    def initialize(monotonic_clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }, sleeper: ->(seconds) { sleep(seconds) })
+    def initialize(monotonic_clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }, sleeper: ->(seconds) { sleep(seconds) }, environment: ENV.to_h)
       @monotonic_clock = monotonic_clock
       @sleeper = sleeper
+      @environment = environment.transform_keys(&:to_s).freeze
     end
 
     def run(argv, env: {}, allowed_env_keys: [], timeout_seconds: 30, max_output_bytes: 1_048_576)
@@ -125,8 +126,8 @@ module Cybort
         raise ArgumentError, "environment key is not allowed: #{key}"
       end
 
-      inherited = ENV.each_with_object({}) do |(key, value), result|
-        result[key] = value if BASE_ENV_KEYS.include?(key)
+      inherited = @environment.each_with_object({}) do |(key, value), result|
+        result[key] = value if BASE_ENV_KEYS.include?(key) || allowed.include?(key)
       end
       inherited.merge(env.transform_keys(&:to_s))
     end
@@ -136,11 +137,9 @@ module Cybort
       truncated = false
       loop do
         chunk = io.readpartial(CHUNK_BYTES)
-        if output.bytesize < max_output_bytes
-          remaining = max_output_bytes - output.bytesize
-          output << chunk.byteslice(0, remaining)
-        end
-        truncated ||= output.bytesize + (chunk.bytesize > [max_output_bytes - output.bytesize, 0].max ? 1 : 0) > max_output_bytes
+        remaining = [max_output_bytes - output.bytesize, 0].max
+        output << chunk.byteslice(0, remaining) if remaining.positive?
+        truncated ||= chunk.bytesize > remaining
       end
     rescue EOFError, IOError
       [output, truncated]
@@ -151,13 +150,14 @@ module Cybort
       begin
         Process.kill("TERM", -pid)
       rescue Errno::ESRCH, Errno::EPERM
-        return
+        nil
       end
 
-      while wait_thread.alive? && monotonic_clock.call < deadline + TERM_GRACE_SECONDS
+      grace_deadline = deadline + TERM_GRACE_SECONDS
+      while (wait_thread.alive? || process_group_alive?(pid)) && monotonic_clock.call < grace_deadline
         @sleeper.call(0.005)
       end
-      if wait_thread.alive?
+      if process_group_alive?(pid)
         begin
           Process.kill("KILL", -pid)
         rescue Errno::ESRCH, Errno::EPERM
@@ -165,6 +165,15 @@ module Cybort
         end
       end
       wait_thread.join(1)
+    end
+
+    def process_group_alive?(pid)
+      Process.kill(0, -pid)
+      true
+    rescue Errno::ESRCH
+      false
+    rescue Errno::EPERM
+      true
     end
 
     def spawn_error_category(error)

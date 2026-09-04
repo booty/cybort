@@ -1,7 +1,7 @@
 module Cybort
   class CommandError < SourceError
     ALLOWED_METADATA = %i[
-      tool operation command_index exit_category exit_code tool_version category
+      tool operation command_index exit_category exit_code tool_version category auth_hint
     ].freeze
     MAX_STRING_BYTES = 256
 

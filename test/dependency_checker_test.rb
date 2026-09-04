@@ -119,6 +119,52 @@ class DependencyCheckerTest < Minitest::Test
     end
   end
 
+  def test_rechecks_a_cached_version_against_a_later_compatible_requirement
+    with_tool("gws") do |directory|
+      runner = FakeRunner.new(success_result(stdout: "gws version 0.22.6\n"))
+      checker = Cybort::DependencyChecker.new(command_runner: runner)
+      unsupported = Cybort::Dependency.new(executable: "gws", purpose: "new", version_requirement: ">= 0.23.0")
+      compatible = gws_dependency
+      first = checker.resolve(unsupported, env: { "PATH" => directory })
+
+      second = checker.validate_version!(compatible, first)
+
+      assert second.available?
+      assert_equal 1, runner.calls.length
+    end
+  end
+
+  def test_versionless_resolution_fetches_version_when_later_requirement_needs_it
+    with_tool("gws") do |directory|
+      runner = FakeRunner.new(success_result(stdout: "gws version 0.22.6\n"))
+      checker = Cybort::DependencyChecker.new(command_runner: runner)
+      versionless = Cybort::Dependency.new(executable: "gws", purpose: "base")
+      versioned = gws_dependency
+      first = checker.resolve(versionless, env: { "PATH" => directory })
+
+      second = checker.validate_version!(versioned, first)
+
+      assert second.available?
+      assert_equal 1, runner.calls.length
+    end
+  end
+
+  def test_versionless_requirement_remains_available_when_version_check_is_unusable
+    with_tool("gws") do |directory|
+      runner = FakeRunner.new(failure_result)
+      checker = Cybort::DependencyChecker.new(command_runner: runner)
+      versioned = gws_dependency
+      versionless = Cybort::Dependency.new(executable: "gws", purpose: "base")
+      first = checker.resolve(versioned, env: { "PATH" => directory })
+
+      second = checker.validate_version!(versionless, first)
+
+      assert second.available?
+      assert_equal File.join(directory, "gws"), second.path
+      assert_equal 1, runner.calls.length
+    end
+  end
+
   private
 
   def gws_dependency

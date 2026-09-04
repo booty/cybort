@@ -55,37 +55,33 @@ module Cybort
 
     def run(force_fetch: false)
       instances = @configuration.instances
-      @registry.validate!(instances)
       @registry.validate_configuration!(instances)
       contexts = instances.transform_values { |instance| @persistence.context_for(instance_id: instance.id) }
 
       planned_at = @clock.call
       plans = instances.values.to_h do |instance|
-        adapter = @registry.build(
+        plan = @registry.plan(
           instance: instance,
           context: contexts.fetch(instance.id),
-          http_client: @http_client,
-          clock: @clock,
-          command_runner: @command_runner,
-          dependency_resolutions: {},
-          monotonic_clock: @monotonic_clock
+          force_fetch: force_fetch,
+          planned_at: planned_at
         )
-        plan = if adapter.respond_to?(:plan)
-          adapter.plan(force_fetch: force_fetch, planned_at: planned_at)
-        else
-          AdapterPlan.new(
-            instance: instance,
-            context: contexts.fetch(instance.id),
-            fetch_mode: :remote,
-            planned_at: planned_at,
-            dependency_requirements: [],
-            resolutions: {}
-          )
-        end
-        [instance.id, { adapter: adapter, plan: plan }]
+        [instance.id, { plan: plan }]
       end
 
-      resolution_cache = {}
+      dependency_groups = Hash.new { |groups, executable| groups[executable] = [] }
+      plans.each_value do |entry|
+        plan = entry.fetch(:plan)
+        next unless plan.fetch_mode == :remote
+
+        @registry.dependencies_for(plan.instance).each do |dependency|
+          dependency_groups[dependency.executable] << dependency
+        end
+      end
+      resolution_cache = dependency_groups.transform_values do |dependencies|
+        canonical = dependencies.find(&:version_requirement) || dependencies.first
+        @dependency_checker.resolve(canonical)
+      end
       results = {}
       unavailable = {}
       plans.each_value do |entry|
@@ -93,30 +89,38 @@ module Cybort
         instance = plan.instance
         dependencies = plan.fetch_mode == :remote ? @registry.dependencies_for(instance) : []
         resolutions = {}
-        dependency_failure = nil
+        dependency_failures = []
         dependencies.each do |dependency|
-          resolution = if resolution_cache.key?(dependency.executable)
-            @dependency_checker.validate_version!(dependency, resolution_cache.fetch(dependency.executable))
-          else
-            @dependency_checker.resolve(dependency)
-          end
-          resolution_cache[dependency.executable] ||= resolution
+          resolution = @dependency_checker.validate_version!(dependency, resolution_cache.fetch(dependency.executable))
           resolutions[dependency.executable] = resolution
-          next if resolution.available?
-
-          dependency_failure = resolution
-          break
+          dependency_failures << resolution unless resolution.available?
         end
 
         entry[:plan] = plan.with(dependency_requirements: dependencies, resolutions: resolutions)
-        entry[:adapter].dependency_resolutions = resolutions if entry[:adapter].respond_to?(:dependency_resolutions=)
-        next unless dependency_failure
+        next if dependency_failures.empty?
 
-        results[instance.id] = dependency_failure_result(instance, dependency_failure)
-        guidance = dependency_guidance(dependency_failure)
-        key = guidance.values_at(:tool, :category, :purpose, :install_hint, :auth_hint)
-        unavailable[key] ||= guidance.merge(instances: [])
-        unavailable[key][:instances] << instance.id
+        results[instance.id] = dependency_failure_result(instance, dependency_failures)
+        dependency_failures.each do |failure|
+          guidance = dependency_guidance(failure)
+          key = guidance.values_at(:tool, :category, :purpose, :install_hint, :auth_hint)
+          unavailable[key] ||= guidance.merge(instances: [])
+          unavailable[key][:instances] << instance.id
+        end
+      end
+
+      plans.each_value do |entry|
+        next if results.key?(entry.fetch(:plan).instance.id)
+
+        plan = entry.fetch(:plan)
+        entry[:adapter] = @registry.build(
+          instance: plan.instance,
+          context: plan.context,
+          http_client: @http_client,
+          clock: @clock,
+          command_runner: @command_runner,
+          dependency_resolutions: plan.resolutions,
+          monotonic_clock: @monotonic_clock
+        )
       end
 
       instances.each_value { |instance| @persistence.register_instance(instance) }
@@ -167,10 +171,12 @@ module Cybort
       InstanceRunStatus.new(instance_id: result.instance_id, status: :failure, source_fetched: result.source_fetched, item_count: 0, error: error, metadata: failure.metadata)
     end
 
-    def dependency_failure_result(instance, resolution)
+    def dependency_failure_result(instance, resolutions)
+      first = resolutions.first
       metadata = {
-        tool: resolution.dependency.executable,
-        category: resolution.error.fetch(:category)
+        tool: first.dependency.executable,
+        category: first.error.fetch(:category),
+        tools: resolutions.map { |resolution| resolution.dependency.executable }.uniq
       }
       FetchResult.failure(
         instance_id: instance.id,

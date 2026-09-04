@@ -39,11 +39,11 @@ module Cybort
     end
 
     def validate!(instances)
-      instances.each_value do |instance|
-        next if @adapters.key?(instance.adapter)
-
-        raise ConfigurationError, "unknown adapter: #{instance.adapter}"
+      errors = instances.keys.sort.filter_map do |id|
+        instance = instances.fetch(id)
+        "#{id}: unknown adapter: #{instance.adapter}" unless @adapters.key?(instance.adapter)
       end
+      raise ConfigurationError, errors.join("\n") unless errors.empty?
     end
 
     def validate_configuration!(instances)
@@ -71,6 +71,18 @@ module Cybort
       end.dependencies
     end
 
+    def plan(instance:, context:, force_fetch:, planned_at:)
+      entry = @adapters.fetch(instance.adapter) do
+        raise ConfigurationError, "unknown adapter: #{instance.adapter}"
+      end
+      factory = entry.factory
+      if factory.respond_to?(:plan)
+        factory.plan(instance: instance, context: context, force_fetch: force_fetch, planned_at: planned_at)
+      else
+        Adapters::Base.plan(instance: instance, context: context, force_fetch: force_fetch, planned_at: planned_at)
+      end
+    end
+
     def build(instance:, context:, http_client:, clock:, command_runner: nil, dependency_resolutions: {}, monotonic_clock: nil)
       entry = @adapters.fetch(instance.adapter) do
         raise ConfigurationError, "unknown adapter: #{instance.adapter}"
@@ -85,10 +97,24 @@ module Cybort
       }
       kwargs[:monotonic_clock] = monotonic_clock if monotonic_clock
       if entry.factory.respond_to?(:new)
-        entry.factory.new(**kwargs)
+        entry.factory.new(**compatible_keywords(entry.factory, kwargs))
       else
-        entry.factory.call(**kwargs)
+        entry.factory.call(**compatible_keywords(entry.factory, kwargs))
       end
+    end
+
+    private
+
+    def compatible_keywords(factory, kwargs)
+      parameters = if factory.is_a?(Class)
+        factory.instance_method(:initialize).parameters
+      else
+        factory.parameters
+      end
+      return kwargs if parameters.any? { |kind, _name| kind == :keyrest }
+
+      accepted = parameters.select { |kind, _name| %i[key keyreq].include?(kind) }.map(&:last)
+      kwargs.select { |key, _value| accepted.include?(key) }
     end
   end
 end

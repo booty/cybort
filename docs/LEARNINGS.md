@@ -31,7 +31,7 @@ tested-version gate in code. The development environment does not have `gws`
 installed, so the real list/detail command contract and granted scopes have not
 been authenticated or verified.
 
-**Evidence:** `bundle exec rake test` passes with 96 runs and 346 assertions;
+**Evidence:** `bundle exec rake test` passes with 114 runs and 398 assertions;
 `command -v gws` and `gws --version` produced no output on 2026-09-04. The
 manual gate is documented in the connector design and README.
 

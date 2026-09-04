@@ -256,6 +256,64 @@ class OrchestratorTest < Minitest::Test
     assert_equal %w[one two], result.unavailable_dependencies.first.fetch(:instances)
   end
 
+  def test_resolves_all_dependencies_for_an_instance_before_reporting_failures
+    first_dependency = Cybort::Dependency.new(executable: "gws", purpose: "gmail")
+    second_dependency = Cybort::Dependency.new(executable: "jq", purpose: "json")
+    registry = Cybort::AdapterRegistry.new
+    factory_calls = 0
+    registry.register(
+      "multi",
+      ->(**kwargs) { factory_calls += 1; PlanningAdapter.new(**kwargs, modes: []) },
+      dependencies: [first_dependency, second_dependency],
+      validate_configuration: ->(_instance) {}
+    )
+    configured = instance("multi").tap { |value| value.adapter = "multi" }
+    configuration = Struct.new(:instances).new({ "multi" => configured })
+    persistence = PersistenceSpyWithContexts.new("multi" => empty_context)
+    checker = Class.new do
+      attr_reader :calls
+
+      define_method(:initialize) { |resolutions| @resolutions = resolutions; @calls = [] }
+      define_method(:resolve) do |dependency, env: ENV.to_h|
+        @calls << dependency.executable
+        @resolutions.fetch(dependency.executable)
+      end
+      define_method(:validate_version!) { |_dependency, resolution| resolution }
+    end.new(
+      "gws" => unavailable_resolution(first_dependency),
+      "jq" => unavailable_resolution(second_dependency)
+    )
+    orchestrator = Cybort::Orchestrator.new(configuration: configuration, persistence: persistence, registry: registry, http_client: nil, dependency_checker: checker)
+
+    result = orchestrator.run
+
+    assert_equal %w[gws jq], checker.calls
+    assert_equal %w[gws jq], result.unavailable_dependencies.map { |value| value.fetch(:tool) }
+    assert_equal 0, factory_calls
+  end
+
+  def test_unavailable_dependency_does_not_construct_runtime_factory
+    dependency = Cybort::Dependency.new(executable: "gws", purpose: "gmail")
+    registry = Cybort::AdapterRegistry.new
+    factory_calls = 0
+    registry.register(
+      "gmail",
+      ->(**_kwargs) { factory_calls += 1; raise "runtime factory must not run" },
+      dependencies: [dependency],
+      validate_configuration: ->(_instance) {}
+    )
+    configured = instance("mail").tap { |value| value.adapter = "gmail" }
+    configuration = Struct.new(:instances).new({ "mail" => configured })
+    persistence = PersistenceSpyWithContexts.new("mail" => empty_context)
+    checker = CheckerSpy.new(unavailable_resolution(dependency))
+    orchestrator = Cybort::Orchestrator.new(configuration: configuration, persistence: persistence, registry: registry, http_client: nil, dependency_checker: checker)
+
+    result = orchestrator.run
+
+    assert_equal :failure, result.instances.first.status
+    assert_equal 0, factory_calls
+  end
+
   private
 
   def empty_context

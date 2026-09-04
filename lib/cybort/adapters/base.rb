@@ -5,7 +5,7 @@ module Cybort
   ) do
     def initialize(**attributes)
       super
-      self.context = context.dup.freeze
+      self.context = deep_freeze(deep_dup(context))
       self.dependency_requirements = Array(dependency_requirements).dup.freeze
       self.resolutions = (resolutions || {}).dup.freeze
       freeze
@@ -13,6 +13,31 @@ module Cybort
 
     def with(**attributes)
       self.class.new(**to_h.merge(attributes))
+    end
+
+    private
+
+    def deep_dup(value)
+      case value
+      when Hash
+        value.each_with_object({}) { |(key, nested), copy| copy[key] = deep_dup(nested) }
+      when Array
+        value.map { |nested| deep_dup(nested) }
+      when String
+        value.dup
+      else
+        value
+      end
+    end
+
+    def deep_freeze(value)
+      case value
+      when Hash
+        value.each { |key, nested| deep_freeze(key); deep_freeze(nested) }
+      when Array
+        value.each { |nested| deep_freeze(nested) }
+      end
+      value.freeze
     end
   end
 
@@ -36,16 +61,14 @@ module Cybort
         @dependency_resolutions = (resolutions || {}).dup.freeze
       end
 
+      def self.plan(instance:, context:, force_fetch:, planned_at:)
+        fetched_at = context[:last_successful_fetch]
+        mode = force_fetch || fetched_at.nil? || (planned_at - fetched_at) >= (instance.ttl_minutes * 60) ? :remote : :cached
+        AdapterPlan.new(instance: instance, context: context, fetch_mode: mode, planned_at: planned_at, dependency_requirements: [], resolutions: {})
+      end
+
       def plan(force_fetch:, planned_at:)
-        mode = force_fetch || !fresh_cache_at?(planned_at) ? :remote : :cached
-        AdapterPlan.new(
-          instance: instance,
-          context: context,
-          fetch_mode: mode,
-          planned_at: planned_at,
-          dependency_requirements: [],
-          resolutions: {}
-        )
+        self.class.plan(instance: instance, context: context, force_fetch: force_fetch, planned_at: planned_at)
       end
 
       def fetch(force_fetch: false, fetch_mode: nil, planned_at: nil)
