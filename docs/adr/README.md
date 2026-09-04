@@ -7,6 +7,7 @@ supersedes the old one instead of silently rewriting it.
 | ID | Status | Decision | Date |
 |---|---|---|---|
 | [0001](0001-persistence-storage-and-write-ownership.md) | Accepted | One SQLite database and orchestrator-owned sequential persistence | 2026-08-16 |
+| [0002](0002-external-command-dependencies-and-cli-adapters.md) | Proposed | Hybrid HTTP/CLI connectors with startup dependency preflight | 2026-09-04 |
 
 When adding an ADR:
 
