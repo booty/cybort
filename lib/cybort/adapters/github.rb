@@ -1,10 +1,24 @@
 require "json"
 require "time"
+require "uri"
 
 module Cybort
   module Adapters
     class GitHub < Base
       DEFAULT_API_URL = "https://api.github.com/notifications"
+
+      def self.validate_configuration!(instance)
+        token = instance.options.fetch(:token, "").to_s
+        raise ConfigurationError, "github instance requires token" if token.empty?
+
+        api_url = instance.options.fetch(:api_url, DEFAULT_API_URL).to_s
+        uri = URI.parse(api_url)
+        return if %w[http https].include?(uri.scheme) && !uri.host.to_s.empty?
+
+        raise ConfigurationError, "github api_url must be an HTTP(S) URL"
+      rescue URI::InvalidURIError
+        raise ConfigurationError, "github api_url must be an HTTP(S) URL"
+      end
 
       def initialize(**kwargs)
         super
@@ -57,4 +71,3 @@ module Cybort
     end
   end
 end
-

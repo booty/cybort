@@ -15,6 +15,37 @@ class CliTest < Minitest::Test
     end
   end
 
+  class MissingDependencyChecker
+    attr_reader :calls
+
+    def initialize(dependency)
+      @dependency = dependency
+      @calls = []
+    end
+
+    def resolve(dependency, env: ENV.to_h)
+      @calls << dependency.executable
+      Cybort::DependencyResolution.new(
+        dependency: dependency,
+        path: nil,
+        version: nil,
+        error: { category: "missing", executable: dependency.executable }
+      )
+    end
+
+    def validate_version!(_dependency, resolution)
+      resolution
+    end
+  end
+
+  class StubCommandAdapter < Cybort::Adapters::Base
+    def self.validate_configuration!(_instance); end
+
+    def fetch_from_source
+      raise "should not fetch when dependency is unavailable"
+    end
+  end
+
   RSS_BODY = <<~XML
     <?xml version="1.0"?>
     <rss version="2.0"><channel><title>Test</title>
@@ -71,5 +102,42 @@ class CliTest < Minitest::Test
       assert_equal "CLI article", JSON.parse(second_output.string).fetch("instances").first.fetch("items").first.fetch("title")
     end
   end
-end
 
+  def test_emits_grouped_dependency_guidance_for_source_failure
+    Dir.mktmpdir do |directory|
+      root = File.join(directory, ".cybort")
+      FileUtils.mkdir_p(root)
+      File.write(File.join(root, "cybort.toml"), <<~TOML)
+        schema_version = 1
+
+        [instances.command_source]
+        name = "Command Source"
+        adapter = "command"
+        ttl_minutes = 30
+        num_items_to_fetch = 1
+      TOML
+      dependency = Cybort::Dependency.new(
+        executable: "missing-tool",
+        purpose: "test command",
+        install_hint: "brew install missing-tool"
+      )
+      registry = Cybort::AdapterRegistry.new
+      registry.register("command", StubCommandAdapter, dependencies: [dependency])
+      checker = MissingDependencyChecker.new(dependency)
+      output = StringIO.new
+
+      status = Cybort::CLI.start(
+        [], out: output, err: StringIO.new, home: directory, registry: registry,
+        dependency_checker: checker
+      )
+
+      payload = JSON.parse(output.string)
+      assert_equal 1, status
+      assert_equal "failure", payload.fetch("instances").first.fetch("status")
+      assert_equal ["command_source"], payload.fetch("unavailable_dependencies").first.fetch("instances")
+      assert_equal "brew install missing-tool", payload.fetch("unavailable_dependencies").first.fetch("install_hint")
+      assert_equal ["missing-tool"], checker.calls
+      refute_includes output.string, "stderr"
+    end
+  end
+end

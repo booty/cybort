@@ -1,10 +1,21 @@
 require "digest"
 require "rss"
 require "time"
+require "uri"
 
 module Cybort
   module Adapters
     class RSS < Base
+      def self.validate_configuration!(instance)
+        url = instance.options.fetch(:url, "").to_s
+        uri = URI.parse(url)
+        return if %w[http https].include?(uri.scheme) && !uri.host.to_s.empty?
+
+        raise ConfigurationError, "rss instance requires an HTTP(S) url"
+      rescue URI::InvalidURIError
+        raise ConfigurationError, "rss instance requires an HTTP(S) url"
+      end
+
       private
 
       def fetch_from_source
@@ -46,4 +57,3 @@ module Cybort
     end
   end
 end
-

@@ -6,7 +6,9 @@ module Cybort
   module CLI
     module_function
 
-    def start(argv, out: $stdout, err: $stderr, home: Dir.home, input: $stdin, http_client: nil, registry: nil, clock: -> { Time.now.utc })
+    def start(argv, out: $stdout, err: $stderr, home: Dir.home, input: $stdin, http_client: nil, registry: nil,
+              clock: -> { Time.now.utc }, command_runner: nil, dependency_checker: nil,
+              monotonic_clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) })
       args = argv.dup
       if args.first == "init"
         return initialize_installation(args[1] || File.join(home, ".cybort"), input: input, out: out, clock: clock)
@@ -17,16 +19,22 @@ module Cybort
       configuration = Configuration.load(File.join(root, "cybort.toml"))
       persistence = Persistence.new(File.join(root, "cybort.sqlite3"), clock: clock)
       persistence.setup!
+      command_runner ||= CommandRunner.new(monotonic_clock: monotonic_clock)
+      dependency_checker ||= DependencyChecker.new(command_runner: command_runner)
       result = Orchestrator.new(
         configuration: configuration,
         persistence: persistence,
         registry: registry || AdapterRegistry.default,
         http_client: http_client || HttpClient.new,
-        clock: clock
+        clock: clock,
+        command_runner: command_runner,
+        dependency_checker: dependency_checker,
+        monotonic_clock: monotonic_clock
       ).run(force_fetch: options.fetch(:force_fetch))
 
       payload = {
         status: result.overall_status,
+        unavailable_dependencies: result.unavailable_dependencies,
         instances: result.instances.map do |status|
           status.to_h.merge(items: persistence.items_for(instance_id: status.instance_id).map(&:to_h))
         end
