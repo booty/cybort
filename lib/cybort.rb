@@ -9,6 +9,8 @@ end
 require "cybort/configuration"
 require "cybort/item"
 require "cybort/fetch_result"
+require "cybort/errors"
+require "cybort/command_runner"
 require "cybort/schema"
 require "cybort/persistence"
 require "cybort/http_client"
