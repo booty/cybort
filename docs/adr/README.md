@@ -14,3 +14,4 @@ When adding an ADR:
 2. State the status and date near the top of the document.
 3. Explain context, the decision, alternatives, and consequences.
 4. Add or update its row in this index.
+5. If an older ADR has been superceded, update its row in the index and set Status to "Superceded"
