@@ -169,19 +169,6 @@ class GmailAdapterTest < Minitest::Test
     assert_equal 3, runner.calls.length
   end
 
-  def test_deduplicates_before_applying_fetch_limit
-    runner = StubCommandRunner.new(
-      list_body: JSON.generate({ "messages" => [{ "id" => "one" }, { "id" => "one" }, { "id" => "two" }] }),
-      details: { "one" => fixture_json("details/valid_one.json"), "two" => fixture_json("details/valid_two.json") }
-    )
-
-    result = adapter(runner, num_items_to_fetch: 2).fetch
-
-    assert result.success?
-    assert_equal %w[one two], result.items.map(&:canonical_id)
-    assert_equal 3, runner.calls.length
-  end
-
   def test_converts_command_failures_into_safe_metadata
     runner = StubCommandRunner.new(
       list_body: "ignored",

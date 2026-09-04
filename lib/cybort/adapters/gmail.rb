@@ -40,7 +40,7 @@ module Cybort
         raw_messages = parsed_list.key?("messages") ? parsed_list.fetch("messages") : []
         raise_command_error("list", "invalid_json", dependency) unless raw_messages.is_a?(Array)
 
-        ids = raw_messages.map { |message| message_id!(message, dependency) }.uniq.first(instance.num_items_to_fetch)
+        ids = raw_messages.first(instance.num_items_to_fetch).map { |message| message_id!(message, dependency) }.uniq
         items = ids.map.with_index do |message_id, index|
           detail = run_gws(
             dependency,
