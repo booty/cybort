@@ -77,6 +77,20 @@ class DependencyCheckerTest < Minitest::Test
     end
   end
 
+  def test_accepts_installed_gws_version_output
+    with_tool("gws") do |directory|
+      runner = FakeRunner.new(
+        success_result(stdout: "gws 0.22.5\nThis is not an officially supported Google product.\n")
+      )
+      checker = Cybort::DependencyChecker.new(command_runner: runner)
+
+      resolution = checker.resolve(gws_dependency, env: { "PATH" => directory })
+
+      assert_equal "0.22.5", resolution.version
+      assert_nil resolution.error
+    end
+  end
+
   def test_rejects_unsupported_prerelease_and_malformed_versions
     with_tool("gws") do |directory|
       ["gws version 0.23.0\n", "gws version 0.22.5-rc1\n", "noise 9.9.9\n", "not a version\n"].each do |stdout|

@@ -81,4 +81,13 @@ class AdapterRegistryTest < Minitest::Test
 
     assert_equal "a_known: invalid options\nz_unknown: unknown adapter: missing", error.message
   end
+
+  def test_gmail_dependency_allows_documented_gws_configuration_variables
+    dependency = Cybort::AdapterRegistry.default.dependencies_for(Instance.new(adapter: "gmail")).fetch(0)
+
+    assert_includes dependency.environment_keys, "GOOGLE_WORKSPACE_CLI_CONFIG_DIR"
+    assert_includes dependency.environment_keys, "GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"
+    assert_includes dependency.environment_keys, "GOOGLE_WORKSPACE_CLI_TOKEN"
+    assert_includes dependency.environment_keys, "GOOGLE_WORKSPACE_PROJECT_ID"
+  end
 end

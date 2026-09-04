@@ -27,19 +27,29 @@ setting before documenting alternate paths as a complete runtime workflow.
 
 **Observation:** The Gmail adapter is implemented behind the Google-maintained
 `googleworkspace/cli` `gws` executable, with an explicit read-only scope and a
-tested-version gate in code. The development environment does not have `gws`
-installed, so the real list/detail command contract and granted scopes have not
-been authenticated or verified.
+tested-version gate in code. `gws` is installed at `/usr/local/bin/gws` and
+reports `gws 0.22.5`, which matches the supported range. A real Cybort
+read-only fetch reached `gws`, but the available credential returned an
+insufficient-authentication-scopes API error; the local gws credential cache is
+not currently usable in this execution environment.
 
-**Evidence:** `bundle exec rake test` passes with 114 runs and 398 assertions;
-`command -v gws` and `gws --version` produced no output on 2026-09-04. The
-manual gate is documented in the connector design and README.
+**Evidence:** `bundle exec rake test` passes with 116 runs and 408 assertions;
+`gws --version` returned `gws 0.22.5`; `gws auth status` reported no usable
+credential after an undecryptable cache was removed; a gcloud-minted token
+changed the Cybort failure from missing credentials to API exit code 1 with
+`insufficient authentication scopes`; and `gws ... --dry-run` resolved the
+expected Gmail list endpoint. The manual gate is documented in the connector
+design and README.
 
 **Impact:** ADR 0002 and the connector design must remain Proposed, and README
-must describe Gmail as experimental until a real account verifies version,
-scope set, list JSON, and detail JSON.
+must describe Gmail as experimental until a real account verifies the granted
+read-only scope, list JSON, and detail JSON. The version parser now accepts the
+installed CLI's `gws X.Y.Z` output.
 
-**Next action:** With an authenticated test account, run `gws --version`,
-`gws auth status`, one explicit-scope list request, and one metadata detail
-request; record only the version, scope names, exit statuses, and sanitized
-JSON shape before changing the support range or ADR status.
+**Next action:** Re-run `gws auth login --scopes
+https://www.googleapis.com/auth/gmail.readonly` in the same host/keyring used by
+Cybort, or provide a documented `GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE` /
+Gmail-scoped `GOOGLE_WORKSPACE_CLI_TOKEN`. Then run `gws auth status`, one
+explicit-scope list request, and one metadata detail request; record only the
+version, scope names, exit statuses, and sanitized JSON shape before changing
+the supported range or ADR status.

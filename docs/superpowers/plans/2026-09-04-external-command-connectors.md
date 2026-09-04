@@ -181,7 +181,7 @@ git commit -m "feat: add bounded command runner"
 
 - [ ] **Step 1: Write failing resolution/version tests**
 
-Use a temporary directory containing executable and non-executable files. Assert that duplicate PATH entries are de-duplicated, an empty PATH component searches `Dir.pwd`, directories are rejected, and missing tools report purpose/install hint. Inject a fake command runner for `gws --version` and assert `gws version 0.22.5` passes while `gws version 0.23.0`, `gws version 0.22.5-rc1`, an unrelated earlier version token, stderr-only output, truncated output, and malformed output fail. Test lower and upper bounds and whitespace around the documented line.
+Use a temporary directory containing executable and non-executable files. Assert that duplicate PATH entries are de-duplicated, an empty PATH component searches `Dir.pwd`, directories are rejected, and missing tools report purpose/install hint. Inject a fake command runner for `gws --version` and assert both `gws 0.22.5` (the installed CLI format) and `gws version 0.22.5` pass while `gws 0.23.0`, `gws 0.22.5-rc1`, an unrelated earlier version token, stderr-only output, truncated output, and malformed output fail. Test lower and upper bounds and whitespace around the documented line.
 
 - [ ] **Step 2: Run the focused tests and verify failure**
 
@@ -190,7 +190,7 @@ Expected: FAIL because the value objects/checker are absent.
 
 - [ ] **Step 3: Implement `Dependency` and `DependencyChecker`**
 
-`Dependency` validates a nonblank executable and `Gem::Requirement`-compatible version requirement. `DependencyChecker#resolve` scans `env.fetch("PATH", "")` directly, treats `""` as `Dir.pwd`, requires `File.file?` and `File.executable?`, and returns the first expanded absolute path. If a version requirement exists, call the injected runner with `[path, "--version"]`, parse the documented `gws version X.Y.Z` line (allowing a leading `v` but rejecting prerelease/build suffixes), and check `Gem::Version`. Return a `DependencyResolution` with a static error category (`missing`, `spawn_failed`, `version_check_failed`, or `unsupported_version`) and no command output. `validate_version!(dependency, resolution)` applies another declaration's requirement to an already resolved path/version without spawning a second process.
+`Dependency` validates a nonblank executable and `Gem::Requirement`-compatible version requirement. `DependencyChecker#resolve` scans `env.fetch("PATH", "")` directly, treats `""` as `Dir.pwd`, requires `File.file?` and `File.executable?`, and returns the first expanded absolute path. If a version requirement exists, call the injected runner with `[path, "--version"]`, parse `gws X.Y.Z` (and the legacy `gws version X.Y.Z` form, allowing a leading `v` but rejecting prerelease/build suffixes), and check `Gem::Version`. Return a `DependencyResolution` with a static error category (`missing`, `spawn_failed`, `version_check_failed`, or `unsupported_version`) and no command output. `validate_version!(dependency, resolution)` applies another declaration's requirement to an already resolved path/version without spawning a second process.
 
 - [ ] **Step 4: Run focused and full tests**
 
@@ -376,7 +376,7 @@ Accept `user_id` (default `"me"`), `query` (default `""`), and `num_items_to_fet
 
 Include `maxResults` equal to the effective `num_items_to_fetch` and add `q` only when nonblank. Use the exact resolved path from the dependency checker. The validator rejects values above 500 rather than silently issuing an API-invalid request.
 
-Pass `dependency.environment_keys` as the runner's `allowed_env_keys`; Gmail itself supplies no connector-specific environment values in this slice, but the explicit boundary preserves opt-in proxy/configuration support without inheriting the full parent environment.
+Pass `dependency.environment_keys` as the runner's `allowed_env_keys`; the Gmail declaration includes the documented `GOOGLE_WORKSPACE_CLI_*` credential/configuration variables plus opt-in proxy/certificate settings, without inheriting the full parent environment.
 
 - [ ] **Step 4: Implement bounded fetch, parsing, and normalization**
 
@@ -386,7 +386,7 @@ Normalize headers case-insensitively, choose the first nonblank value, use `(no 
 
 - [ ] **Step 5: Register Gmail and test failures/deadlines**
 
-Register `gmail` with `Dependency.new(executable: "gws", purpose: "Google-maintained Google Workspace CLI", install_hint: "brew install googleworkspace-cli", auth_hint: "Run gws auth setup, then gws auth login --scopes https://www.googleapis.com/auth/gmail.readonly", version_requirement: ">= 0.22.5, < 0.23.0", environment_keys: %w[XDG_CONFIG_HOME HTTPS_PROXY HTTP_PROXY NO_PROXY SSL_CERT_FILE SSL_CERT_DIR])`. Test list/detail argument JSON, empty results, over-limit responses, safe malformed/non-zero/spawn/timeout failures, aggregate deadline enforcement using an injected monotonic clock, and that no partial items are returned.
+Register `gmail` with `Dependency.new(executable: "gws", purpose: "Google-maintained Google Workspace CLI", install_hint: "brew install googleworkspace-cli", auth_hint: "Run gws auth setup, then gws auth login --scopes https://www.googleapis.com/auth/gmail.readonly", version_requirement: ">= 0.22.5, < 0.23.0", environment_keys: %w[GOOGLE_WORKSPACE_CLI_CONFIG_DIR GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE GOOGLE_WORKSPACE_CLI_TOKEN GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND GOOGLE_WORKSPACE_PROJECT_ID HTTPS_PROXY HTTP_PROXY NO_PROXY SSL_CERT_FILE SSL_CERT_DIR])`. Test list/detail argument JSON, empty results, over-limit responses, safe malformed/non-zero/spawn/timeout failures, aggregate deadline enforcement using an injected monotonic clock, and that no partial items are returned.
 
 - [ ] **Step 6: Run adapter and full tests**
 

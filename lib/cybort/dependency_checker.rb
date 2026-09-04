@@ -2,7 +2,7 @@ require "rubygems"
 
 module Cybort
   class DependencyChecker
-    VERSION_PATTERN = /^\s*gws\s+version\s+v?(\d+\.\d+\.\d+)\s*$/i
+    VERSION_PATTERN = /^\s*gws(?:\s+version)?\s+v?(\d+\.\d+\.\d+)\s*$/i
 
     def initialize(command_runner: CommandRunner.new)
       @command_runner = command_runner

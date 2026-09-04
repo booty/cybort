@@ -16,7 +16,14 @@ module Cybort
               install_hint: "brew install googleworkspace-cli",
               auth_hint: "Run gws auth setup, then gws auth login --scopes https://www.googleapis.com/auth/gmail.readonly",
               version_requirement: ">= 0.22.5, < 0.23.0",
-              environment_keys: %w[XDG_CONFIG_HOME HTTPS_PROXY HTTP_PROXY NO_PROXY SSL_CERT_FILE SSL_CERT_DIR]
+              environment_keys: %w[
+                GOOGLE_WORKSPACE_CLI_CONFIG_DIR
+                GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE
+                GOOGLE_WORKSPACE_CLI_TOKEN
+                GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND
+                GOOGLE_WORKSPACE_PROJECT_ID
+                HTTPS_PROXY HTTP_PROXY NO_PROXY SSL_CERT_FILE SSL_CERT_DIR
+              ]
             )
           ]
         )
