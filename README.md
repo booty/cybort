@@ -68,6 +68,22 @@ Gmail uses the `gws` executable from the Google-maintained
 in the Google Workspace GitHub organization, but its own README says it is not
 an officially supported Google product and is under pre-1.0 development.
 
+`gws` relies upon the official gcloud CLI. [Install that first](https://docs.cloud.google.com/sdk/docs/install-sdk).
+
+
+```bash
+curl -O https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-darwin-arm.tar.gz
+tar -xf google-cloud-cli-darwin-arm.tar.gz
+./google-cloud-sdk/install.sh
+```
+
+Add gcloud executables and completions to your path; you probably want to add this to ~/.zshrc or ~/.zshrc.local
+
+```bash
+source "/Users/booty/code/tmp/google-cloud-sdk/path.zsh.inc"
+source "/Users/booty/code/tmp/google-cloud-sdk/completion.zsh.inc"
+```
+
 Install and authenticate it outside Cybort:
 
 ```bash
