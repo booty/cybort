@@ -11,8 +11,63 @@ class ConfigurationTest < Minitest::Test
     assert_equal "Personal RSS", instance.name
     assert_equal "rss", instance.adapter
     assert_equal 30, instance.ttl_minutes
+    assert_nil instance.retention_ttl_minutes
     assert_equal 10, instance.num_items_to_fetch
     assert_equal "https://example.test/feed.xml", instance.options.fetch(:url)
+  end
+
+  def test_loads_optional_retention_ttl_minutes_as_common_configuration
+    source = File.read(FIXTURE).sub(
+      "ttl_minutes = 30\n",
+      "ttl_minutes = 30\nretention_ttl_minutes = 2880\n"
+    )
+
+    Tempfile.create(["cybort-config", ".toml"]) do |file|
+      file.write(source)
+      file.flush
+      instance = Cybort::Configuration.load(file.path).instances.fetch("personal_rss")
+
+      assert_equal 2880, instance.retention_ttl_minutes
+      refute instance.options.key?(:retention_ttl_minutes)
+    end
+  end
+
+  def test_rejects_invalid_retention_ttl_minutes
+    invalid_values = ["0", "-1", "1.5", '"48h"', "true"]
+
+    invalid_values.each do |value|
+      source = File.read(FIXTURE).sub(
+        "ttl_minutes = 30\n",
+        "ttl_minutes = 30\nretention_ttl_minutes = #{value}\n"
+      )
+
+      Tempfile.create(["cybort-config", ".toml"]) do |file|
+        file.write(source)
+        file.flush
+
+        error = assert_raises(Cybort::ConfigurationError) do
+          Cybort::Configuration.load(file.path)
+        end
+        assert_includes error.message, "retention_ttl_minutes"
+      end
+    end
+  end
+
+  def test_retention_is_independent_per_instance_and_may_be_shorter_than_cache_ttl
+    fixture = File.expand_path("fixtures/configuration/rss_and_github.toml", __dir__)
+    source = File.read(fixture).sub(
+      "[instances.rss]\n",
+      "[instances.rss]\nretention_ttl_minutes = 5\n"
+    )
+
+    Tempfile.create(["cybort-config", ".toml"]) do |file|
+      file.write(source)
+      file.flush
+      instances = Cybort::Configuration.load(file.path).instances
+
+      assert_equal 5, instances.fetch("rss").retention_ttl_minutes
+      assert_nil instances.fetch("github").retention_ttl_minutes
+    end
   end
 
   %i[schema_version adapter ttl_minutes num_items_to_fetch].each do |missing_key|

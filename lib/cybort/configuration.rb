@@ -7,12 +7,14 @@ module Cybort
       :name,
       :adapter,
       :ttl_minutes,
+      :retention_ttl_minutes,
       :num_items_to_fetch,
       :options,
       keyword_init: true
     )
 
     REQUIRED_INSTANCE_KEYS = %i[name adapter ttl_minutes num_items_to_fetch].freeze
+    COMMON_INSTANCE_KEYS = (REQUIRED_INSTANCE_KEYS + %i[retention_ttl_minutes]).freeze
 
     attr_reader :schema_version, :instances
 
@@ -56,17 +58,22 @@ module Cybort
       unless num_items_to_fetch.is_a?(Integer) && num_items_to_fetch.positive?
         raise ConfigurationError, "instance #{id} num_items_to_fetch must be a positive integer"
       end
+      retention_ttl_minutes = raw[:retention_ttl_minutes]
+      unless retention_ttl_minutes.nil? ||
+             (retention_ttl_minutes.is_a?(Integer) && retention_ttl_minutes.positive?)
+        raise ConfigurationError, "instance #{id} retention_ttl_minutes must be a positive integer"
+      end
 
-      options = raw.reject { |key, _value| REQUIRED_INSTANCE_KEYS.include?(key) }
+      options = raw.reject { |key, _value| COMMON_INSTANCE_KEYS.include?(key) }
       Instance.new(
         id: id,
         name: raw.fetch(:name).to_s,
         adapter: raw.fetch(:adapter).to_s,
         ttl_minutes: ttl_minutes,
+        retention_ttl_minutes: retention_ttl_minutes,
         num_items_to_fetch: num_items_to_fetch,
         options: options
       )
     end
   end
 end
-
