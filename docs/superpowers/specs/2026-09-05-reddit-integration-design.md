@@ -5,119 +5,112 @@
 
 ## Summary
 
-Cybort will add a direct-HTTP `reddit` adapter that uses a user-authorized
-Reddit OAuth refresh token. One configured Reddit instance will collect two
-kinds of normalized `Item`: unread legacy direct messages and selected active
-submission threads. It will discover the user's subscribed subreddits, union
-them with explicitly included names, subtract explicitly excluded names, and
-rank thread candidates with a deterministic engagement-per-age metric.
+Cybort will add a direct-HTTP `reddit` adapter using a user-authorized OAuth
+refresh token. A configured Reddit instance collects unread legacy private
+messages and a deterministic, bounded selection of active submission threads.
+The default thread scope is the user's subscribed communities, sampled through
+the authenticated personalized `/hot` listing; explicit additions and `r/news`
+receive documented single-subreddit requests, while exclusions prevent both
+selection and avoidable outbound requests.
 
-The adapter will store message subjects and thread titles, Reddit canonical
-URLs, timestamps, and small typed metadata. Thread metadata includes Reddit's
-visible vote score and comment total. It will not store message bodies,
-submission self-text, comment bodies, media, thumbnails, or linked-page
-content. LLM summaries and aggregate statistics for the user's own posts are
-future work.
+The adapter stores message subjects and thread titles, canonical Reddit URLs,
+timestamps, visible vote scores, comment totals, and small typed metadata. It
+does not store Reddit bodies, comments, authors, media, linked-page content, or
+raw responses. LLM summaries and aggregate statistics for the user's own posts
+remain future work.
 
-Reddit's documented Data API exposes unread private messages but does not
-document a consumer-chat read endpoint. V1 therefore collects direct-message
-objects from `/message/unread` and reports in fetch metadata that consumer chat
-collection is unavailable. It will not scrape Reddit, reuse first-party
-credentials, or call undocumented Sendbird/chat endpoints. This is a deliberate
-capability boundary, not silent equivalence between private messages and chat.
+V1 also adds a source-neutral current-snapshot capability to the existing
+adapter contract. `FetchResult#replace_existing_items`, defaulting to `false`,
+lets a complete successful remote result atomically replace the instance's
+current items. Complete Reddit remote results opt in so posts that leave the
+bounded selection and unread messages that become inactive disappear locally.
+Cache hits, failures, and incomplete remote work never replace or prune data.
+
+Reddit documents an unread legacy private-message endpoint but no consumer-chat
+read endpoint. V1 collects conservatively qualified legacy inbox messages from
+`/message/unread` and reports chat as unsupported on remote successes. It does
+not scrape Reddit or use undocumented chat endpoints.
 
 ## Goals
 
-- Show unread Reddit direct messages without marking them read.
-- Show highly active threads from the effective subreddit scope.
-- Recognize and reserve space for `r/news` megathreads when they are in scope.
-- Default the subreddit scope to every subreddit the authenticated user has
-  joined, while allowing explicit additions and exclusions.
-- Store stable identities, thread titles, canonical Reddit URLs, visible vote
-  scores, and comment totals without storing Reddit bodies or comment content.
-- Fit the existing adapter, orchestration, cache, persistence, and per-instance
-  retention contracts.
-- Keep all automated tests offline through injected HTTP clients and local JSON
-  fixtures.
+- Show unread legacy Reddit private messages without intentionally changing
+  their read state.
+- Show highly active threads from a bounded view of the effective subreddit
+  scope.
+- Recognize and reserve space for an `r/news` megathread when `news` is in
+  scope.
+- Default scope to subscribed subreddits, with explicit additions and
+  exclusions.
+- Store stable identities, canonical URLs, titles/subjects, visible vote
+  scores, and comment totals without Reddit body content.
+- Remove items absent from a complete successful Reddit snapshot while
+  preserving existing cache, failure, transaction, and retention boundaries.
+- Keep automated tests offline through injected clients and local fixtures.
 
 ## Non-goals
 
-- reading consumer Reddit Chat conversations until Reddit documents and grants
-  a supported read interface;
-- marking messages read, replying, voting, posting, moderating, or mutating the
-  Reddit account;
+- reading consumer Reddit Chat until Reddit documents and grants a supported
+  read interface;
+- marking messages read, replying, voting, posting, moderating, or mutating an
+  account;
 - collecting inbox comment replies, username mentions, post replies, modmail,
   or Reddit announcements;
-- storing message bodies, submission bodies, comments, media, previews,
+- storing message or submission bodies, comments, authors, media, previews,
   thumbnails, outbound linked-page content, or full API payloads;
-- LLM summaries, embeddings, classification, or other model calls;
-- aggregate statistics for the user's own posts;
-- a background scheduler, continuously updated activity rate, or push stream;
-- exact vote counts (Reddit exposes a visible/fuzzed submission `score`, not an
-  auditable ballot total);
-- a Reddit-specific storage table, reconciliation deletion model, or retention
-  policy; and
-- a built-in interactive OAuth authorization flow in this slice.
+- exhaustive coverage of every hot post in every joined subreddit;
+- LLM summaries, embeddings, classification, or aggregate personal-post stats;
+- a scheduler, push stream, or delta-based activity velocity;
+- exact vote counts—Reddit's `score` is the visible/fuzzed value;
+- a Reddit-specific table or persistence path;
+- hard wall-clock deletion during outages, automatic cleanup when a configured
+  instance is removed, or a user-facing purge workflow; and
+- an interactive OAuth authorization flow.
 
 ## Official API and policy basis
 
-The design was checked on 2026-09-05 against these Reddit-controlled sources:
+This design was checked on 2026-09-05 against Reddit-controlled sources:
 
 - the [Reddit Data API Wiki](https://support.reddithelp.com/hc/en-us/articles/16160319875092-Reddit-Data-API-Wiki),
   which requires registered OAuth traffic and a descriptive User-Agent,
-  documents a free-access limit of 100 queries per minute per OAuth client ID
-  averaged over ten minutes, identifies the rate-limit response headers, and
-  describes deletion/retention obligations;
+  documents the free-access rate policy and rate headers, and describes
+  retention/deletion obligations;
 - Reddit's [generated OAuth endpoint reference](https://www.reddit.com/dev/api/oauth),
-  which documents `/message/unread` under `privatemessages`,
-  `/subreddits/mine/subscriber` under `mysubreddits`, and `/hot` under `read`,
-  including fullname/`after` pagination and a maximum listing page size of 100;
-- Reddit's [Data API Terms](https://redditinc.com/policies/data-api-terms),
-  last revised July 20, 2026, which require documented access information,
-  forbid circumventing limits and reverse engineering, restrict retention to
-  the approved use case, and require stored material to be deleted when access
-  terminates; and
-- Reddit's legacy official [OAuth2 documentation](https://github.com/reddit-archive/reddit/wiki/oauth2),
-  which documents authorization-code refresh tokens, one-hour access tokens,
-  Basic authentication for token exchange, and use of `oauth.reddit.com` for
-  bearer requests. Reddit's current Data API Wiki labels legacy resources as
-  potentially out of date, so an authenticated contract smoke test remains a
-  release gate.
+  which documents `/message/unread`, `/subreddits/mine/subscriber`, `/hot`, and
+  `/r/{subreddit}/hot`, fullname pagination, and listing pages up to 100;
+- Reddit's [Data API Terms](https://redditinc.com/policies/data-api-terms), last
+  revised July 20, 2026, which require documented access, prohibit limit
+  circumvention and reverse engineering, restrict retention to the approved
+  use case, and require deletion when access terminates; and
+- Reddit's archived official [OAuth2 documentation](https://github.com/reddit-archive/reddit/wiki/oauth2),
+  which describes authorization-code refresh tokens, Basic authentication for
+  token exchange, bearer requests to `oauth.reddit.com`, and one-hour tokens.
 
-The generated endpoint index includes private-message and modmail APIs but no
-consumer-chat read endpoint. Treating chat as unavailable is an inference from
-the documented public surface, reinforced by the terms' documented-access and
-anti-reverse-engineering rules. A future official chat interface can add a
-third source operation without changing `Item` or persistence.
+The generated endpoint reference documents private messages and modmail but no
+consumer-chat read endpoint. Treating chat as unsupported is an inference from
+that documented surface and the access restrictions. Because Reddit labels
+legacy resources as potentially outdated, authenticated state-preservation and
+response-shape checks remain release gates.
 
 ## Approaches considered
 
 ### Direct OAuth Data API client — selected
 
-Use the existing injectable `HttpClient`, add form POST support for token
-refresh, and put Reddit-specific OAuth/listing mechanics in a small
-`RedditClient`. This keeps credentials and protocol behavior out of persistence,
-uses Reddit's supported endpoints, and matches the existing RSS/GitHub direct
-HTTP adapter pattern.
+Extend the injectable HTTP transport with bounded form POST support, and put
+Reddit OAuth/listing behavior in `RedditClient`. This matches the RSS/GitHub
+adapter model and keeps protocol concerns out of persistence.
 
 ### External command-backed adapter
 
-Rejected. Reddit does not provide a maintained official CLI that eliminates the
-OAuth and API-contract work in the way `gws` does for Gmail. A third-party CLI
-would add executable/version/authentication failure modes while still coupling
-Cybort to the same Reddit API and terms.
+Rejected. There is no maintained official Reddit CLI that removes the OAuth or
+API-contract work. A third-party command adds dependency and authentication
+failure modes without improving policy alignment.
 
-### Browser scraping or undocumented chat endpoints
+### Scraping or undocumented chat interfaces
 
-Rejected. Browser state and private Sendbird/chat calls are brittle, expose
-first-party credentials, are not part of the documented Data API contract, and
-would conflict with Reddit's access restrictions. The V1 result must be honest
-about the unsupported chat capability rather than simulate support.
+Rejected. Browser state and private chat APIs are undocumented, brittle, and
+incompatible with the terms' documented-access boundary.
 
 ## Configuration and authentication
-
-A Reddit instance uses existing common keys plus Reddit-specific OAuth and
-scope options:
 
 ```toml
 [instances.personal_reddit]
@@ -135,125 +128,169 @@ exclude_subreddits = ["memes"]
 ```
 
 `client_id`, `client_secret`, `refresh_token`, and `user_agent` are required
-nonblank strings. They remain in configuration only: adapter-instance
-registration, items, fetch history, errors, and result metadata must never
-contain them. Newlines and control characters are rejected. The User-Agent must
-match Reddit's documented shape
-`<platform>:<app-id>:<version> (by /u/<username>)`; V1 validates that shape so
-the generic Ruby/Net::HTTP agent is never sent accidentally.
+strings. Validation first requires `value.strip` to be nonempty, then rejects
+all C0 controls (`U+0000`–`U+001F`) and DEL (`U+007F`) anywhere. Maximum encoded
+UTF-8 lengths are 256 bytes for `client_id`, 1,024 for `client_secret`, 4,096
+for `refresh_token`, and 256 for `user_agent`. These fields remain configuration
+only and must never appear in SQLite, URLs, errors, metadata, or logs.
 
-The user registers an approved Reddit OAuth application and provisions a
-permanent authorization-code grant outside Cybort with these three read-only
-scopes and no unnecessary additional scopes:
+After those checks, User-Agent must match:
+
+```text
+\A[^:\s]+:[^:\s]+:[^\s()]+ \(by /u/[A-Za-z0-9_-]+\)\z
+```
+
+The user provisions an approved confidential OAuth app and permanent
+authorization-code refresh token outside Cybort with at least the required
+read capabilities:
 
 - `read` for thread listings;
 - `mysubreddits` for subscribed-subreddit discovery; and
-- `privatemessages` for unread private messages.
+- `privatemessages` for unread legacy private messages.
 
-V1 does not implement browser authorization, callback handling, or storage of a
-new refresh token. On every remote fetch, `RedditClient` exchanges the configured
-refresh token at `https://www.reddit.com/api/v1/access_token`, using HTTP Basic
-authentication with the client ID and secret and a form body containing only
-`grant_type=refresh_token` and `refresh_token`. It rejects token responses that
-do not contain a nonblank bearer token and at least all three required scopes
-(a returned `*` also satisfies the compatibility check). Data requests go only
-to `https://oauth.reddit.com` with
-that bearer token and the configured User-Agent.
+Every remote fetch exchanges the refresh token at
+`https://www.reddit.com/api/v1/access_token` with HTTP Basic authentication and
+the form fields `grant_type=refresh_token` and `refresh_token`. The response
+must contain a nonblank `access_token`, `token_type` equal to `bearer`
+case-insensitively, a finite positive numeric `expires_in`, and all required
+scopes (`*` also satisfies the check). Data calls go only to
+`https://oauth.reddit.com` with the bearer token and validated User-Agent.
 
-This assumes a confidential OAuth client for which a local single-user process
-can keep the client secret. Supporting installed clients with an empty secret,
-a system keychain, or a `cybort reddit authorize` command requires a separate
-credential-lifecycle design.
+`include_subreddits` and `exclude_subreddits` default to empty arrays. Names
+omit `r/`, match `\A[A-Za-z0-9_]{2,21}\z`, normalize to lowercase, and dedupe
+case-insensitively. Exclusion wins. Each list is capped at 50 names, bounding
+the documented one-request-per-explicit-subreddit behavior. The common
+`num_items_to_fetch` is an integer from 1 through 100 and limits the final
+combined selection, not candidate scanning or retention.
 
-`include_subreddits` and `exclude_subreddits` are optional arrays of subreddit
-names without an `r/` prefix. Omission means an empty array. Each name must match
-`\A[A-Za-z0-9_]{2,21}\z`; names are deduplicated case-insensitively and
-normalized to lowercase. An exclusion wins when a name appears in both lists.
-Arrays, elements, and their size are validated before threads start. Each list
-is limited to 100 names to bound URL and request amplification.
+## Bounded subreddit discovery
 
-For this adapter, `num_items_to_fetch` must be an integer from 1 through 100.
-It is the maximum number of normalized Reddit items returned by one remote
-fetch across messages and threads; it remains separate from cache TTL and item
-retention.
-
-## Subreddit scope and candidate discovery
-
-The effective subreddit scope is deterministic:
+Define:
 
 ```text
-effective = (all subscribed names UNION include_subreddits)
-            MINUS exclude_subreddits
+subscriptions = complete paginated subscribed-name set
+joined_effective = subscriptions MINUS exclusions
+explicit_to_fetch = (inclusions MINUS exclusions) MINUS subscriptions
+effective = joined_effective UNION explicit_to_fetch
 ```
 
-`RedditClient` requests
-`/subreddits/mine/subscriber?limit=100&raw_json=1`, follows the listing's
-`data.after` fullname until it is `null`, and reads each child's
-`data.display_name`. It must complete discovery before fetching threads; an
-invalid page or exhausted request budget fails the whole adapter result instead
-of silently treating a partial subscription list as authoritative.
+The client completely paginates
+`/subreddits/mine/subscriber?limit=100&raw_json=1`. Each `after` is either `nil`
+or a valid `t5_<lowercase-base36>` fullname, and no non-nil cursor may repeat.
+Each child must be `kind: "t5"`, have a lowercase-base36 `id`, and have exact
+`name == "t5_#{id}"`; `display_name` must independently pass the subreddit-name
+validator. Invalid or partial discovery fails the result.
 
-Thread candidates come from bounded hot listings:
+Candidate calls use only documented endpoints:
 
-1. one authenticated `/hot?limit=100&raw_json=1` page supplies the personalized
-   subscribed-home candidates;
-2. explicit additions are sorted, divided into batches of at most 25 names, and
-   fetched through `/r/name+name/hot?limit=100&raw_json=1`; and
-3. when `news` is effective, one `/r/news/hot?limit=100&raw_json=1` page ensures
-   the megathread detector sees `r/news` even if the personalized hot page does
-   not surface it.
+1. If `joined_effective` is nonempty, call authenticated
+   `/hot?limit=100&raw_json=1` once and retain only candidates in that set. This
+   is a bounded personalized-home sample, not proof that every joined
+   subreddit was scanned.
+2. For every sorted name in `explicit_to_fetch`, call its single-subreddit
+   `/r/<name>/hot?limit=100&raw_json=1` once.
+3. Apply the `news` rule only after exclusions. If `news` is excluded, make no
+   `news` request. If it is in `explicit_to_fetch`, that ordinary explicit call
+   is sufficient. If it is in `joined_effective`, make one dedicated
+   `/r/news/hot?limit=100&raw_json=1` request so the megathread detector is not
+   dependent on personalized-home placement.
 
-Every returned candidate is filtered against the effective set. This prevents
-home-feed recommendations outside joined communities from leaking into the
-result and applies exclusions to every candidate source. Candidates are
-deduplicated by Reddit link fullname (`t3_...`) before ranking. The adapter does
-not paginate hot listings in V1: 100 candidates per listing is the deliberate
-scan bound, while `num_items_to_fetch` is the output bound. Candidate coverage
-is therefore a current hot sample, not an exhaustive search of every post in
-every joined subreddit.
+V1 never constructs `/r/name+name/hot` or any other multi-subreddit path. Hot
+listings are not paginated. Candidates are filtered against `effective` and
+deduplicated by validated `t3` fullname before ranking.
 
-The `+` multi-subreddit path and representative response shapes must be included
-in the authenticated release smoke test because the generated endpoint reference
-describes the `/r/subreddit/hot` listing generically rather than specifying a
-batch-size contract.
+Remote-success metadata exposes the limitation without leaking membership:
 
-## Unread direct messages and chat representation
+```text
+coverage_mode: "personalized_home_plus_explicit_single_subreddit"
+subscription_page_count: integer
+home_hot_page_count: 0 or 1
+explicit_subreddit_request_count: integer
+news_dedicated_request: boolean
+thread_candidate_count: integer
+ratelimit_used: optional finite nonnegative number
+ratelimit_remaining: optional finite nonnegative number
+ratelimit_reset_seconds: optional finite nonnegative number
+```
 
-The adapter requests one
-`/message/unread?limit=<num_items_to_fetch>&mark=false&max_replies=0&raw_json=1`
-page. It retains only children whose kind/fullname is `t4`; this deliberately
-excludes unread comment replies and username mentions returned by the broader
-inbox listing. `mark=false` and the absence of any write call guarantee that
-collection does not change Reddit read state.
+## Unread legacy private messages and chat
 
-Each direct-message item is normalized as follows:
+The client paginates:
+
+```text
+/message/unread?limit=100&mark=false&max_replies=0&raw_json=1[&after=...]
+```
+
+Unread cursors are `nil` or a valid `t1_...`/`t4_...` lowercase-base36
+fullname and must not repeat. Pagination continues until `after` is nil or the
+adapter has found enough *qualifying* messages to satisfy its possible message
+quota. Filtering happens before applying that quota; unrelated inbox objects
+cannot crowd out legacy messages.
+
+A qualifying V1 message is conservatively defined as:
+
+- child `kind` is `t4`;
+- `data.id` is lowercase base36 and `data.name == "t4_#{data.id}"`;
+- `data.new` is exactly `true`; and
+- `data.was_comment` is absent or exactly `false`.
+
+Non-`t4` children are ignored. A `t4` child with malformed required identity or
+timestamp fields fails the page; a valid `t4` that is not new or is a comment
+reply is filtered out. Comment replies, mentions, announcements, and modmail
+therefore cannot become V1 items. The
+documented `mark=false` parameter and absence of write endpoints mean Cybort
+does not intend to change read state; the design does not claim that the
+parameter alone guarantees server behavior. Before release, an authenticated
+smoke test must compare the qualifying unread IDs/count immediately before and
+after collection and confirm no change.
+
+Message normalization is:
 
 | `Item` field | Value |
 |---|---|
-| `canonical_id` | the message fullname, `t4_<id>` |
-| `urls` | `https://www.reddit.com/message/messages/<id>` |
-| `fetched_at` | the adapter's single fetch timestamp |
-| `remote_created_at` | UTC time from `created_utc` |
-| `title` | the nonblank `subject`, or `Unread Reddit message` |
+| `canonical_id` | validated `t4_<id>` fullname |
+| `urls` | constructed `https://www.reddit.com/message/messages/<id>` |
+| `fetched_at` | the adapter's single fetch completion timestamp |
+| `remote_created_at` | UTC value from finite `created_utc` |
+| `title` | nonblank `subject`, otherwise `Unread Reddit message` |
 | `body` | `nil` |
 | `priority` | `100` |
 | `action_item` | `true` |
-| `info` | `{ kind: "direct_message", unread: true }` |
+| `info` | `kind: "legacy_private_message"`, `unread: true`, final `selection_rank` |
 
-The author name, body, replies, and raw payload are intentionally not retained.
-An invalid fullname or timestamp fails the adapter result rather than creating
-an unstable identity.
+No author, body, replies, or raw object are retained. A successful *remote*
+result includes `chat_collection: "unsupported_by_documented_data_api"`.
+Cache hits return persisted items through the existing base-adapter cache path
+and do not synthesize remote capability metadata; their metadata remains empty.
 
-Fetch metadata includes
-`chat_collection: "unsupported_by_documented_data_api"`. No synthetic chat
-item is created because that would look like actual inbox data. If Reddit later
-documents a consumer-chat read API, chat conversations should use the official
-conversation/message ID as the canonical ID, a `kind` distinct from
-`direct_message`, and the same body-free minimization policy.
+## Submission identity and canonical URLs
 
-## Thread activity, megathreads, and selection
+Every retained candidate must have `kind: "t3"`, a lowercase-base36 `id`, and
+an exact `name == "t3_#{id}"`. A syntactically valid home candidate outside
+`joined_effective` is an expected recommendation and is filtered. A candidate
+from `/r/<name>/hot` whose normalized subreddit does not equal `<name>` fails
+the result as an identity mismatch.
 
-For every valid `t3` candidate, define:
+`permalink` is accepted only as a relative path with no scheme, authority,
+query, fragment, backslash, C0/DEL control, encoded control, encoded slash,
+backslash, question mark, or hash, malformed percent escape, or dot/dot-dot
+traversal segment after percent decoding. Its decoded leading segments must be
+exactly:
+
+```text
+r / <normalized-subreddit> / comments / <id>
+```
+
+The adapter re-encodes the safe decoded path segments and constructs the
+canonical URL as `https://www.reddit.com/<segments>`. It never trusts an
+absolute source URL or stores a submission's outbound link. Inconsistent
+duplicates sharing a fullname fail instead of silently choosing one.
+Name/ID/subreddit/permalink mismatches fail the complete result, preventing
+unstable identity or host/path confusion.
+
+## Activity metric, megathreads, and selection
+
+For each valid submission:
 
 ```text
 vote_score = max(Integer(score), 0)
@@ -263,15 +300,13 @@ engagement_points = vote_score + (2 * comment_count)
 activity_score_milli = floor(engagement_points * 60_000 / age_minutes)
 ```
 
-`activity_score_milli` is an integer estimate of weighted engagement points per
-hour. Comments receive weight 2 because this feature is intended to surface
-active discussions rather than only highly voted links. The one-hour age floor
-prevents unstable division for brand-new or future-skewed timestamps. Negative
-or malformed counts are invalid source data; V1 clamps negative integer counts
-to zero but fails on nonnumeric values. The metric uses cumulative public fields
-and post age, so it is deterministic but not a true recent-comment velocity.
+The integer score estimates weighted engagement points per hour. Comment
+weight 2 intentionally favors discussion. The one-hour age floor controls
+brand-new/future-skewed records. Negative integers clamp to zero; nonnumeric or
+nonfinite values fail. This is deterministic cumulative engagement divided by
+age, not recent-comment velocity.
 
-Normal thread candidates sort by this tuple:
+Candidates sort by:
 
 ```text
 activity_score_milli DESC,
@@ -281,247 +316,281 @@ created_utc DESC,
 fullname ASC
 ```
 
-An `r/news` candidate is a megathread when its title matches
-`/\bmega\s*thread\b|\blive\s+thread\b/i`. The API's `stickied` value is stored
-as metadata but does not by itself make an arbitrary sticky post a megathread.
-Megathreads use the same activity calculation and stable ordering as other
-threads, but selection reserves them ahead of normal threads so a long-running
-megathread is not lost solely because its lifetime-normalized score has fallen.
+An `r/news` submission is a megathread when its title matches
+`/\bmega\s*thread\b|\blive\s+thread\b/i`. `stickied` is metadata only.
 
-The final output is selected in this order and truncated once:
+Let `M` be qualifying messages in listing order, `G` ranked news megathreads,
+and `T` all other ranked threads. Selection is deterministic:
 
-1. unread direct messages, in Reddit listing order;
-2. detected `r/news` megathreads, in activity order; and
-3. all remaining thread candidates, in activity order.
+- For limit 1, choose the first available category in priority order `M`, `G`,
+  then `T`.
+- For limit at least 2, reserve one `M` if one exists. Then reserve one `G` if
+  one exists and a slot remains. If `M` exists, no `G` was reserved, and any
+  ordinary thread exists, reserve one `T`; this guarantees a message and a
+  thread whenever both categories exist. If no message exists, a `G` was
+  reserved, and `T` exists, reserve one `T` when capacity permits.
+- Fill remaining slots from `M`, then `G`, then `T`, preserving each category's
+  order. Emit reserved/fill choices in that same category order with duplicate
+  identities removed.
 
-If unread messages consume `num_items_to_fetch`, no threads can be returned in
-that fetch. This follows the existing meaning of the common source limit and
-gives unread personal communication precedence. The adapter still records
-candidate/message counts in safe fetch metadata so the truncation is visible.
+Thus personal unread communication has deterministic priority at limit 1;
+limits of at least 2 preserve thread visibility; and an available `r/news`
+megathread receives the bounded thread reservation. Every selected item gets a
+one-based `info.selection_rank` describing this final adapter selection.
 
-Thread priority encodes its rank among all ranked thread candidates. For `N`
-candidates and zero-based `rank_index`, use:
+For `N` total ranked thread candidates and zero-based activity rank:
 
 ```text
 priority = 99 - floor(rank_index * 99 / max(N - 1, 1))
 ```
 
-Thus thread priorities range from 99 to 0, while unread messages remain 100.
-Selection order, `priority`, and the exact integer activity score are all
-deterministic. Cybort's current CLI still reads durable items in recency order;
-consumers use `priority` or `info.activity_score_milli` when they need activity
-order. Changing global CLI ordering is outside this adapter slice.
+Message priority is 100; thread priority is 99 through 0. Priority expresses
+Reddit activity rank only. The current CLI queries durable items by recency,
+not adapter priority, and this slice does not change global CLI ordering.
 
-Each selected thread becomes:
+Selected threads have `body: nil`, `action_item: false`, the canonical URL,
+title, timestamps, rank-derived priority, and only this `info`: `kind`,
+`subreddit`, `vote_score`, `comment_count`, `activity_score_milli`,
+`megathread`, `stickied`, and `selection_rank`.
 
-| `Item` field | Value |
-|---|---|
-| `canonical_id` | Reddit link fullname, `t3_<id>` |
-| `urls` | one absolute `https://www.reddit.com<permalink>` URL |
-| `fetched_at` | the adapter's single fetch timestamp |
-| `remote_created_at` | UTC time from `created_utc` |
-| `title` | submission `title` |
-| `body` | `nil` |
-| `priority` | rank-derived integer from 99 through 0 |
-| `action_item` | `false` |
-| `info` | `kind`, `subreddit`, `vote_score`, `comment_count`, `activity_score_milli`, `megathread`, and `stickied` |
+## Generic current-snapshot contract
 
-The adapter never copies `selftext`, `selftext_html`, comment data, author data,
-media, thumbnails, or outbound submission URL into an item or fetch metadata.
-The canonical URL is always the Reddit permalink, not the user-supplied link.
+`FetchResult` gains optional `replace_existing_items`, default `false`. The
+success factory and direct construction validate it as exactly `true` or
+`false`; the failure factory exposes no replacement option and always sets it
+to `false`. Direct construction rejects an error-bearing replacement result.
+Persistence independently validates the Boolean and rejects replacement unless
+the result is successful and `source_fetched` is true.
+
+For a valid replacement result, `Persistence#write_fetch_result` performs in
+one existing per-result transaction:
+
+1. validate the result, all items, and retention policy;
+2. delete all existing items for that `adapter_instance_id` when
+   `replace_existing_items` is true;
+3. upsert every returned item;
+4. apply the existing optional successful-fetch retention cutoff;
+5. update synchronization state; and
+6. append fetch history.
+
+Any failure rolls back the delete and every later write. An empty complete
+snapshot intentionally clears the instance's items. The behavior is generic
+SQL owned by persistence; adapters do not issue deletes or compare database
+rows.
+
+Reddit sets `replace_existing_items: true` only after token exchange,
+subscription discovery, all required message/hot calls, validation, ranking,
+and normalization complete successfully. Fresh cache results keep the default
+false. OAuth, permission, HTTP, rate, timeout, deadline, parsing, request-budget,
+or persistence failures never replace. This preserves last-known-good behavior
+while making each complete Reddit remote result the current bounded selected
+set. It removes messages that are no longer unread and selected threads that
+became inactive, were deleted, or fell out of the bounded sample.
+
+`retention_ttl_minutes` is unchanged. On successful remote writes persistence
+still prunes items at or before the configured local `fetched_at` cutoff using
+its clamped clock. Replacement normally makes that pass redundant for Reddit,
+but retaining the operation preserves one source-neutral transaction contract.
+Cache hits and failures neither replace nor prune.
+
+This decision is recorded in
+[ADR 0004](../../adr/0004-current-snapshot-item-replacement.md).
 
 ## Components and ownership
 
-### `HttpClient` and `HttpError`
+### `HttpClient` and transport errors
 
-The generic client gains form-encoded POST support. Both GET and POST retain
-the current 2xx-only contract. A new `HttpError` carries only allowlisted safe
-metadata: status, parsed `Retry-After`, and parsed Reddit rate-limit fields. It
-never includes response bodies, request headers, form bodies, authorization
-values, or full URLs.
+The generic client gains form POST plus explicit
+`open_timeout_seconds: 10`, `read_timeout_seconds: 30`,
+`write_timeout_seconds: 30`, and
+`max_response_body_bytes: 1_048_576` defaults. The transport reads response
+bodies incrementally and raises an allowlisted `HttpTransportError` with
+category `timeout` or `response_too_large`; it never includes a body, secret,
+header value, or full URL.
+
+Each request may receive a smaller `timeout_seconds` from the Reddit client's
+remaining deadline. `HttpError` carries only status and centrally parsed safe
+rate metadata. `RateLimitHeaders` is the only parser for case-insensitive
+`X-Ratelimit-Used`, `X-Ratelimit-Remaining`, `X-Ratelimit-Reset`, and
+`Retry-After` values. Rate fields accept only finite nonnegative numbers;
+`Retry-After` accepts a nonnegative integer delta-seconds value in V1. Both
+successful response handling and errors use this parser, resolving the previous
+ambiguity about where rate metadata lives.
 
 ### `RedditClient`
 
-This source client owns token refresh, bearer/User-Agent headers, query
-encoding, JSON object validation, listing pagination, request-budget accounting,
-and rate-header collection. It does not know about `Item`, activity ranking,
-retention, SQLite, or the orchestrator.
+Owns token refresh, safe headers/query encoding, JSON/listing validation,
+cursor validation, request counting, centralized rate observation, and a
+120-second monotonic per-fetch deadline. It checks the deadline before and
+after requests, passes remaining seconds down as the request timeout cap, and
+does not return partial data after expiry.
 
-### `RedditActivity`
+### `RedditRateLimitCoordinator`
 
-A small pure module owns the candidate value object, megathread predicate,
-integer activity score, stable sort key, and rank-to-priority mapping. It has no
-network or clock side effects, which makes the metric independently testable.
+A process-wide coordinator owns rate state and admission for Reddit requests.
+Its key is the in-memory SHA-256 digest of `client_id`; neither plaintext IDs
+nor digests are persisted or exposed. A mutex protects remaining/reset state
+and monotonic waiting. It permits at most one in-flight request for a key, so
+concurrent same-client instances cannot apply rate headers out of response
+order. Before a request, a client acquires a lease and reserves capacity
+according to known headers or waits only within the fetch deadline. Completion
+observes parsed rate headers (and, on 429, `Retry-After`) before releasing the
+lease. An `ensure` path releases a lease after transport failures without
+inventing new capacity.
 
-### `Adapters::Reddit`
+The coordinator covers multiple configured instances in one Cybort process
+that share a client identity. It cannot coordinate other processes, machines,
+or restarts and does not make the 90-request bound a global compliance
+guarantee.
 
-The adapter validates Reddit-specific options, asks `RedditClient` for source
-listings, computes the effective scope, filters and deduplicates candidates,
-normalizes selected records, and returns the existing `FetchResult` shape via
-`Adapters::Base`. It owns no SQL and makes no account mutations.
+### `RedditActivity` and `Adapters::Reddit`
 
-### Existing orchestration and persistence
+The pure activity module owns candidate values, the exact score and sort key,
+megathread classification, priority, and bounded category selection. The
+adapter validates options, drives client operations, validates identities,
+normalizes `Item`s, and returns the existing result type with snapshot intent.
+Neither owns persistence.
 
-`AdapterRegistry.default` registers `reddit`; no executable dependency is
-declared. The orchestrator continues to decide cached versus remote once,
-fetch adapter instances concurrently, snapshot retention, and persist results
-sequentially. `Persistence#write_fetch_result` receives ordinary items and the
-existing optional `retention_ttl_minutes`; no schema or transaction change is
-needed.
+`Adapters::Base` carries an optional source payload
+`replace_existing_items` into the remote-success `FetchResult`, defaulting to
+false. Its cache and rescued-failure paths always remain false. This is a
+generic contract bridge rather than a Reddit branch.
 
-## Request budget, rate limits, and errors
+### Persistence and orchestration
 
-One remote adapter fetch has a hard budget of 90 Reddit HTTP requests, including
-the token exchange. Subscription pages and explicit-include batches consume
-that budget. `RedditClient` checks the budget before each request. Exceeding it
-raises a source error and discards the partial remote result.
+Persistence owns generic replacement, upsert, retention, synchronization, and
+history in the established transaction. The orchestrator remains unchanged: it
+freezes cache decisions/retention snapshots, runs adapter threads, then writes
+sequentially. A mismatched result ID remains a failure under the configured ID.
 
-After every successful response, it reads rate-limit headers
-case-insensitively and retains the latest valid numeric values in fetch
-metadata as `ratelimit_used`, `ratelimit_remaining`, and
-`ratelimit_reset_seconds`. If Reddit reports remaining capacity below 1 before
-the fetch is complete, the next request fails locally rather than sleeping an
-adapter thread or deliberately exceeding the limit.
+## Request complexity, rate limits, deadline, and errors
 
-HTTP 401/403 responses become authentication/authorization source failures.
-HTTP 429 includes only parsed status and `retry_after_seconds` in safe failure
-metadata. Other non-2xx responses, malformed JSON, unexpected listing shapes,
-missing required source fields, and incomplete subscription discovery fail the
-whole Reddit result. V1 performs no automatic retries: orchestration records a
-per-instance failure and keeps last-known-good data, while other configured
-sources continue.
+A remote Reddit fetch has a 90-request *complexity bound*, including token
+exchange, subscription/message pages, and hot calls. The client rejects the
+next operation before exceeding it. This protects one fetch from runaway
+pagination; it is not a substitute for Reddit's OAuth-client rate policy.
 
-Safe successful metadata contains only counts, request count, chat capability,
-and rate numbers. It contains no subreddit list, message subject, post title,
-username, token, client credential, HTTP body, or authorization header.
+The process-wide coordinator handles known shared-client capacity as described
+above. There are no blind automatic HTTP retries. A coordinator wait may occur
+only while the fetch's 120-second monotonic deadline remains; otherwise the
+complete result fails safely.
 
-## Cache, failure, and retention behavior
+`RedditApiError` exposes only `operation`, `category`, and allowlisted rate
+metadata. Operations are `token`, `subscriptions`, `unread_messages`,
+`home_hot`, `subreddit_hot`, and `news_hot`. Categories include:
 
-The Reddit adapter uses `Adapters::Base` unchanged:
+- `authentication` for a token or data response with HTTP 401;
+- `authorization` for a token or data response with HTTP 403;
+- `rate_limited` for HTTP 429 or coordinator admission expiry;
+- `http` for other non-2xx responses;
+- `invalid_json`, `invalid_shape`, or `invalid_identity`;
+- `request_budget` or `deadline`; and
+- `timeout` or `response_too_large` from the HTTP transport.
 
-- a fresh cache returns persisted Reddit items without OAuth or network access;
-- `--force-fetch` always attempts token refresh and remote reads;
-- a remote success returns selected items and is persisted in one existing
-  per-instance transaction;
-- a remote, OAuth, policy, rate-limit, parsing, or persistence failure records a
-  failed fetch and preserves the prior Reddit items and synchronization state;
-  and
-- one Reddit failure does not discard successful results from other sources.
+Tests distinguish token from data 401/403 failures through `operation`. Errors
+never contain access/refresh tokens, client values, response bodies, subjects,
+titles, usernames, full URLs, or membership. Remote-success metadata contains
+only bounded counts/capability/rate values. A failed result preserves old data.
 
-`num_items_to_fetch` limits only the current returned selection. Items selected
-by earlier successful runs remain stored under the existing append/upsert
-model. The existing optional `retention_ttl_minutes` is the only local cleanup
-mechanism: after a successful remote fetch, persistence refreshes returned
-items' local `fetched_at` and prunes unseen items at or before the configured
-last-seen cutoff. Cache hits and failures do not prune. Omission still means
-retain forever.
+## Cache, lifecycle, compliance, and privacy
 
-Reddit requires deletion of removed content and recommends routinely deleting
-stored user content/data within 48 hours. A value no greater than 2880 minutes
-is therefore strongly recommended for Reddit instances, but the current
-success-triggered retention model cannot guarantee a wall-clock deletion bound
-during outages and does not prove remote deletion for an item outside the
-bounded candidate sample. V1 minimizes this exposure by storing no bodies,
-authors, or raw payloads. Operators remain responsible for the current Reddit
-terms, deleting the local database when access terminates, and choosing a
-retention setting appropriate to their approved use. A compliance API or
-authoritative deletion reconciliation feed would require a separate design.
+- A fresh cache returns persisted items with `source_fetched: false`,
+  `replace_existing_items: false`, and empty metadata, with no OAuth/network.
+- A complete remote Reddit success uses replacement and the existing optional
+  retention pass in one transaction.
+- Any incomplete/failed fetch preserves items and sync state; other sources may
+  still succeed.
+- Credentials stay in local configuration. Secrets use HTTPS bodies/headers,
+  never URLs, SQLite, or metadata.
+- V1 stores no bodies, authors, comments, media, raw JSON, or outbound links.
 
-## Privacy and security
-
-- Credentials live in the user's local configuration, consistent with the
-  existing GitHub token convention, and are never persisted to SQLite.
-- Token exchange uses a form body over HTTPS; secrets never appear in URLs.
-- Errors and metadata are allowlisted and body-free.
-- Only the minimum read scopes are requested; there are no Reddit write calls.
-- Direct-message and submission bodies, authors, comments, and raw source JSON
-  are not stored.
-- Canonical URLs are constructed from source IDs/permalinks under
-  `https://www.reddit.com`; arbitrary source URLs are not trusted.
-- The local database still contains potentially sensitive subjects and titles;
-  filesystem access controls and backups remain the user's responsibility.
+Reddit recommends routinely deleting stored user content/data within 48 hours
+and requires deletion when access ends. Operators should set
+`retention_ttl_minutes <= 2880`, but this V1 does **not** claim full deletion
+compliance during an outage: both snapshot replacement and retention cleanup
+are intentionally triggered only by a complete successful remote fetch.
+Likewise, configuration removal and explicit user-request/account-termination
+deletion have no automatic purge workflow. Those lifecycle mechanisms would
+change the approved success-triggered architecture and are recorded as release
+and operator compliance caveats in
+[quality follow-ups](../../quality-followups.md). Operators remain responsible
+for deleting the local database or affected data when their authorization/use
+ends.
 
 ## Testing strategy
 
-All tests use local JSON fixtures and injected fake transports/clients. They
-must not contact Reddit or perform an OAuth flow.
+All automated tests use injected clients/transports and local fixtures; none
+contacts Reddit.
 
-### HTTP and Reddit client tests
+### HTTP, rate, and client tests
 
-- form POST encoding, content type, Basic header delegation, and 2xx response;
-- safe non-2xx metadata without bodies, credentials, or authorization values;
-- token response validation and required-scope enforcement;
-- bearer/User-Agent headers and `raw_json=1` query encoding;
-- fullname pagination through `data.after`, including a malformed later page;
-- request-budget exhaustion and rate-header parsing; and
-- 401, 403, and 429 categorization with last-known-good-safe metadata.
+- form POST encoding plus unit-named timeout/body-size defaults;
+- whitespace-only, NUL, DEL, and overlength credential/User-Agent rejection;
+- streamed oversized response and open/read/write timeout categorization;
+- token `token_type`, positive `expires_in`, token/scope, and shape validation;
+- separate token and data 401/403 operation/category errors;
+- one centralized rate-header parser used for success, non-2xx, and 429;
+- two instances sharing a client-ID digest observe one coordinated allowance;
+  different identities remain independent and no key is persisted/exposed;
+- 90-request bound versus rate admission, plus monotonic deadline exhaustion;
+- subscription/unread pagination, expected cursor types, and repeated-cursor
+  rejection; and
+- qualifying-message filtering before the N quota.
 
-### Activity tests
+### Activity and identity tests
 
-- exact integer scores at the one-hour floor and at older ages;
-- comment weighting, negative-count clamping, and nonnumeric rejection;
-- deterministic tie breakers;
-- `r/news` megathread and live-thread title recognition without classifying an
-  unrelated sticky; and
-- priority endpoints for one and multiple ranked candidates.
+- exact activity arithmetic, floors, negative clamps, nonnumeric rejection,
+  stable ties, megathread matching, and priority endpoints;
+- limit 1 category priority; limit >= 2 message/thread guarantee; megathread
+  reservation; deterministic fill and selection ranks;
+- exact t3/t4/t5 name-ID agreement and subreddit agreement; and
+- permalink rejection for mismatches, absolute/network paths, query, fragment,
+  controls, encoded separators/controls, backslashes, and traversal, with URL
+  construction from validated components.
 
-### Adapter tests
+### Adapter, persistence, and system tests
 
-- required OAuth/User-Agent configuration and subreddit-list validation;
-- complete subscribed-subreddit pagination;
-- union/add/exclude precedence and case-insensitive deduplication;
-- filtering home-feed recommendations outside effective scope;
-- batching explicit additions and the dedicated `r/news` hot request;
-- `t4`-only unread direct-message normalization without bodies/authors;
-- thread normalization with canonical Reddit URL, vote/comment totals, metric,
-  and `body: nil`;
-- message, megathread, then activity selection under one output limit;
-- duplicate candidates from multiple listings appearing once;
-- source failure on malformed IDs, timestamps, listing shapes, or token scopes;
-  and
-- safe successful/failure metadata.
+- complete subscribed discovery and bounded personalized-home coverage;
+- outbound explicit calls equal `(includes - excludes) - subscriptions`;
+- the same name in include/exclude produces no request;
+- post-exclusion `news` behavior and no `+` route under any config;
+- body/author/raw-payload minimization and safe metadata;
+- only remote success carries unsupported-chat metadata; cache metadata empty;
+- default-false `FetchResult` compatibility and strict boolean validation;
+- successful replacement delete-before-upsert, empty clearing, rollback on
+  upsert/state/history failure, and rejection on cache/failure results;
+- Reddit remote replacement, cache/failure preservation, and unchanged
+  retention semantics;
+- CLI presentation remains recency ordered even though selection rank and
+  priority retain Reddit's deterministic order; and
+- Reddit failure isolation from a successful source.
 
-### Integration and system tests
-
-- default-registry Reddit registration and offline fake HTTP responses;
-- a forced CLI fetch persists and presents direct messages and ranked threads;
-- a fresh-cache CLI run makes no OAuth or Reddit request;
-- a later OAuth/429 failure preserves earlier Reddit items;
-- configured retention prunes an unseen Reddit item only after a successful
-  remote fetch; and
-- Reddit failure remains isolated from a successful RSS instance.
-
-An authenticated manual release smoke test must separately verify an approved
-application, the three scopes, token refresh, two subscription pages when
-available, `/message/unread?mark=false`, authenticated `/hot`, a `+`-joined
-explicit listing, `r/news` hot data, relevant response fields, and rate-limit
-headers. Record only versions/statuses/shapes; never record tokens, messages,
-titles, usernames, or subreddit membership.
+The authenticated release smoke test must verify approved scopes, token shape,
+subscription/message cursor shapes, the documented `/hot` and
+`/r/<name>/hot` fields, rate headers, and the unread-ID/count state check around
+`mark=false`. It must also confirm requests never use a `+` multi-subreddit
+route. Record only status/shape evidence—never tokens, IDs, messages, titles,
+usernames, or memberships.
 
 ## Documentation impact
 
-Implementation updates `README.md` with setup, the chat limitation, scope
-semantics, ranking formula, data minimization, recommended retention, and an
-example. `AGENTS.md` gains the implemented Reddit invariant and authenticated
-smoke-test gate. If the smoke test exposes a contract mismatch, record it in
-`docs/LEARNINGS.md`; do not weaken validation from speculation.
+Implementation updates `README.md` with OAuth setup, bounded coverage,
+selection/ranking, chat limitation, minimization, retention recommendation, and
+operator caveats. `AGENTS.md` gains the implemented Reddit and current-snapshot
+invariants. Contract discoveries go to `docs/LEARNINGS.md` only after evidence.
 
-No ADR is required for this feature. It follows
-[ADR 0001](../../adr/0001-persistence-storage-and-write-ownership.md) and
-[ADR 0003](../../adr/0003-configurable-item-retention.md) without changing
-their decisions, and it does not adopt the command-backed connector decision in
-proposed ADR 0002.
+This design follows [ADR 0001](../../adr/0001-persistence-storage-and-write-ownership.md)
+and [ADR 0003](../../adr/0003-configurable-item-retention.md). Generic snapshot
+replacement is the accepted new decision in
+[ADR 0004](../../adr/0004-current-snapshot-item-replacement.md); it does not
+alter retention timing or adopt proposed command-adapter ADR 0002.
 
 ## Future extensions
 
-- an official consumer-chat reader, gated on a documented Reddit endpoint and
-  approved scopes;
-- a local OAuth authorization command and keychain-backed credential store;
-- delta-based activity velocity using previously observed vote/comment totals;
-- configurable category quotas when users need guaranteed thread slots despite
-  a large unread-message backlog;
-- richer deletion/compliance reconciliation if Reddit exposes an authoritative
-  mechanism;
-- LLM summaries that first resolve Reddit policy, rights, and data-minimization
-  requirements; and
+- official consumer-chat reading when a documented endpoint and scope exist;
+- local OAuth authorization and keychain-backed credential storage;
+- cross-process or distributed Reddit rate coordination if deployment expands;
+- hard-deadline lifecycle cleanup and targeted user/instance purge workflows;
+- exhaustive/delta activity collection and richer configurable category quotas;
+- policy-approved LLM summaries; and
 - aggregate statistics for the authenticated user's own submissions.

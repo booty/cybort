@@ -1,9 +1,10 @@
 # Deferred Quality Follow-ups
 
-These items were identified during the adversarial review of configurable item
-retention on 2026-09-05. They are intentionally deferred because they require
-broader performance measurement or a schema/architecture change, not because
-they are needed for retention correctness.
+These items were identified during the 2026-09-05 adversarial reviews of
+configurable retention and the Reddit integration. They are intentionally
+deferred because they require broader measurement, lifecycle UX, or an
+architecture change, not because they are needed for the approved
+success-triggered retention and current-snapshot contracts.
 
 ## Avoid eager item hydration during remote-only runs
 
@@ -30,3 +31,42 @@ whether to add a migration for `(instance_id, fetched_at)`.
 
 Evidence: `lib/cybort/schema.rb`, `lib/cybort/persistence.rb`, and the
 2026-09-05 Sol adversarial review.
+
+## Add hard wall-clock expiry independent of fetch success
+
+Both configured retention and current-snapshot replacement intentionally run
+only after a successful remote fetch. During a prolonged authentication,
+network, rate-limit, or service outage, locally stored Reddit subjects and
+titles can therefore outlive the configured retention interval. The Reddit
+integration must not be represented as guaranteeing a fixed deletion deadline
+or full Data API deletion compliance during outages.
+
+Follow-up: design an explicit background/startup expiry mechanism, including
+clock ownership, transaction behavior, cache presentation, failure reporting,
+and how it supersedes or composes with ADR 0003. Treat this as a Reddit release
+and operator compliance caveat until that design is accepted. Operators who
+require a hard bound must remove the affected local data themselves rather than
+relying solely on successful-fetch cleanup.
+
+Evidence: [ADR 0003](adr/0003-configurable-item-retention.md),
+[ADR 0004](adr/0004-current-snapshot-item-replacement.md), and the 2026-09-05
+independent Reddit design review.
+
+## Add explicit instance-removal and user-request deletion workflows
+
+Removing an instance from `cybort.toml`, revoking Reddit access, terminating an
+approved use, or receiving a user deletion request does not currently target
+and purge that instance's items, synchronization state, and fetch history.
+Snapshot replacement cannot help when no later successful fetch occurs.
+
+Follow-up: design an explicit, narrowly targeted lifecycle command/API with a
+reviewable deletion boundary, backup guidance, recovery expectations, and tests
+for instance-ID isolation. Treat the absence of this workflow as a Reddit
+release/operator compliance caveat. Until it exists, operators remain
+responsible for deleting the SQLite database or otherwise removing the affected
+local data when access or approved use ends.
+
+Evidence: `lib/cybort/persistence.rb`,
+[ADR 0004](adr/0004-current-snapshot-item-replacement.md), Reddit's
+[Data API Terms](https://redditinc.com/policies/data-api-terms), and the
+2026-09-05 independent Reddit design review.

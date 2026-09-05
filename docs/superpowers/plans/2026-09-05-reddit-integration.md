@@ -1,1320 +1,997 @@
 # Reddit Integration Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For Luna:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add an offline-tested direct OAuth Reddit adapter that collects unread direct-message headers and deterministically ranked active threads from the user's effective subreddit scope without storing Reddit bodies.
+**Goal:** Add an offline-tested direct OAuth Reddit adapter that replaces its complete current bounded selection of unread legacy messages and active threads without storing Reddit body content.
 
-**Architecture:** Extend the injectable HTTP boundary with safe form POSTs, put OAuth/listing/rate mechanics in `RedditClient`, and keep ranking in a pure `RedditActivity` module. `Adapters::Reddit` composes those units and returns ordinary `Item`/`FetchResult` values, so orchestration, SQLite writes, caching, partial failure, and optional per-instance retention remain unchanged.
+**Architecture:** Extend `FetchResult` with a generic opt-in current-snapshot flag and keep delete/upsert/retention/state/history inside persistence's existing per-result transaction. Add a bounded HTTP boundary, centralized safe rate parsing, a process-wide client-identity rate coordinator, a Reddit OAuth/listing client, and a pure ranking/selection module. `Adapters::Reddit` composes those parts; the orchestrator and SQLite schema stay unchanged.
 
-**Tech Stack:** Ruby 4.0.1, Net::HTTP, JSON, URI, Base64, SQLite3, TOML, Minitest
+**Tech Stack:** Ruby 4.0.1, Net::HTTP, JSON, URI, Digest, Base64, SQLite3, TOML, Minitest
 
 **Spec:** `docs/superpowers/specs/2026-09-05-reddit-integration-design.md`
 
-## Global Constraints
+**Accepted decision:** `docs/adr/0004-current-snapshot-item-replacement.md`
 
-- Use only Reddit's documented OAuth Data API; do not scrape pages, use first-party credentials, or call undocumented Sendbird/chat endpoints.
-- Consumer Reddit Chat is not collected in V1. Successful fetch metadata must say `chat_collection: "unsupported_by_documented_data_api"`.
-- Required OAuth scopes are `read`, `mysubreddits`, and `privatemessages`; provision only those scopes, while accepting a token response that contains at least them or `*`.
-- Never persist or expose `client_id`, `client_secret`, `refresh_token`, access tokens, authorization headers, HTTP/form bodies, usernames, subreddit membership, authors, or raw API payloads in result/error metadata.
-- `include_subreddits` and `exclude_subreddits` default to empty arrays, accept at most 100 names each, normalize case-insensitively, and exclusions win.
-- Reddit `num_items_to_fetch` must be an integer from 1 through 100 and caps the combined selected message/thread items for one remote fetch.
-- The effective subreddit set is `(all subscriptions UNION explicit inclusions) MINUS exclusions`.
-- Paginate subscribed-subreddit discovery to completion; scan one page of at most 100 candidates per hot listing; batch explicit additions by 25 names; make a dedicated `r/news` hot request when `news` is effective.
-- One remote Reddit fetch may make at most 90 HTTP requests including token exchange. Do not sleep or retry automatically.
-- Direct messages precede detected `r/news` megathreads, which precede other activity-ranked threads before the one combined limit is applied.
-- Use the exact integer activity and tie-break formulas in the spec. Store Reddit's visible `score` as `vote_score`, not as an exact upvote count.
-- Message and thread `body` values are always `nil`; never copy self-text, comments, authors, media, thumbnails, or outbound submission URLs.
-- Preserve the existing adapter/orchestrator/persistence contract. Do not add tables, columns, adapter SQL, a Reddit-specific cleanup path, or a global CLI-order change.
-- Existing optional `retention_ttl_minutes` remains the only local item-cleanup policy. Cache hits and failures do not prune.
-- Tests must use local fixtures and injected clients/transports; they must not contact Reddit or perform a real OAuth flow.
-- Do not modify `docs/initial-spitballing.md`.
+## Global constraints
+
+- Use only documented Reddit OAuth endpoints. Never construct a `+`
+  multi-subreddit path or call undocumented chat APIs.
+- Validate stripped emptiness, byte length, and every C0/DEL control in
+  credentials and User-Agent before any network call.
+- Required scopes are `read`, `mysubreddits`, and `privatemessages`.
+- Treat joined coverage as one bounded authenticated-home sample. Only explicit
+  additions and post-exclusion `news` receive documented `/r/<name>/hot` calls.
+- Paginate subscribed listings completely. Paginate unread listings in pages
+  of 100 and filter qualifying legacy private messages before applying quota.
+- Validate fullnames, cursor types, subreddit identity, and permalink structure;
+  construct canonical URLs from validated components.
+- The 90-request value is a per-fetch complexity bound, not Reddit-wide rate
+  compliance. Coordinate same-client instances process-wide from response
+  headers and 429s, subject to one monotonic 120-second fetch deadline.
+- A limit of at least 2 returns both a message and a thread when both exist and
+  reserves an available `r/news` megathread under that bound. Limit 1 uses
+  message, megathread, ordinary-thread priority.
+- Reddit complete remote successes set `replace_existing_items: true`; cache
+  hits and all failures leave it false. Replacement is generic persistence
+  behavior and shares the existing transaction and rollback boundary.
+- Preserve `retention_ttl_minutes`: only successful remote writes prune; cache
+  hits and failures do not. Do not claim hard expiry during outages.
+- Do not add a storage table, Reddit-specific SQL, a global CLI-order change,
+  external-service tests, or production support for LLM summaries/statistics.
+- Never persist/expose credentials, access tokens, response bodies, raw source
+  objects, authors, usernames, membership lists, or client-ID digests.
 
 ---
 
-## File Map
+## Exact file map
 
-| File | Responsibility |
+| File | Action and responsibility |
 |---|---|
-| `lib/cybort/errors.rb` | Add a body-free `HttpError` with allowlisted status/rate metadata. |
-| `lib/cybort/http_client.rb` | Add form POST transport and use one safe 2xx/error boundary for GET and POST. |
-| `test/errors_test.rb` | Prove HTTP metadata allowlisting and secret/body rejection. |
-| `test/http_client_test.rb` | Prove form encoding, headers, and safe non-2xx behavior. |
-| `lib/cybort/reddit_client.rb` | Own token refresh, required-scope checks, OAuth GETs, listings, pagination, request budget, JSON shape checks, and rate metadata. |
-| `test/reddit_client_test.rb` | Lock down OAuth, pagination, request/rate behavior, and safe failures. |
-| `lib/cybort/reddit_activity.rb` | Define thread candidates and pure megathread/scoring/ranking/priority functions. |
-| `test/reddit_activity_test.rb` | Prove the exact deterministic ranking contract. |
-| `lib/cybort/adapters/reddit.rb` | Validate Reddit options, discover effective scope, fetch bounded candidates/messages, normalize items, and return safe metadata. |
-| `test/adapters/reddit_test.rb` | Prove scope, batching, filtering, selection, normalization, and malformed-source behavior. |
-| `test/fixtures/reddit/token.json` | Sanitized successful token response. |
-| `test/fixtures/reddit/subscriptions_page_1.json` | First subscription listing page with an `after` fullname. |
-| `test/fixtures/reddit/subscriptions_page_2.json` | Final subscription listing page. |
-| `test/fixtures/reddit/unread.json` | Mixed unread `t4` message and non-message inbox children. |
-| `test/fixtures/reddit/home_hot.json` | Personalized hot candidates including an out-of-scope recommendation. |
-| `test/fixtures/reddit/included_hot.json` | Explicit-subreddit candidate and a duplicate. |
-| `test/fixtures/reddit/news_hot.json` | `r/news` megathread and unrelated sticky candidates. |
-| `lib/cybort/adapter_registry.rb` | Register the direct HTTP `reddit` adapter with no executable dependency. |
-| `lib/cybort.rb` | Require the Reddit client, activity module, and adapter in dependency order. |
-| `test/adapter_registry_test.rb` | Prove default registration and aggregated preflight validation. |
-| `test/system/cli_system_test.rb` | Prove forced fetch, cache, safe failure, retention, and RSS isolation through the CLI. |
-| `README.md` | Document setup, limitations, scope, metric, data minimization, retention, and manual smoke test. |
-| `AGENTS.md` | Record the implemented adapter contract and release gate as durable invariants. |
-| `docs/LEARNINGS.md` | Record only evidence from the authenticated smoke test if one is actually run. |
+| `lib/cybort/rate_limit_headers.rb` | **Create:** central case-insensitive parser for safe Reddit rate headers. |
+| `test/rate_limit_headers_test.rb` | **Create:** valid, invalid, nonfinite, negative, and casing parser tests. |
+| `lib/cybort/errors.rb` | **Modify:** add body-free `HttpError`, `HttpTransportError`, and `RedditApiError`. |
+| `test/errors_test.rb` | **Modify:** assert allowlisted operation/category/status/rate metadata only. |
+| `lib/cybort/http_client.rb` | **Modify:** add form POST, open/read/write timeout units, deadline cap, and streamed maximum-body enforcement. |
+| `test/http_client_test.rb` | **Modify:** form, GET compatibility, timeout, oversized-body, and safe-error tests. |
+| `lib/cybort/reddit_rate_limit_coordinator.rb` | **Create:** process-wide, SHA-256-client-keyed admission and header/429 observation. |
+| `test/reddit_rate_limit_coordinator_test.rb` | **Create:** shared-client serialization, different-client independence, reset/deadline, and secret-safety tests. |
+| `lib/cybort/fetch_result.rb` | **Modify:** add strict `replace_existing_items` boolean with default false. |
+| `test/fetch_result_test.rb` | **Modify:** default, success opt-in, failure, and invalid-value tests. |
+| `lib/cybort/adapters/base.rb` | **Modify:** propagate a remote adapter's generic snapshot-completeness flag; cache/failure results remain false. |
+| `test/adapters/base_test.rb` | **Modify:** prove remote opt-in propagation and cache/failure defaults. |
+| `lib/cybort/persistence.rb` | **Modify:** atomically validate, replace, upsert, retain, update state, and record history. |
+| `test/persistence_test.rb` | **Modify:** replacement order, empty clear, invalid result, retention composition, and rollback tests. |
+| `lib/cybort/reddit_client.rb` | **Create:** OAuth validation, listing requests/pagination, cursor checks, request bound, coordinator use, and monotonic deadline. |
+| `test/reddit_client_test.rb` | **Create:** token/data operations, 401/403, pagination, deadline, rate, and request-path tests. |
+| `lib/cybort/reddit_activity.rb` | **Create:** validated candidate value, exact metric/ties, megathread detection, priority, and bounded selection. |
+| `test/reddit_activity_test.rb` | **Create:** arithmetic, validation, stable ranking, category guarantees, and selection rank tests. |
+| `lib/cybort/adapters/reddit.rb` | **Create:** option/identity validation, scope calls, normalization, safe metadata, and complete-snapshot result. |
+| `test/adapters/reddit_test.rb` | **Create:** config, calls, exclusions, identity/URL attacks, selection, content minimization, and cache metadata tests. |
+| `test/fixtures/reddit/token.json` | **Create:** sanitized valid bearer response. |
+| `test/fixtures/reddit/subscriptions_page_1.json` | **Create:** valid t5 page and next cursor. |
+| `test/fixtures/reddit/subscriptions_page_2.json` | **Create:** final subscription page. |
+| `test/fixtures/reddit/unread_page_1.json` | **Create:** unrelated unread objects plus valid t4 message and cursor. |
+| `test/fixtures/reddit/unread_page_2.json` | **Create:** enough valid t4 messages to prove post-filter quota. |
+| `test/fixtures/reddit/home_hot.json` | **Create:** in-scope t3 candidates plus out-of-scope recommendation. |
+| `test/fixtures/reddit/included_hot.json` | **Create:** explicit-subreddit candidate and duplicate. |
+| `test/fixtures/reddit/news_hot.json` | **Create:** news megathread and unrelated sticky. |
+| `lib/cybort/adapter_registry.rb` | **Modify:** register direct HTTP `reddit` adapter without executable dependency. |
+| `lib/cybort.rb` | **Modify:** require new modules in dependency order. |
+| `test/adapter_registry_test.rb` | **Modify:** default registration and aggregate config-error tests. |
+| `test/system/cli_system_test.rb` | **Modify:** remote replacement, cache/failure preservation, recency display, retention, and source isolation. |
+| `README.md` | **Modify:** setup, bounded coverage, selection, chat limitation, privacy, and compliance caveats. |
+| `AGENTS.md` | **Modify:** record implemented Reddit/snapshot invariants and smoke-test gate. |
+| `docs/LEARNINGS.md` | **Conditional modify:** only record evidence if the authenticated smoke test is actually run. |
 
-No change is planned for `lib/cybort/item.rb`, `lib/cybort/fetch_result.rb`,
-`lib/cybort/orchestrator.rb`, `lib/cybort/persistence.rb`, or
-`lib/cybort/schema.rb`.
+No change is planned for `lib/cybort/item.rb`, `lib/cybort/orchestrator.rb`,
+`lib/cybort/schema.rb`, or existing ADR text.
 
 ---
 
-### Task 1: Add Safe Form POST and HTTP Failure Metadata
+### Task 1: Centralize safe rate parsing and bounded HTTP behavior
 
 **Files:**
-- Modify: `test/errors_test.rb`
-- Modify: `test/http_client_test.rb`
+- Create: `lib/cybort/rate_limit_headers.rb`
+- Create: `test/rate_limit_headers_test.rb`
 - Modify: `lib/cybort/errors.rb`
+- Modify: `test/errors_test.rb`
 - Modify: `lib/cybort/http_client.rb`
+- Modify: `test/http_client_test.rb`
 
 **Interfaces:**
-- Consumes: existing `HttpClient#get(url, headers: {})` and transport response objects.
-- Produces: `HttpClient#post_form(url, form:, headers: {}) -> HttpResponse`.
-- Produces: `HttpError#safe_metadata -> Hash` with only `status`, `retry_after_seconds`, `ratelimit_used`, `ratelimit_remaining`, and `ratelimit_reset_seconds` when present.
-- Preserves: existing GET callers and `SourceError` rescue behavior.
-
-- [ ] **Step 1: Write failing error and HTTP-client tests**
-
-Add to `test/errors_test.rb`:
 
 ```ruby
-def test_http_error_exposes_only_allowlisted_numeric_metadata
-  error = Cybort::HttpError.new(
-    429,
-    headers: {
-      "Retry-After" => "12",
-      "X-Ratelimit-Used" => "3.5",
-      "X-Ratelimit-Remaining" => "0",
-      "X-Ratelimit-Reset" => "42",
-      "Authorization" => "Bearer secret"
-    }
+RateLimitHeaders.parse(headers)
+# => { retry_after_seconds:, ratelimit_used:, ratelimit_remaining:,
+#      ratelimit_reset_seconds: } with invalid keys omitted
+
+HttpClient.new(
+  transport:,
+  open_timeout_seconds: 10,
+  read_timeout_seconds: 30,
+  write_timeout_seconds: 30,
+  max_response_body_bytes: 1_048_576
+)
+HttpClient#get(url, headers: {}, timeout_seconds: nil)
+HttpClient#post_form(url, form:, headers: {}, timeout_seconds: nil)
+```
+
+- [ ] **Step 1: Write rate-parser and error tests**
+
+Create `test/rate_limit_headers_test.rb` with exact expectations:
+
+```ruby
+def test_parses_case_insensitive_safe_values
+  parsed = Cybort::RateLimitHeaders.parse(
+    "X-Ratelimit-Used" => "3.5",
+    "x-ratelimit-remaining" => "0",
+    "X-RATELIMIT-RESET" => "42.25",
+    "Retry-After" => "7"
   )
-
-  assert_equal "HTTP request failed with status 429", error.message
-  assert_equal 429, error.safe_metadata.fetch(:status)
-  assert_equal 12, error.safe_metadata.fetch(:retry_after_seconds)
-  assert_equal 3.5, error.safe_metadata.fetch(:ratelimit_used)
-  assert_equal 0.0, error.safe_metadata.fetch(:ratelimit_remaining)
-  assert_equal 42.0, error.safe_metadata.fetch(:ratelimit_reset_seconds)
-  refute_includes error.safe_metadata.to_s, "secret"
+  assert_equal 3.5, parsed.fetch(:ratelimit_used)
+  assert_equal 0.0, parsed.fetch(:ratelimit_remaining)
+  assert_equal 42.25, parsed.fetch(:ratelimit_reset_seconds)
+  assert_equal 7, parsed.fetch(:retry_after_seconds)
 end
-```
 
-Extend the test transport in `test/http_client_test.rb`:
-
-```ruby
-def post_form(url, form:, headers:)
-  @calls << [url, form, headers]
-  @response
-end
-```
-
-Add:
-
-```ruby
-def test_posts_url_encoded_form_without_putting_secrets_in_url
-  transport = Transport.new(Response.new(status: 200, headers: {}, body: "{}"))
-  client = Cybort::HttpClient.new(transport: transport)
-
-  client.post_form(
-    "https://www.reddit.com/api/v1/access_token",
-    form: { grant_type: "refresh_token", refresh_token: "a+b secret" },
-    headers: { "Authorization" => "Basic opaque" }
+def test_omits_negative_nonfinite_and_http_date_values
+  parsed = Cybort::RateLimitHeaders.parse(
+    "x-ratelimit-used" => "NaN",
+    "x-ratelimit-remaining" => "-1",
+    "x-ratelimit-reset" => "Infinity",
+    "retry-after" => "Wed, 21 Oct 2015 07:28:00 GMT"
   )
-
-  url, form, headers = transport.calls.fetch(0)
-  assert_equal "https://www.reddit.com/api/v1/access_token", url
-  assert_equal({ grant_type: "refresh_token", refresh_token: "a+b secret" }, form)
-  assert_equal "Basic opaque", headers.fetch("Authorization")
-end
-
-def test_non_success_raises_body_free_http_error
-  transport = Transport.new(Response.new(
-    status: 429,
-    headers: { "retry-after" => "7", "authorization" => "Bearer secret" },
-    body: "private response body"
-  ))
-  client = Cybort::HttpClient.new(transport: transport)
-
-  error = assert_raises(Cybort::HttpError) do
-    client.get("https://oauth.reddit.com/hot")
-  end
-
-  assert_equal 7, error.safe_metadata.fetch(:retry_after_seconds)
-  refute_includes error.message, "private"
-  refute_includes error.safe_metadata.to_s, "secret"
+  assert_empty parsed
 end
 ```
 
-- [ ] **Step 2: Run focused tests and verify failure**
+Add to `test/errors_test.rb` separate safe contracts for:
 
-Run:
+```ruby
+http = Cybort::HttpError.new(status: 429, headers: {
+  "retry-after" => "5", "authorization" => "Bearer secret"
+})
+assert_equal({ status: 429, retry_after_seconds: 5 }, http.safe_metadata)
+
+api = Cybort::RedditApiError.new(
+  operation: :subscriptions,
+  category: :authorization,
+  status: 403,
+  rate_metadata: { ratelimit_remaining: 0.0 }
+)
+assert_equal :subscriptions, api.safe_metadata.fetch(:operation)
+assert_equal :authorization, api.safe_metadata.fetch(:category)
+refute_includes api.safe_metadata.to_s, "secret"
+```
+
+- [ ] **Step 2: Write HTTP form, timeout, and size tests**
+
+Extend the fake transport to capture all unit-named values. Add tests proving:
+
+```ruby
+client.post_form(
+  "https://www.reddit.com/api/v1/access_token",
+  form: { grant_type: "refresh_token", refresh_token: "a+b secret" },
+  headers: { "Authorization" => "Basic opaque" },
+  timeout_seconds: 4.5
+)
+assert_equal 4.5, transport.calls.last.fetch(:timeout_seconds)
+refute_includes transport.calls.last.fetch(:url), "secret"
+```
+
+Also simulate an incremental body over 1,048,576 bytes and each Net::HTTP
+open/read/write timeout. Assert `HttpTransportError#safe_metadata` is exactly
+`{ category: :response_too_large }` or `{ category: :timeout }`; no body or URL
+is present. Keep an existing GET success test unchanged.
+
+- [ ] **Step 3: Run focused tests; verify RED**
 
 ```bash
+bundle exec ruby -Itest test/rate_limit_headers_test.rb
 bundle exec ruby -Itest test/errors_test.rb
 bundle exec ruby -Itest test/http_client_test.rb
 ```
 
-Expected: FAIL because `HttpError` and `post_form` do not exist.
+Expected: failures for missing parser/errors/form/timeouts.
 
-- [ ] **Step 3: Implement the allowlisted error**
+- [ ] **Step 4: Implement the smallest shared boundary**
 
-Append inside `module Cybort` in `lib/cybort/errors.rb`:
+In `rate_limit_headers.rb`, lowercase keys once, accept only finite
+nonnegative `Float` rate values, accept `Retry-After` only with
+`\A\d+\z`, and freeze the returned hash. Make `HttpError` call this parser;
+do not duplicate parsing in errors or Reddit code.
 
-```ruby
-class HttpError < SourceError
-  HEADER_KEYS = {
-    "retry-after" => [:retry_after_seconds, :integer],
-    "x-ratelimit-used" => [:ratelimit_used, :float],
-    "x-ratelimit-remaining" => [:ratelimit_remaining, :float],
-    "x-ratelimit-reset" => [:ratelimit_reset_seconds, :float]
-  }.freeze
+In `http_client.rb`, keep 2xx enforcement above both verbs, URI-encode form
+data, set `application/x-www-form-urlencoded`, configure Net::HTTP with the
+three timeout values capped by positive `timeout_seconds`, and accumulate
+response chunks only until the byte maximum. Map transport timeout classes to
+the safe transport error.
 
-  attr_reader :safe_metadata
+- [ ] **Step 5: Run focused tests; verify GREEN**
 
-  def initialize(status, headers: {})
-    @safe_metadata = { status: Integer(status) }
-    headers.each do |name, value|
-      definition = HEADER_KEYS[name.to_s.downcase]
-      next unless definition
+Run the three commands from Step 3. Expected: PASS.
 
-      key, type = definition
-      @safe_metadata[key] = type == :integer ? Integer(value) : Float(value)
-    rescue ArgumentError, TypeError
-      next
-    end
-    @safe_metadata.freeze
-    super("HTTP request failed with status #{@safe_metadata.fetch(:status)}")
-  end
-end
-```
-
-- [ ] **Step 4: Implement form POST and shared response validation**
-
-In `lib/cybort/http_client.rb`, add `require "uri"` if needed and implement:
-
-```ruby
-def post_form(url, form:, headers: {})
-  ensure_success(@transport.post_form(url, form: form, headers: headers))
-end
-
-private
-
-def ensure_success(response)
-  status = response.status.to_i
-  raise HttpError.new(status, headers: response.headers || {}) unless status.between?(200, 299)
-
-  HttpResponse.new(status: status, headers: response.headers || {}, body: response.body)
-end
-```
-
-Change `#get` to call `ensure_success(@transport.get(...))`. Add to
-`NetHttpTransport`:
-
-```ruby
-def post_form(url, form:, headers: {})
-  uri = URI.parse(url)
-  request = Net::HTTP::Post.new(uri)
-  headers.each { |name, value| request[name] = value }
-  request["Content-Type"] ||= "application/x-www-form-urlencoded"
-  request.body = URI.encode_www_form(form)
-  perform(uri, request)
-rescue URI::InvalidURIError, SocketError, SystemCallError => error
-  raise SourceError, error.message
-end
-```
-
-Extract the existing `Net::HTTP.start` response mapping into private
-`perform(uri, request)` and have `#get` call it:
-
-```ruby
-def perform(uri, request)
-  response = Net::HTTP.start(uri.host, uri.port, use_ssl: uri.scheme == "https") do |http|
-    http.request(request)
-  end
-  HttpResponse.new(
-    status: response.code.to_i,
-    headers: response.each_header.to_h,
-    body: response.body
-  )
-end
-```
-
-Do not include request/response bodies or headers in exception messages.
-
-- [ ] **Step 5: Run the focused and existing adapter tests**
-
-Run:
+- [ ] **Step 6: Commit**
 
 ```bash
-bundle exec ruby -Itest test/errors_test.rb
-bundle exec ruby -Itest test/http_client_test.rb
-bundle exec ruby -Itest test/adapters/rss_test.rb
-bundle exec ruby -Itest test/adapters/github_test.rb
-```
-
-Expected: PASS with no failures or errors.
-
-- [ ] **Step 6: Commit the HTTP boundary**
-
-```bash
-git add lib/cybort/errors.rb lib/cybort/http_client.rb test/errors_test.rb test/http_client_test.rb
-git commit -m "feat: add safe form HTTP requests"
+git add lib/cybort/rate_limit_headers.rb test/rate_limit_headers_test.rb lib/cybort/errors.rb test/errors_test.rb lib/cybort/http_client.rb test/http_client_test.rb
+git commit -m "feat: bound HTTP transport and parse rate limits"
 ```
 
 ---
 
-### Task 2: Implement the Reddit OAuth and Listing Client
+### Task 2: Add process-wide Reddit rate admission
+
+**Files:**
+- Create: `lib/cybort/reddit_rate_limit_coordinator.rb`
+- Create: `test/reddit_rate_limit_coordinator_test.rb`
+- Modify: `lib/cybort.rb`
+
+**Interface:**
+
+```ruby
+coordinator = RedditRateLimitCoordinator.default
+test_coordinator = RedditRateLimitCoordinator.new(clock:, sleeper:)
+key = coordinator.key_for(client_id) # in-memory SHA-256 digest
+lease = coordinator.acquire(key:, deadline_monotonic:)
+lease.observe(metadata:, status: nil)
+lease.release
+```
+
+- [ ] **Step 1: Write deterministic fake-clock tests**
+
+Cover two client objects sharing `client_id: "same"`:
+
+```ruby
+shared_key = coordinator.key_for("same")
+initial = coordinator.acquire(key: shared_key, deadline_monotonic: 20.0)
+initial.observe(metadata: {
+  ratelimit_remaining: 1.0,
+  ratelimit_reset_seconds: 10.0
+})
+initial.release
+lease = coordinator.acquire(key: shared_key, deadline_monotonic: 20.0)
+assert_raises(Cybort::RedditApiError) do
+  coordinator.acquire(key: shared_key, deadline_monotonic: 5.0)
+end
+lease.observe(metadata: { ratelimit_remaining: 0.0,
+                          ratelimit_reset_seconds: 10.0 })
+lease.release
+```
+
+Assert the second same-key caller is not admitted while the first lease is in
+flight, then its deadline yields `rate_limited`; a reset releases the shared
+key; another client-ID digest remains independent; and a 429 plus
+`retry_after_seconds: 7` blocks same-key admission. Assert an ensured release
+after a transport exception avoids deadlock without inventing capacity. Neither
+plaintext nor digest may occur in errors or a persistence-facing value. Use a
+fake sleeper that advances the monotonic clock; never sleep in tests.
+
+- [ ] **Step 2: Run and verify RED**
+
+```bash
+bundle exec ruby -Itest test/reddit_rate_limit_coordinator_test.rb
+```
+
+- [ ] **Step 3: Implement mutex-protected process state**
+
+Use `Digest::SHA256.digest(client_id)` as an opaque hash key and expose a
+mutex-protected `.default` singleton for production construction. Store only
+remaining capacity, an absolute monotonic reset instant, and one in-flight flag
+per key. `acquire` waits for the prior same-key lease, then reserves one unit
+atomically. On known exhaustion, wait no later than the reset and caller
+deadline; raise `rate_limited` instead of overrunning the deadline. The lease's
+`observe` replaces state from valid centralized parsed headers and applies 429
+`Retry-After`; `release` signals waiters and is idempotent. Do not expose state
+in fetch metadata.
+
+- [ ] **Step 4: Run and verify GREEN**
+
+```bash
+bundle exec ruby -Itest test/reddit_rate_limit_coordinator_test.rb
+```
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add lib/cybort/reddit_rate_limit_coordinator.rb test/reddit_rate_limit_coordinator_test.rb lib/cybort.rb
+git commit -m "feat: coordinate Reddit rate limits per client"
+```
+
+---
+
+### Task 3: Implement generic current-snapshot replacement
+
+**Files:**
+- Modify: `lib/cybort/fetch_result.rb`
+- Modify: `test/fetch_result_test.rb`
+- Modify: `lib/cybort/adapters/base.rb`
+- Modify: `test/adapters/base_test.rb`
+- Modify: `lib/cybort/persistence.rb`
+- Modify: `test/persistence_test.rb`
+
+- [ ] **Step 1: Lock down the result value contract**
+
+Add tests equivalent to:
+
+```ruby
+assert_equal false, successful_result.replace_existing_items
+
+snapshot = Cybort::FetchResult.success(
+  instance_id: "reddit",
+  items: [],
+  sync_state: {},
+  started_at: NOW,
+  finished_at: NOW,
+  metadata: {},
+  source_fetched: true,
+  replace_existing_items: true
+)
+assert_equal true, snapshot.replace_existing_items
+
+failure = Cybort::FetchResult.failure(
+  instance_id: "reddit", error: error,
+  started_at: NOW, finished_at: NOW
+)
+assert_equal false, failure.replace_existing_items
+
+attributes = successful_result.to_h.merge(replace_existing_items: nil)
+assert_raises(ArgumentError) { Cybort::FetchResult.new(**attributes) }
+```
+
+Exercise direct construction with an omitted field, `nil`, `0`, and `"true"`;
+omission becomes false and strict validation otherwise accepts only the two
+Boolean singletons. A direct error-bearing result with replacement true is
+invalid; the failure factory always supplies false.
+
+In `test/adapters/base_test.rb`, make the stub source return
+`replace_existing_items: true` and assert the remote result propagates true.
+Assert its cached result and rescued failure both expose false. This is the
+generic adapter-to-result bridge; do not special-case Reddit in base.
+
+- [ ] **Step 2: Write transaction behavior tests**
+
+Seed `old-a` and `old-b`, then write a replacement containing refreshed
+`old-b` plus `new-c`. Assert the stored canonical IDs are exactly
+`["new-c", "old-b"]`. An empty replacement leaves no items. A default-false
+success continues to upsert without removing `old-a`.
+
+Add rejection tests for `replace_existing_items: true` with
+`source_fetched: false` and with an unsuccessful result. Add a combined
+replacement+retention test using the existing injected persistence clock to
+prove retention still executes with its prior cutoff semantics.
+
+Mutate a constructed result's public struct field to `"true"` immediately
+before persistence and assert `ValidationError`. This proves persistence
+independently enforces the Boolean even if a caller bypasses construction-time
+validation.
+
+For rollback, inject/induce failures at upsert, state update, and history
+insertion after the delete. After each raised error, open a new read and assert
+both seeded rows and prior sync/history remain unchanged.
+
+- [ ] **Step 3: Run and verify RED**
+
+```bash
+bundle exec ruby -Itest test/fetch_result_test.rb
+bundle exec ruby -Itest test/persistence_test.rb
+```
+
+- [ ] **Step 4: Add the field and delete-before-upsert order**
+
+Append `:replace_existing_items` to the struct. Override initialization to
+supply false when the keyword is omitted and perform the strict Boolean/error
+combination checks. The success factory accepts an optional false-defaulted
+flag; the failure factory exposes no such argument and sets false. In the base
+adapter's remote-success construction, pass
+`replace_existing_items: fetched.fetch(:replace_existing_items, false)`.
+
+In `write_fetch_result`, independently require the field to be exactly true or
+false, validate all items before mutation, and reject replacement unless
+`source_fetched` is true. Then execute inside the existing transaction:
+
+```ruby
+@database.execute(
+  "DELETE FROM items WHERE instance_id = ?",
+  [result.instance_id]
+) if result.replace_existing_items
+
+result.items.each { |item| upsert_item(item) }
+if retention_ttl_minutes
+  cutoff = successful_fetch_at - (retention_ttl_minutes * 60)
+  prune_expired_items(instance_id: result.instance_id, cutoff: cutoff)
+end
+update_instance_state(
+  result,
+  last_successful_fetch: successful_fetch_at,
+  updated_at: persistence_now
+)
+insert_fetch_run(result, "successful")
+```
+
+Use the repository's actual private method names/signatures. Do not interpolate
+the ID, add adapter checks, or change schema.
+
+- [ ] **Step 5: Run focused tests and the existing orchestrator tests**
+
+```bash
+bundle exec ruby -Itest test/fetch_result_test.rb
+bundle exec ruby -Itest test/adapters/base_test.rb
+bundle exec ruby -Itest test/persistence_test.rb
+bundle exec ruby -Itest test/orchestrator_test.rb
+```
+
+Expected: PASS, including existing retention/cache/failure behavior.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add lib/cybort/fetch_result.rb test/fetch_result_test.rb lib/cybort/adapters/base.rb test/adapters/base_test.rb lib/cybort/persistence.rb test/persistence_test.rb
+git commit -m "feat: replace complete source snapshots atomically"
+```
+
+---
+
+### Task 4: Build the deadline-aware Reddit OAuth/listing client
 
 **Files:**
 - Create: `lib/cybort/reddit_client.rb`
 - Create: `test/reddit_client_test.rb`
-- Create: `test/fixtures/reddit/token.json`
-- Create: `test/fixtures/reddit/subscriptions_page_1.json`
-- Create: `test/fixtures/reddit/subscriptions_page_2.json`
 - Modify: `lib/cybort.rb`
 
-**Interfaces:**
-- Consumes: `RedditClient.new(http_client:, client_id:, client_secret:, refresh_token:, user_agent:, request_budget: 90)`.
-- Produces: `#authenticate! -> self`, validating `read mysubreddits privatemessages` or `*`.
-- Produces: `#listing(path, params:, paginate:, max_items:) -> Array<Hash>` of child objects.
-- Produces: `#request_count -> Integer` and `#rate_metadata -> Hash`.
-- Raises: `SourceError`/`HttpError` with body-free safe metadata.
-
-- [ ] **Step 1: Add exact token and pagination fixtures**
-
-Create `test/fixtures/reddit/token.json`:
-
-```json
-{"access_token":"fixture-access","token_type":"bearer","expires_in":3600,"scope":"read mysubreddits privatemessages"}
-```
-
-Create `test/fixtures/reddit/subscriptions_page_1.json`:
-
-```json
-{"kind":"Listing","data":{"after":"t5_next","children":[{"kind":"t5","data":{"display_name":"Ruby"}}]}}
-```
-
-Create `test/fixtures/reddit/subscriptions_page_2.json`:
-
-```json
-{"kind":"Listing","data":{"after":null,"children":[{"kind":"t5","data":{"display_name":"news"}}]}}
-```
-
-- [ ] **Step 2: Write failing OAuth, headers, and pagination tests**
-
-In `test/reddit_client_test.rb`, define this queue fake and helpers, then add the
-OAuth/pagination assertion:
+**Interface:**
 
 ```ruby
-class QueueHttpClient
-  attr_reader :post_calls, :get_calls
-
-  def initialize(post_responses:, get_responses:)
-    @post_responses = post_responses.dup
-    @get_responses = get_responses.dup
-    @post_calls = []
-    @get_calls = []
-  end
-
-  def post_form(url, form:, headers: {})
-    @post_calls << [url, form, headers]
-    value = @post_responses.shift
-    raise value if value.is_a?(Exception)
-    value
-  end
-
-  def get(url, headers: {})
-    @get_calls << [url, headers]
-    value = @get_responses.shift
-    raise value if value.is_a?(Exception)
-    value
-  end
-end
-
-USER_AGENT = "macos:com.example.cybort:v0.1.0 (by /u/example_user)"
-
-def fixture(name)
-  File.read(File.expand_path("fixtures/reddit/#{name}", __dir__))
-end
-
-def response(body, headers: {})
-  Cybort::HttpResponse.new(status: 200, headers: headers, body: body)
-end
-
-def rate_headers(remaining:)
-  { "X-Ratelimit-Used" => "2", "X-Ratelimit-Remaining" => remaining,
-    "X-Ratelimit-Reset" => "30" }
-end
-
-def reddit_client(http, request_budget: 90)
-  Cybort::RedditClient.new(
-    http_client: http, client_id: "client", client_secret: "secret",
-    refresh_token: "fixture-refresh", user_agent: USER_AGENT,
-    request_budget: request_budget
-  )
-end
+client = RedditClient.new(
+  http_client:,
+  coordinator:,
+  clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) },
+  deadline_seconds: 120,
+  request_limit: 90
+)
+session = client.authenticate(client_id:, client_secret:, refresh_token:, user_agent:)
+client.each_subscription_page(session:) { |children| ... }
+client.each_unread_page(session:) { |children| ... }
+client.home_hot(session:)
+client.subreddit_hot(session:, subreddit:, operation: :subreddit_hot)
+client.safe_metadata
 ```
+
+- [ ] **Step 1: Write separate token-response contract tests**
+
+Assert the token call uses Basic authentication, form data, User-Agent, and no
+secret in its URL. Valid fixture fields are:
+
+```json
+{"access_token":"test-access","token_type":"bearer","expires_in":3600,"scope":"read mysubreddits privatemessages"}
+```
+
+Reject blank token, `token_type: "mac"`, zero/negative/nonnumeric/nonfinite
+`expires_in`, missing scope, malformed JSON, or non-object JSON. Accept
+case-insensitive `Bearer` and scope `*`.
+
+Token HTTP 401 and 403 must produce respectively:
 
 ```ruby
-def test_refreshes_token_and_paginates_listing_with_oauth_headers
-  http = QueueHttpClient.new(
-    post_responses: [response(fixture("token.json"))],
-    get_responses: [
-      response(fixture("subscriptions_page_1.json"), headers: rate_headers(remaining: "98")),
-      response(fixture("subscriptions_page_2.json"), headers: rate_headers(remaining: "97"))
-    ]
-  )
-  client = reddit_client(http)
-
-  client.authenticate!
-  children = client.listing(
-    "/subreddits/mine/subscriber",
-    params: { limit: 100 },
-    paginate: true,
-    max_items: nil
-  )
-
-  assert_equal %w[Ruby news], children.map { |child| child.dig("data", "display_name") }
-  assert_equal 3, client.request_count
-  assert_equal 97.0, client.rate_metadata.fetch(:ratelimit_remaining)
-  assert_equal "Basic #{Base64.strict_encode64("client:secret")}", http.post_calls.first.fetch(2).fetch("Authorization")
-  assert_equal "Bearer fixture-access", http.get_calls.first.fetch(1).fetch("Authorization")
-  assert_equal USER_AGENT, http.get_calls.first.fetch(1).fetch("User-Agent")
-  assert_includes http.get_calls.first.fetch(0), "raw_json=1"
-  assert_includes http.get_calls.last.fetch(0), "after=t5_next"
-end
+{ operation: :token, category: :authentication, status: 401 }
+{ operation: :token, category: :authorization, status: 403 }
 ```
 
-Also test: missing required token scope, malformed token JSON, malformed second
-listing page, `max_items` truncation, a 90-request local budget, and local refusal
-to issue a next request after a response reports `X-Ratelimit-Remaining: 0`.
-Every failure assertion must refute the configured refresh/access token and a
-fixture body in both `error.message` and `error.safe_metadata` when available.
+- [ ] **Step 2: Write data-operation, path, and cursor tests**
 
-- [ ] **Step 3: Run the client test and verify failure**
+Assert exact paths contain only:
 
-Run:
+```text
+/subreddits/mine/subscriber?limit=100&raw_json=1
+/message/unread?limit=100&mark=false&max_replies=0&raw_json=1
+/hot?limit=100&raw_json=1
+/r/news/hot?limit=100&raw_json=1
+```
+
+Assert every data request has bearer/User-Agent headers. Assert no captured URL
+contains `+`. Follow subscription `after: "t5_next"` and unread
+`after: "t4_next"`; reject wrong prefixes, malformed base36, query/control
+characters, and repeated non-nil cursors. Data 401/403 must keep the requested
+operation (`:subscriptions`, `:unread_messages`, `:home_hot`,
+`:subreddit_hot`, or `:news_hot`) and proper category.
+
+- [ ] **Step 3: Write rate, request-bound, timeout, and deadline tests**
+
+Use fake monotonic time and coordinator. Assert each request acquires its
+same-client lease before HTTP, observes centrally parsed headers afterward
+(including on 429), and releases in an ensure path. Assert
+request 91 fails with `category: :request_budget`. Advance time to exactly 120
+seconds during pagination and assert `category: :deadline`, no partial return,
+and no next request. Assert the HTTP call receives the positive remaining
+deadline as `timeout_seconds`. Map transport timeout/oversize categories into
+the operation-specific `RedditApiError` without copying response data.
+
+- [ ] **Step 4: Run and verify RED**
 
 ```bash
 bundle exec ruby -Itest test/reddit_client_test.rb
 ```
 
-Expected: FAIL because `Cybort::RedditClient` is undefined.
+- [ ] **Step 5: Implement one request gateway**
 
-- [ ] **Step 4: Implement token refresh and safe request state**
+All token/data calls must pass through one private gateway that:
 
-Create `lib/cybort/reddit_client.rb` with these constants and public skeleton:
+1. checks the 90-request counter and monotonic deadline;
+2. acquires a coordinator lease with the SHA-256 identity key;
+3. passes remaining seconds to `HttpClient`;
+4. centrally parses and observes rate metadata on success/`HttpError`, then
+   releases the lease in `ensure`;
+5. converts status 401/403/429 and transport failures into an operation-aware
+   `RedditApiError`; and
+6. checks deadline again before returning parsed data.
 
-```ruby
-require "base64"
-require "json"
-require "uri"
+Listing helpers validate `kind`, `data.children` array, and `data.after`. Keep
+subscription and unread cursor-prefix contracts distinct. Query strings must
+use URI encoding. Never accept a caller-supplied path.
 
-module Cybort
-  class RedditClient
-    TOKEN_URL = "https://www.reddit.com/api/v1/access_token"
-    API_URL = "https://oauth.reddit.com"
-    REQUIRED_SCOPES = %w[mysubreddits privatemessages read].freeze
-
-    attr_reader :request_count, :rate_metadata
-
-    def initialize(http_client:, client_id:, client_secret:, refresh_token:, user_agent:, request_budget: 90)
-      @http_client = http_client
-      @client_id = client_id
-      @client_secret = client_secret
-      @refresh_token = refresh_token
-      @user_agent = user_agent
-      @request_budget = request_budget
-      @request_count = 0
-      @rate_metadata = {}
-    end
-
-    def authenticate!
-      response = request do
-        @http_client.post_form(
-          TOKEN_URL,
-          form: { grant_type: "refresh_token", refresh_token: @refresh_token },
-          headers: {
-            "Authorization" => "Basic #{Base64.strict_encode64("#{@client_id}:#{@client_secret}")}",
-            "User-Agent" => @user_agent
-          }
-        )
-      end
-      payload = parse_object(response.body, "token")
-      token = payload["access_token"]
-      scopes = payload.fetch("scope", "").split
-      unless token.is_a?(String) && !token.empty? &&
-             (scopes.include?("*") || (REQUIRED_SCOPES - scopes).empty?)
-        raise SourceError, "Reddit OAuth token is missing a bearer token or required scopes"
-      end
-      @access_token = token
-      self
-    end
-  end
-end
-```
-
-Do not retain the token response hash after extracting the access token and
-scope strings. Error messages name only the operation/category.
-
-- [ ] **Step 5: Implement listing pagination, budget, and rate parsing**
-
-Implement `#listing` with this contract:
-
-```ruby
-def listing(path, params:, paginate:, max_items:)
-  raise SourceError, "Reddit client is not authenticated" unless @access_token
-
-  children = []
-  after = nil
-  loop do
-    query = params.merge(raw_json: 1)
-    query[:after] = after if after
-    response = request do
-      @http_client.get(
-        "#{API_URL}#{path}?#{URI.encode_www_form(query)}",
-        headers: { "Authorization" => "Bearer #{@access_token}", "User-Agent" => @user_agent }
-      )
-    end
-    payload = parse_object(response.body, "listing")
-    data = payload["data"]
-    page = data.is_a?(Hash) ? data["children"] : nil
-    raise SourceError, "Reddit listing has an invalid shape" unless page.is_a?(Array)
-
-    children.concat(page)
-    return children.first(max_items) if max_items && children.length >= max_items
-
-    after = data["after"]
-    break unless paginate && after
-    raise SourceError, "Reddit listing has an invalid after fullname" unless after.is_a?(String) && !after.empty?
-  end
-  children
-end
-```
-
-The private `request` increments before dispatch, rejects when the next request
-would exceed `@request_budget`, rejects when the previous valid remaining value
-is below 1, yields, and parses headers case-insensitively:
-
-```ruby
-RATE_HEADERS = {
-  "x-ratelimit-used" => :ratelimit_used,
-  "x-ratelimit-remaining" => :ratelimit_remaining,
-  "x-ratelimit-reset" => :ratelimit_reset_seconds
-}.freeze
-
-def request
-  raise SourceError, "Reddit request budget exhausted" if @request_count >= @request_budget
-  if @rate_metadata[:ratelimit_remaining]&.<(1)
-    raise SourceError, "Reddit rate limit exhausted"
-  end
-
-  @request_count += 1
-  response = yield
-  response.headers.each do |name, value|
-    key = RATE_HEADERS[name.to_s.downcase]
-    next unless key
-    @rate_metadata[key] = Float(value)
-  rescue ArgumentError, TypeError
-    next
-  end
-  response
-end
-
-def parse_object(body, operation)
-  value = JSON.parse(body)
-  raise SourceError, "Reddit #{operation} response must be an object" unless value.is_a?(Hash)
-  value
-rescue JSON::ParserError
-  raise SourceError, "Reddit #{operation} response is invalid JSON"
-end
-```
-
-Ignore malformed individual rate values. `parse_object` rescues
-`JSON::ParserError` and raises `SourceError` with a short operation-only message.
-
-- [ ] **Step 6: Require the client and run its tests**
-
-Add after `require "cybort/http_client"` in `lib/cybort.rb`:
-
-```ruby
-require "cybort/reddit_client"
-```
-
-Run:
+- [ ] **Step 6: Run and verify GREEN**
 
 ```bash
 bundle exec ruby -Itest test/reddit_client_test.rb
 bundle exec ruby -Itest test/http_client_test.rb
+bundle exec ruby -Itest test/reddit_rate_limit_coordinator_test.rb
 ```
 
-Expected: PASS with no failures or errors.
-
-- [ ] **Step 7: Commit the source client**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add lib/cybort.rb lib/cybort/reddit_client.rb test/reddit_client_test.rb test/fixtures/reddit/token.json test/fixtures/reddit/subscriptions_page_1.json test/fixtures/reddit/subscriptions_page_2.json
-git commit -m "feat: add Reddit OAuth client"
+git add lib/cybort/reddit_client.rb test/reddit_client_test.rb lib/cybort.rb
+git commit -m "feat: add bounded Reddit OAuth client"
 ```
 
 ---
 
-### Task 3: Implement Deterministic Reddit Activity Ranking
+### Task 5: Implement deterministic activity and bounded category selection
 
 **Files:**
 - Create: `lib/cybort/reddit_activity.rb`
 - Create: `test/reddit_activity_test.rb`
 - Modify: `lib/cybort.rb`
 
-**Interfaces:**
-- Produces: `RedditActivity::Candidate` with `fullname`, `subreddit`, `title`, `permalink`, `created_at`, `vote_score`, `comment_count`, and `stickied`.
-- Produces: `.megathread?(candidate) -> true | false`.
-- Produces: `.activity_score_milli(candidate, fetched_at:) -> Integer`.
-- Produces: `.rank(candidates, fetched_at:) -> Array<Candidate>`.
-- Produces: `.priority(rank_index:, candidate_count:) -> Integer` from 99 through 0.
+- [ ] **Step 1: Write exact score/rank tests**
 
-- [ ] **Step 1: Write exact failing metric tests**
-
-Create `test/reddit_activity_test.rb` with this candidate helper:
+At a fixed fetch time, assert:
 
 ```ruby
-FETCHED_AT = Time.utc(2026, 9, 5, 12)
-
-def build_candidate(fullname: "t3_default", subreddit: "ruby", title: "Thread",
-                    created_at: Time.utc(2026, 9, 5, 11), vote_score: 10,
-                    comment_count: 5, stickied: false)
-  Cybort::RedditActivity::Candidate.new(
-    fullname: fullname, subreddit: subreddit, title: title,
-    permalink: "/r/#{subreddit}/comments/default/thread/",
-    created_at: created_at, vote_score: vote_score,
-    comment_count: comment_count, stickied: stickied
-  )
-end
+assert_equal 240_000, score(votes: 100, comments: 70, age_minutes: 60)
+assert_equal 120_000, score(votes: 100, comments: 70, age_minutes: 120)
+assert_equal 0, score(votes: -2, comments: -3, age_minutes: 60)
 ```
 
-Add these core assertions:
+Reject strings, nils, nonfinite timestamps, and malformed candidates. Assert
+the complete tie order: score, comments, votes, created time, fullname. Test
+`Megathread`, `mega thread`, and `LIVE THREAD` in `news`; reject an unrelated
+sticky and matching text outside `news`. Assert one candidate priority 99 and
+multi-candidate endpoints 99/0.
+
+- [ ] **Step 2: Write the selection matrix**
+
+Use identities `m1/m2`, `g1/g2`, `t1/t2` and assert:
 
 ```ruby
-def test_integer_activity_score_uses_comment_weight_and_one_hour_floor
-  candidate = build_candidate(vote_score: 100, comment_count: 50,
-                              created_at: Time.utc(2026, 9, 5, 11, 30))
-
-  assert_equal 200_000, Cybort::RedditActivity.activity_score_milli(
-    candidate, fetched_at: Time.utc(2026, 9, 5, 12)
-  )
-end
-
-def test_two_hour_old_candidate_divides_weighted_engagement_by_age
-  candidate = build_candidate(vote_score: 100, comment_count: 50,
-                              created_at: Time.utc(2026, 9, 5, 10))
-
-  assert_equal 100_000, Cybort::RedditActivity.activity_score_milli(
-    candidate, fetched_at: Time.utc(2026, 9, 5, 12)
-  )
-end
-
-def test_rank_uses_every_tie_breaker_and_fullname_last
-  candidates = [
-    build_candidate(fullname: "t3_z", created_at: Time.utc(2026, 9, 5, 8), vote_score: 0, comment_count: 0),
-    build_candidate(fullname: "t3_a", created_at: Time.utc(2026, 9, 5, 8), vote_score: 0, comment_count: 0),
-    build_candidate(fullname: "t3_newer", created_at: Time.utc(2026, 9, 5, 9), vote_score: 0, comment_count: 0),
-    build_candidate(fullname: "t3_votes", created_at: Time.utc(2026, 9, 5, 8), vote_score: 50, comment_count: 20),
-    build_candidate(fullname: "t3_comments", created_at: Time.utc(2026, 9, 5, 8), vote_score: 20, comment_count: 35)
-  ]
-  ranked = Cybort::RedditActivity.rank(candidates, fetched_at: FETCHED_AT)
-
-  assert_equal %w[t3_comments t3_votes t3_newer t3_a t3_z], ranked.map(&:fullname)
-end
-
-def test_only_titled_news_threads_are_megathreads
-  assert Cybort::RedditActivity.megathread?(build_candidate(subreddit: "news", title: "Election Megathread"))
-  assert Cybort::RedditActivity.megathread?(build_candidate(subreddit: "NEWS", title: "Live Thread: storm"))
-  refute Cybort::RedditActivity.megathread?(build_candidate(subreddit: "news", title: "Daily discussion", stickied: true))
-  refute Cybort::RedditActivity.megathread?(build_candidate(subreddit: "worldnews", title: "Election Megathread"))
-end
-
-def test_priority_spans_rank_range
-  assert_equal 99, Cybort::RedditActivity.priority(rank_index: 0, candidate_count: 3)
-  assert_equal 50, Cybort::RedditActivity.priority(rank_index: 1, candidate_count: 3)
-  assert_equal 0, Cybort::RedditActivity.priority(rank_index: 2, candidate_count: 3)
-  assert_equal 99, Cybort::RedditActivity.priority(rank_index: 0, candidate_count: 1)
-end
+assert_equal %w[m1], select(limit: 1, messages: %w[m1], megas: %w[g1], threads: %w[t1])
+assert_equal %w[g1], select(limit: 1, messages: [], megas: %w[g1], threads: %w[t1])
+assert_equal %w[m1 t1], select(limit: 2, messages: %w[m1 m2], megas: [], threads: %w[t1])
+assert_equal %w[m1 g1], select(limit: 2, messages: %w[m1], megas: %w[g1], threads: %w[t1])
+assert_equal %w[g1 t1], select(limit: 2, messages: [], megas: %w[g1], threads: %w[t1])
+assert_equal %w[m1 g1 m2 t1], select(limit: 4, messages: %w[m1 m2], megas: %w[g1], threads: %w[t1 t2])
 ```
 
-Also assert that negative integer counts are treated as zero and non-integer
-counts raise `ValidationError`.
+Assert final one-based `selection_rank` matches emitted order and duplicates are
+not emitted.
 
-- [ ] **Step 2: Run the activity test and verify failure**
-
-Run:
+- [ ] **Step 3: Run and verify RED**
 
 ```bash
 bundle exec ruby -Itest test/reddit_activity_test.rb
 ```
 
-Expected: FAIL because `Cybort::RedditActivity` is undefined.
+- [ ] **Step 4: Implement the pure module from the spec formulas**
 
-- [ ] **Step 3: Implement the pure metric and stable rank**
+Use integer arithmetic only. Keep activity rank separate from final selection
+rank. Do not read a clock inside this module; require the adapter's fetch time.
+Implement reservation first, then category-order fill, so guarantees do not
+depend on incidental concatenation/truncation.
 
-Create `lib/cybort/reddit_activity.rb`:
-
-```ruby
-module Cybort
-  module RedditActivity
-    Candidate = Struct.new(
-      :fullname, :subreddit, :title, :permalink, :created_at,
-      :vote_score, :comment_count, :stickied,
-      keyword_init: true
-    )
-
-    MEGATHREAD_PATTERN = /\bmega\s*thread\b|\blive\s+thread\b/i
-    module_function
-
-    def activity_score_milli(candidate, fetched_at:)
-      vote_score = count(candidate.vote_score, "score")
-      comment_count = count(candidate.comment_count, "num_comments")
-      age_minutes = [((fetched_at - candidate.created_at) / 60).floor, 60].max
-      ((vote_score + (2 * comment_count)) * 60_000) / age_minutes
-    end
-
-    def megathread?(candidate)
-      candidate.subreddit.casecmp?("news") && candidate.title.match?(MEGATHREAD_PATTERN)
-    end
-
-    def rank(candidates, fetched_at:)
-      candidates.sort_by do |candidate|
-        [
-          -activity_score_milli(candidate, fetched_at: fetched_at),
-          -count(candidate.comment_count, "num_comments"),
-          -count(candidate.vote_score, "score"),
-          -candidate.created_at.to_f,
-          candidate.fullname
-        ]
-      end
-    end
-
-    def priority(rank_index:, candidate_count:)
-      raise ValidationError, "invalid Reddit rank" unless rank_index.between?(0, candidate_count - 1)
-      99 - ((rank_index * 99) / [candidate_count - 1, 1].max)
-    end
-
-    def count(value, field)
-      raise ValidationError, "Reddit #{field} must be an integer" unless value.is_a?(Integer)
-      [value, 0].max
-    end
-    private_class_method :count
-  end
-end
-```
-
-- [ ] **Step 4: Require the module and run tests**
-
-Add after the Reddit client require in `lib/cybort.rb`:
-
-```ruby
-require "cybort/reddit_activity"
-```
-
-Run:
+- [ ] **Step 5: Run and verify GREEN; commit**
 
 ```bash
 bundle exec ruby -Itest test/reddit_activity_test.rb
-bundle exec ruby -Itest test/item_test.rb
-```
-
-Expected: PASS with no failures or errors.
-
-- [ ] **Step 5: Commit the metric**
-
-```bash
-git add lib/cybort.rb lib/cybort/reddit_activity.rb test/reddit_activity_test.rb
-git commit -m "feat: rank Reddit thread activity"
+git add lib/cybort/reddit_activity.rb test/reddit_activity_test.rb lib/cybort.rb
+git commit -m "feat: rank and select Reddit activity"
 ```
 
 ---
 
-### Task 4: Validate and Register Reddit Adapter Configuration
+### Task 6: Add fixtures and the Reddit adapter configuration boundary
 
 **Files:**
+- Create: all eight `test/fixtures/reddit/*.json` files in the file map
 - Create: `lib/cybort/adapters/reddit.rb`
 - Create: `test/adapters/reddit_test.rb`
 - Modify: `lib/cybort.rb`
-- Modify: `lib/cybort/adapter_registry.rb`
-- Modify: `test/adapter_registry_test.rb`
 
-**Interfaces:**
-- Consumes: normal `Configuration::Instance#options`.
-- Produces: `Adapters::Reddit.validate_configuration!(instance)` with no network or OAuth side effects.
-- Produces: default registry entry `reddit` with zero executable dependencies.
+- [ ] **Step 1: Add minimized fixtures**
 
-- [ ] **Step 1: Write failing option-validation tests**
+Each fixture contains only fields the adapter consumes. Use synthetic IDs,
+subjects, titles, subreddits, times, scores, comments, stickied, and permalinks;
+include no real account data, bodies, authors, media, or outbound URLs. Make
+unread page 1 contain enough nonqualifying `t1`/announcement/comment shapes to
+prove they do not consume the message quota; page 2 supplies qualifying t4s.
 
-In `test/adapters/reddit_test.rb`, build an instance containing fixture-only
-values for the four credentials and this User-Agent:
+- [ ] **Step 2: Write exhaustive config-validation tests**
 
-```ruby
-USER_AGENT = "macos:com.example.cybort:v0.1.0 (by /u/example_user)"
-```
+For every credential and User-Agent, test `"   "`, a value containing `"\0"`,
+one containing `"\u007f"`, and one byte over its 256/1024/4096/256 limit.
+Assert no client call occurs. Test valid User-Agent shape and malformed
+platform/app/version/username variants.
 
-Test that validation accepts omitted include/exclude arrays and values such as
-`["news", "Ruby"]`. Add table-driven failures for each missing/blank credential,
-control characters, malformed User-Agent, non-array lists, non-string names,
-`"r/news"`, invalid punctuation, 101 names, and Reddit limits 0 and 101. Use
-exact message fragments naming the invalid key but never its value.
+Test subreddit arrays for non-array, non-string, empty, `r/` prefix, slash,
+control, over-21-character name, and 51 elements. Assert lowercase
+case-insensitive dedupe and exclusion precedence. Test `num_items_to_fetch` at
+0, 1, 100, and 101.
 
-Add to `test/adapter_registry_test.rb`:
-
-```ruby
-def test_default_registry_registers_reddit_without_executable_dependencies
-  instance = Cybort::Configuration::Instance.new(
-    id: "reddit", name: "Reddit", adapter: "reddit", ttl_minutes: 15,
-    num_items_to_fetch: 10,
-    options: {
-      client_id: "client", client_secret: "secret", refresh_token: "refresh",
-      user_agent: "macos:com.example.cybort:v0.1.0 (by /u/example_user)"
-    }
-  )
-
-  registry = Cybort::AdapterRegistry.default
-  registry.validate_configuration!(instance)
-  assert_empty registry.dependencies_for(instance)
-end
-```
-
-- [ ] **Step 2: Run focused tests and verify failure**
-
-Run:
+- [ ] **Step 3: Run the focused file; verify RED**
 
 ```bash
 bundle exec ruby -Itest test/adapters/reddit_test.rb
-bundle exec ruby -Itest test/adapter_registry_test.rb
 ```
 
-Expected: FAIL because the Reddit adapter is undefined/unregistered.
+- [ ] **Step 4: Implement validation and injected construction**
 
-- [ ] **Step 3: Implement side-effect-free validation**
+Follow existing adapter initializer/validation patterns. Store only normalized
+non-secret options necessary for fetch. Default the production client and
+process coordinator, but accept injected clients/clocks in tests. Ensure
+`executable_dependencies` remains empty.
 
-Create `lib/cybort/adapters/reddit.rb` with constants and validator:
-
-```ruby
-module Cybort
-  module Adapters
-    class Reddit < Base
-      MAX_ITEMS = 100
-      MAX_CONFIGURED_SUBREDDITS = 100
-      SUBREDDITS_PER_BATCH = 25
-      SUBREDDIT_PATTERN = /\A[A-Za-z0-9_]{2,21}\z/
-      USER_AGENT_PATTERN = /\A[^:\s]+:[^:\s]+:[^\s()]+ \(by \/u\/[A-Za-z0-9_-]+\)\z/
-      CREDENTIAL_KEYS = %i[client_id client_secret refresh_token].freeze
-
-      def self.validate_configuration!(instance)
-        CREDENTIAL_KEYS.each do |key|
-          value = instance.options[key]
-          unless value.is_a?(String) && !value.empty? && value.each_codepoint.none? { |code| code < 32 || code == 127 }
-            raise ConfigurationError, "reddit #{key} must be a nonblank printable string"
-          end
-        end
-        user_agent = instance.options[:user_agent]
-        unless user_agent.is_a?(String) && user_agent.match?(USER_AGENT_PATTERN)
-          raise ConfigurationError, "reddit user_agent must use Reddit's descriptive format"
-        end
-        unless instance.num_items_to_fetch.is_a?(Integer) && instance.num_items_to_fetch.between?(1, MAX_ITEMS)
-          raise ConfigurationError, "reddit num_items_to_fetch must be an integer from 1 through #{MAX_ITEMS}"
-        end
-        %i[include_subreddits exclude_subreddits].each do |key|
-          validate_subreddits!(key, instance.options.fetch(key, []))
-        end
-      end
-
-      def self.validate_subreddits!(key, values)
-        unless values.is_a?(Array) && values.length <= MAX_CONFIGURED_SUBREDDITS &&
-               values.all? { |value| value.is_a?(String) && value.match?(SUBREDDIT_PATTERN) }
-          raise ConfigurationError, "reddit #{key} must contain at most 100 subreddit names"
-        end
-      end
-      private_class_method :validate_subreddits!
-    end
-  end
-end
-```
-
-- [ ] **Step 4: Require and register the adapter**
-
-Add after the Gmail adapter require in `lib/cybort.rb`:
-
-```ruby
-require "cybort/adapters/reddit"
-```
-
-In `AdapterRegistry.default`, add:
-
-```ruby
-registry.register("reddit", Adapters::Reddit)
-```
-
-- [ ] **Step 5: Run focused configuration/registry tests**
-
-Run:
+- [ ] **Step 5: Run config tests; verify GREEN**
 
 ```bash
-bundle exec ruby -Itest test/adapters/reddit_test.rb
-bundle exec ruby -Itest test/adapter_registry_test.rb
-bundle exec ruby -Itest test/configuration_test.rb
+bundle exec ruby -Itest test/adapters/reddit_test.rb -n '/config|user_agent|subreddit|num_items/'
 ```
 
-Expected: PASS with no failures or errors. Reddit tests at this checkpoint cover
-validation only.
-
-- [ ] **Step 6: Commit registration and validation**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add lib/cybort.rb lib/cybort/adapter_registry.rb lib/cybort/adapters/reddit.rb test/adapter_registry_test.rb test/adapters/reddit_test.rb
+git add test/fixtures/reddit lib/cybort/adapters/reddit.rb test/adapters/reddit_test.rb lib/cybort.rb
 git commit -m "feat: validate Reddit adapter configuration"
 ```
 
 ---
 
-### Task 5: Fetch, Select, and Normalize Reddit Items
+### Task 7: Implement discovery calls, identity validation, and normalization
 
 **Files:**
 - Modify: `lib/cybort/adapters/reddit.rb`
 - Modify: `test/adapters/reddit_test.rb`
-- Create: `test/fixtures/reddit/unread.json`
-- Create: `test/fixtures/reddit/home_hot.json`
-- Create: `test/fixtures/reddit/included_hot.json`
-- Create: `test/fixtures/reddit/news_hot.json`
 
-**Interfaces:**
-- Consumes: `RedditClient#authenticate!`, `#listing`, `#request_count`, and `#rate_metadata` from Task 2.
-- Consumes: `RedditActivity` candidate/ranking functions from Task 3.
-- Produces: ordinary successful/failure `FetchResult` through `Adapters::Base#fetch`.
-- Produces: only body-free `Item` values and safe aggregate metadata.
+- [ ] **Step 1: Write scope and outbound-call tests**
 
-- [ ] **Step 1: Create sanitized source fixtures**
-
-Create the fixtures with these exact payloads (line wrapping is optional).
-
-`test/fixtures/reddit/unread.json`:
-
-```json
-{"kind":"Listing","data":{"after":null,"children":[{"kind":"t4","data":{"name":"t4_dm1","id":"dm1","subject":"Project update","created_utc":1788602400,"new":true,"body":"DO_NOT_STORE_MESSAGE_BODY","author":"private_user"}},{"kind":"t1","data":{"name":"t1_reply1","body":"DO_NOT_STORE_COMMENT_BODY"}}]}}
-```
-
-`test/fixtures/reddit/home_hot.json`:
-
-```json
-{"kind":"Listing","data":{"after":null,"children":[{"kind":"t3","data":{"name":"t3_ruby1","subreddit":"Ruby","title":"Ruby release discussion","permalink":"/r/ruby/comments/ruby1/release/","created_utc":1788598800,"score":200,"num_comments":120,"stickied":false,"selftext":"DO_NOT_STORE_SELF_TEXT"}},{"kind":"t3","data":{"name":"t3_memes1","subreddit":"memes","title":"Excluded","permalink":"/r/memes/comments/memes1/excluded/","created_utc":1788598800,"score":9999,"num_comments":9999,"stickied":false,"selftext":"DO_NOT_STORE_SELF_TEXT"}},{"kind":"t3","data":{"name":"t3_rec1","subreddit":"recommended","title":"DO_NOT_STORE_RECOMMENDATION","permalink":"/r/recommended/comments/rec1/nope/","created_utc":1788598800,"score":9999,"num_comments":9999,"stickied":false,"selftext":"DO_NOT_STORE_RECOMMENDATION"}}]}}
-```
-
-`test/fixtures/reddit/included_hot.json`:
-
-```json
-{"kind":"Listing","data":{"after":null,"children":[{"kind":"t3","data":{"name":"t3_extra1","subreddit":"extra","title":"Explicit discussion","permalink":"/r/extra/comments/extra1/discussion/","created_utc":1788595200,"score":100,"num_comments":200,"stickied":false,"selftext":"DO_NOT_STORE_SELF_TEXT"}},{"kind":"t3","data":{"name":"t3_ruby1","subreddit":"Ruby","title":"Ruby release discussion","permalink":"/r/ruby/comments/ruby1/release/","created_utc":1788598800,"score":200,"num_comments":120,"stickied":false,"selftext":"DO_NOT_STORE_SELF_TEXT"}}]}}
-```
-
-`test/fixtures/reddit/news_hot.json`:
-
-```json
-{"kind":"Listing","data":{"after":null,"children":[{"kind":"t3","data":{"name":"t3_mega","subreddit":"news","title":"Election Megathread","permalink":"/r/news/comments/mega/election/","created_utc":1788516000,"score":500,"num_comments":900,"stickied":true,"selftext":"DO_NOT_STORE_SELF_TEXT"}},{"kind":"t3","data":{"name":"t3_daily","subreddit":"news","title":"Daily discussion","permalink":"/r/news/comments/daily/discussion/","created_utc":1788598800,"score":800,"num_comments":500,"stickied":true,"selftext":"DO_NOT_STORE_SELF_TEXT"}}]}}
-```
-
-- [ ] **Step 2: Write failing scope/request tests**
-
-Extend the adapter fake HTTP client so token POST and URL-matched listing GETs
-return fixtures while recording every call. Add a test that configures
-subscriptions `Ruby` and `news`, includes `Extra` twice with different case,
-and excludes `memes`. Assert URLs include:
+With subscriptions `ruby, news, memes`, includes `askscience, news, memes`, and
+excludes `memes`, assert:
 
 ```ruby
-assert requested_paths.include?("/subreddits/mine/subscriber")
-assert requested_paths.include?("/message/unread")
-assert requested_paths.include?("/hot")
-assert requested_paths.any? { |path| path.include?("/r/extra/hot") }
-assert requested_paths.any? { |path| path.include?("/r/news/hot") }
-assert requested_urls.all? { |url| url.include?("raw_json=1") }
+assert_equal %w[news ruby], adapter.joined_effective
+assert_equal %w[askscience], adapter.explicit_to_fetch
+assert_equal 1, client.calls.count { |c| c.operation == :home_hot }
+assert_equal %w[askscience], client.subreddit_calls.select { |c| c.operation == :subreddit_hot }.map(&:subreddit)
+assert_equal %w[news], client.subreddit_calls.select { |c| c.operation == :news_hot }.map(&:subreddit)
+refute client.urls.any? { |url| url.include?("+") }
 ```
 
-Assert excluded/recommended candidates never appear, the duplicate fullname
-appears once, subscription pagination completes, additions are lowercase/sorted
-and divided into groups of 25, and an empty effective set skips every hot
-request but can still return unread messages.
+In a separate case put `news` in include and exclude and assert there is no
+request for it. Put an explicit name in subscriptions and assert no explicit
+request. When all joined names are excluded, assert no home call. When explicit
+`news` is not subscribed, assert exactly one call (ordinary explicit request,
+not a duplicate dedicated request).
 
-- [ ] **Step 3: Write failing normalization and selection tests**
+- [ ] **Step 2: Write unread qualification/pagination tests**
 
-Assert the direct message is:
+Set limit 2, return a first page with ten nonqualifying children and one valid
+t4 plus an `after`, then a second valid t4. Assert two messages are returned and
+the second page was requested. Test `kind/name/id`, `new`, and `was_comment`
+rules individually. Assert message body/author/raw fields never occur in
+`Item#body`, `info`, result metadata, or serialized result.
+
+- [ ] **Step 3: Write identity and URL attack tests**
+
+For t3 candidates independently reject:
+
+- `kind != "t3"`, uppercase/malformed ID, and `name` not exactly `t3_<id>`;
+- subreddit different from a requested single-subreddit (while a valid
+  out-of-scope home recommendation is filtered, not failed);
+- an absolute URL, network path, query, fragment, and backslash;
+- raw C0/DEL, `%00`, `%1f`, `%7f`, `%2f`, `%5c`, `%3f`, and `%23`
+  (case-insensitive), plus malformed percent escapes;
+- `.`/`..` traversal segments including percent-encoded forms; and
+- a decoded subreddit or comment ID mismatch.
+
+Assert inconsistent duplicates with one fullname but different identity fields
+fail. Assert the valid path
+`/r/news/comments/abc123/example_title/` produces exactly
+`https://www.reddit.com/r/news/comments/abc123/example_title/` even if the source
+object contains an outbound `url` field.
+
+- [ ] **Step 4: Write normalization, metadata, and replacement tests**
+
+Assert selected messages/threads have `body: nil`, correct canonical identity,
+one canonical URL, one fetch timestamp, normalized remote time, exact vote and
+comment totals, activity score, megathread/stickied, and final selection rank.
+Assert a complete remote result has:
 
 ```ruby
-assert_equal "t4_dm1", message.canonical_id
-assert_equal ["https://www.reddit.com/message/messages/dm1"], message.urls
-assert_equal "Project update", message.title
-assert_nil message.body
-assert_equal 100, message.priority
-assert_equal true, message.action_item
-assert_equal({ kind: "direct_message", unread: true }, message.info)
+assert result.source_fetched
+assert result.replace_existing_items
+assert_equal "unsupported_by_documented_data_api",
+  result.metadata.fetch(:chat_collection)
+assert_equal "personalized_home_plus_explicit_single_subreddit",
+  result.metadata.fetch(:coverage_mode)
 ```
 
-Assert the megathread precedes higher-scoring normal threads after messages,
-normal threads follow the Task 3 rank, and the combined result length never
-exceeds `num_items_to_fetch`. For a selected thread assert:
+Assert bounded count/page/request fields exist but membership, credentials,
+subjects, and titles do not. Make any required page/call invalid and assert a
+failure with `replace_existing_items == false` and no partial items.
 
-```ruby
-assert_equal "t3_mega", thread.canonical_id
-assert_equal ["https://www.reddit.com/r/news/comments/mega/election/"], thread.urls
-assert_nil thread.body
-assert_equal "thread", thread.info.fetch(:kind)
-assert_equal "news", thread.info.fetch(:subreddit)
-assert_equal 500, thread.info.fetch(:vote_score)
-assert_equal 900, thread.info.fetch(:comment_count)
-assert_kind_of Integer, thread.info.fetch(:activity_score_milli)
-assert_equal true, thread.info.fetch(:megathread)
-refute_includes JSON.generate(result.items.map(&:to_h)), "DO_NOT_STORE"
-```
+- [ ] **Step 5: Write final selection tests at adapter level**
 
-Assert metadata equals an allowlisted aggregate shape:
+Cover N=1 message priority; N=2 message+ordinary; N=2 message+mega (mega is the
+reserved thread); N=2 mega+ordinary without message; N=4 deterministic fill;
+duplicate t3 across home/explicit/news; and more unread nonqualifying objects
+than N. Assert priority describes activity order while `selection_rank`
+describes final emitted order.
 
-```ruby
-assert_equal "unsupported_by_documented_data_api", result.metadata.fetch(:chat_collection)
-assert_equal result.items.length, result.metadata.fetch(:selected_count)
-assert_kind_of Integer, result.metadata.fetch(:request_count)
-refute result.metadata.key?(:subreddits)
-refute_includes JSON.generate(result.metadata), "Project update"
-```
-
-Add failures for invalid `t4`/`t3` fullname, blank title, nonnumeric timestamp,
-nonnumeric score/comments, unsafe permalink, and malformed listing. Confirm
-each failure contains zero new items and no sentinel content/credentials.
-
-- [ ] **Step 4: Run adapter tests and verify source behavior fails**
-
-Run:
+- [ ] **Step 6: Run and verify RED**
 
 ```bash
 bundle exec ruby -Itest test/adapters/reddit_test.rb
 ```
 
-Expected: FAIL because `Adapters::Reddit#fetch_from_source` is not implemented.
+- [ ] **Step 7: Implement one complete remote pipeline**
 
-- [ ] **Step 5: Implement effective scope and bounded candidate requests**
+Implement in this order:
 
-In `Adapters::Reddit`, create a `RedditClient` with the configured credentials,
-the injected `http_client`, and request budget 90. Capture `fetched_at =
-clock.call` once, authenticate, then use:
+1. authenticate;
+2. completely discover/validate subscriptions;
+3. calculate `joined_effective` and `explicit_to_fetch` after exclusions;
+4. fetch/qualify unread pages until enough qualifying candidates or end;
+5. call home at most once, sorted explicit names individually, and joined news
+   once after exclusion;
+6. validate/filter/dedupe t3s, calculate/rank, then bounded-select;
+7. construct minimized `Item`s and safe bounded metadata; and
+8. return `FetchResult.success(..., source_fetched: true,
+   replace_existing_items: true)` only now.
 
-```ruby
-subscriptions = client.listing(
-  "/subreddits/mine/subscriber", params: { limit: 100 },
-  paginate: true, max_items: nil
-).map { |child| subscription_name!(child) }
+Rescue source errors through the established base adapter path. Cached base
+results retain default replacement false and empty metadata; do not restore
+`chat_collection` on cache hits.
 
-included = normalized_names(:include_subreddits)
-excluded = normalized_names(:exclude_subreddits)
-effective = ((subscriptions.map(&:downcase) | included) - excluded).sort
-
-messages = client.listing(
-  "/message/unread",
-  params: { limit: instance.num_items_to_fetch, mark: false, max_replies: 0 },
-  paginate: false, max_items: instance.num_items_to_fetch
-).select { |child| child["kind"] == "t4" }.map { |child| message_item!(child, fetched_at) }
-```
-
-If `effective` is nonempty, request one `/hot` page. Request explicit additions
-in `included.sort.each_slice(SUBREDDITS_PER_BATCH)` batches through
-`/r/#{batch.join("+")}/hot`. Request `/r/news/hot` when effective includes
-`news`. Each hot listing uses `limit: 100`, `paginate: false`, and
-`max_items: 100`. Filter every raw candidate by the effective set before
-deduplicating by fullname.
-
-- [ ] **Step 6: Implement strict body-free normalization and selection**
-
-Convert candidates using source `name`, `subreddit`, `title`, `permalink`,
-`created_utc`, `score`, `num_comments`, and `stickied` only. Require fullnames
-to match `\At3_[a-z0-9]+\z`, message fullnames to match
-`\At4_[a-z0-9]+\z`, and permalinks to begin with `/r/` and contain no scheme or
-host. Convert timestamps with `Time.at(Float(value)).utc` and reject non-finite
-values.
-
-Use:
-
-```ruby
-ranked = RedditActivity.rank(candidates, fetched_at: fetched_at)
-priority_by_fullname = ranked.each_with_index.to_h do |candidate, index|
-  [candidate.fullname, RedditActivity.priority(rank_index: index, candidate_count: ranked.length)]
-end
-megathreads, normal_threads = ranked.partition { |candidate| RedditActivity.megathread?(candidate) }
-selected = (messages + (megathreads + normal_threads).map do |candidate|
-  thread_item(candidate, fetched_at, priority_by_fullname.fetch(candidate.fullname))
-end).first(instance.num_items_to_fetch)
-```
-
-Construct thread info exactly as:
-
-```ruby
-{
-  kind: "thread",
-  subreddit: candidate.subreddit.downcase,
-  vote_score: [candidate.vote_score, 0].max,
-  comment_count: [candidate.comment_count, 0].max,
-  activity_score_milli: RedditActivity.activity_score_milli(candidate, fetched_at: fetched_at),
-  megathread: RedditActivity.megathread?(candidate),
-  stickied: candidate.stickied == true
-}
-```
-
-Return `sync_state: {}` and successful metadata containing only
-`chat_collection`, `subscription_count`, `effective_subreddit_count`, raw
-candidate/message counts, `selected_count`, `request_count`, and
-`client.rate_metadata`. Do not include names, titles, URLs, or OAuth values.
-
-- [ ] **Step 7: Run adapter/client/activity tests**
-
-Run:
+- [ ] **Step 8: Run focused tests; verify GREEN**
 
 ```bash
 bundle exec ruby -Itest test/adapters/reddit_test.rb
-bundle exec ruby -Itest test/reddit_client_test.rb
 bundle exec ruby -Itest test/reddit_activity_test.rb
-bundle exec ruby -Itest test/adapters/base_test.rb
+bundle exec ruby -Itest test/reddit_client_test.rb
 ```
 
-Expected: PASS with no failures or errors.
-
-- [ ] **Step 8: Commit collection behavior and fixtures**
+- [ ] **Step 9: Commit**
 
 ```bash
-git add lib/cybort/adapters/reddit.rb test/adapters/reddit_test.rb test/fixtures/reddit/unread.json test/fixtures/reddit/home_hot.json test/fixtures/reddit/included_hot.json test/fixtures/reddit/news_hot.json
-git commit -m "feat: collect Reddit messages and active threads"
+git add lib/cybort/adapters/reddit.rb test/adapters/reddit_test.rb test/fixtures/reddit
+git commit -m "feat: collect bounded Reddit snapshots"
 ```
 
 ---
 
-### Task 6: Prove CLI Cache, Failure Isolation, and Retention
+### Task 8: Register Reddit and prove persistence/orchestrator integration
 
 **Files:**
+- Modify: `lib/cybort/adapter_registry.rb`
+- Modify: `test/adapter_registry_test.rb`
 - Modify: `test/system/cli_system_test.rb`
 
-**Interfaces:**
-- Consumes: default registry, CLI, existing orchestrator/persistence retention path, and Reddit fixtures.
-- Produces: system-level evidence without changing production orchestration or persistence.
+- [ ] **Step 1: Write registry tests**
 
-- [ ] **Step 1: Add a configurable fake Reddit HTTP client**
+Assert `AdapterRegistry.default` builds `reddit`, declares no executable, and
+reports Reddit validation errors alongside another invalid source before
+persistence registration. Use syntactically fake secrets only.
 
-In `test/system/cli_system_test.rb`, add a fake that implements `post_form` and
-`get`, records calls, returns the Reddit fixtures by URL path, and can raise:
+- [ ] **Step 2: Write offline system scenarios**
+
+Using injected/fake HTTP responses and a temporary SQLite database, prove:
+
+1. first forced remote fetch stores one unread message and two selected
+   threads;
+2. second complete remote snapshot omits the message/thread, and they are
+   removed while a returned identity remains refreshed;
+3. an empty complete snapshot clears the instance;
+4. a fresh-cache run makes zero token/data calls, preserves stored items, and
+   has no remote chat metadata;
+5. token 401, data 403, 429, timeout, and malformed later page preserve prior
+   items and sync state;
+6. configured retention remains success-only and composes with replacement;
+7. a Reddit failure does not discard a successful RSS result; and
+8. CLI JSON stays in current recency order even when Reddit priority and
+   `selection_rank` differ.
+
+Capture requested URLs in all scenarios and assert:
 
 ```ruby
-Cybort::HttpError.new(429, headers: { "Retry-After" => "60" })
+refute requested_urls.any? { |url| url.match?(%r{/r/[^/]*\+[^/]*/hot}) }
 ```
 
-Add `write_reddit_config(root, ttl_minutes:, retention_ttl_minutes: nil,
-num_items_to_fetch: 10)` using only fixture credentials and the documented
-User-Agent. Never place real credentials in tests.
-
-- [ ] **Step 2: Write a forced-fetch and cache test**
-
-Run the CLI with `--force-fetch`, parse JSON, and assert one message/thread has
-`body == nil`, a thread contains vote/comment/activity metadata, and metadata
-reports unsupported chat. Run again inside TTL with a fake that raises on every
-method and assert status `cached`, exit 0, identical persisted canonical IDs,
-and zero fake calls.
-
-- [ ] **Step 3: Write failure, retention, and source-isolation tests**
-
-Add three tests:
-
-1. Seed a successful Reddit run, advance past TTL, return HTTP 429, and assert
-   exit 1, safe `status: 429`/`retry_after_seconds: 60`, and unchanged items.
-2. Configure `retention_ttl_minutes = 60`; seed a selected thread, advance two
-   hours, return a successful fixture without it, and assert it is absent after
-   the second successful fetch while current items remain.
-3. Configure Reddit and RSS together, fail Reddit OAuth, return local RSS XML,
-   and assert `partial_failure`, Reddit last-known-good data, and successful RSS
-   data.
-
-- [ ] **Step 4: Run the system test and inspect any failure**
-
-Run:
+- [ ] **Step 3: Run and verify RED**
 
 ```bash
+bundle exec ruby -Itest test/adapter_registry_test.rb
 bundle exec ruby -Itest test/system/cli_system_test.rb
 ```
 
-Expected: PASS. If the retention test fails because the missing thread remains,
-check fixture timestamps and the existing last-seen cutoff; do not add
-Reddit-specific deletion.
+- [ ] **Step 4: Register the adapter only**
 
-- [ ] **Step 5: Run focused integration regressions**
+Follow the existing direct-adapter registry entry. Do not modify the
+orchestrator: `FetchResult` transports snapshot intent to persistence through
+the existing result write.
 
-Run:
+- [ ] **Step 5: Run integration tests; verify GREEN**
 
 ```bash
-bundle exec ruby -Itest test/multi_adapter_integration_test.rb
+bundle exec ruby -Itest test/adapter_registry_test.rb
+bundle exec ruby -Itest test/system/cli_system_test.rb
 bundle exec ruby -Itest test/orchestrator_test.rb
 bundle exec ruby -Itest test/persistence_test.rb
 ```
 
-Expected: PASS with no failures or errors.
-
-- [ ] **Step 6: Commit system coverage**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add test/system/cli_system_test.rb
-git commit -m "test: cover Reddit CLI lifecycle"
+git add lib/cybort/adapter_registry.rb test/adapter_registry_test.rb test/system/cli_system_test.rb
+git commit -m "feat: integrate Reddit snapshot collection"
 ```
 
 ---
 
-### Task 7: Document Reddit Setup and Durable Constraints
+### Task 9: Document operator behavior and authenticated release gate
 
 **Files:**
 - Modify: `README.md`
 - Modify: `AGENTS.md`
-- Modify only after a real smoke test yields evidence: `docs/LEARNINGS.md`
+- Conditional modify: `docs/LEARNINGS.md`
 
-**Interfaces:**
-- Consumes: implemented configuration and observed test behavior.
-- Produces: user-facing setup instructions and durable agent guidance.
+- [ ] **Step 1: Add user-facing configuration and semantics**
 
-- [ ] **Step 1: Add the Reddit README section**
+Document every example key and limit, external refresh-token provisioning,
+required scopes, bounded personalized-home coverage, one-call explicit/news
+behavior, exclusions, exact ranking formula, message/thread reservation,
+`selection_rank`, and unchanged CLI recency ordering.
 
-After the Gmail connector section, document the exact TOML example from the
-spec and explain:
+State prominently that chat is unsupported, body/author/raw data is not stored,
+visible score is not an exact vote count, and complete successes replace the
+bounded current set.
 
-- external approved-app/refresh-token provisioning;
-- the `read mysubreddits privatemessages` scopes;
-- the required descriptive User-Agent format;
-- `(subscriptions + inclusions) - exclusions` with exclusion precedence;
-- the 100-item combined limit and message/megathread/thread precedence;
-- the integer activity formula and that `score` is Reddit's visible/fuzzed
-  score rather than exact votes;
-- direct messages but not consumer Chat in V1;
-- no bodies/authors/raw payloads and no marking read;
-- 100-QPM policy awareness and safe failure behavior; and
-- `retention_ttl_minutes = 2880` as a strong recommendation, including the
-  limits of success-triggered cleanup and the user's obligation to follow
-  current Reddit terms.
+- [ ] **Step 2: Add the compliance caveat without overclaiming**
 
-Link directly to the three current official sources from the spec and label the
-OAuth2 wiki as legacy documentation linked by Reddit's current help page.
+Recommend `retention_ttl_minutes <= 2880`, then state that cache/failure paths do
+not clean up, so neither retention nor snapshot replacement guarantees
+wall-clock deletion during outages. Document the absence of automatic cleanup
+on instance removal/access termination/user request and point to
+`docs/quality-followups.md`. Provide a concrete manual local-data removal
+warning without inventing a new destructive CLI command.
 
-- [ ] **Step 2: Add the stable project invariant**
+- [ ] **Step 3: Record durable invariants**
 
-In `AGENTS.md`, add one concise invariant:
+In `AGENTS.md`, add only implemented facts: documented endpoints, complete
+remote snapshot opt-in, cache/failure preservation, body-free storage, bounded
+coverage, and authenticated release gate. Do not copy temporary task details.
 
-```markdown
-- The Reddit adapter uses the documented OAuth Data API with read-only
-  `read`, `mysubreddits`, and `privatemessages` scopes. It stores unread direct
-  message subjects and ranked thread metadata but no bodies/authors/raw
-  payloads; consumer Chat remains unsupported until Reddit documents a read
-  endpoint. Release support remains gated on a sanitized authenticated contract
-  smoke test.
-```
+- [ ] **Step 4: Specify and, only if credentials are available, run smoke test**
 
-- [ ] **Step 3: Perform the optional authenticated smoke test only with explicit credentials available**
+The manual checklist verifies token fields/scopes, t5/t4 cursor shapes,
+`/hot`, one `/r/<name>/hot`, rate headers, absence of `+` routes, and unchanged
+qualifying unread IDs/count immediately before/after the `mark=false` fetch.
+Record only shapes/statuses. If not run, say so; do not add a speculative
+learning or block offline implementation.
 
-Do not invent credentials and do not put them on command lines that will be
-logged. With an approved app and secrets supplied through a private local
-mechanism, verify token refresh, scopes, subscriptions, unread `mark=false`,
-home hot, an explicit `+` listing, `r/news` hot, and rate headers. Record only
-endpoint status, scope names, response field names/types, and header names.
-
-If no credentials are available, leave the gate open and do not edit
-`docs/LEARNINGS.md`. If it runs, add a dated learning with status, observation,
-sanitized evidence, impact, and next action; never record tokens, usernames,
-subjects, titles, or memberships.
-
-- [ ] **Step 4: Validate documentation without running project tests**
-
-Run:
+- [ ] **Step 5: Validate links and terminology**
 
 ```bash
-rg -n "Reddit|reddit|chat_collection|activity_score_milli|retention_ttl_minutes" README.md AGENTS.md docs/LEARNINGS.md
-git diff --check
+rg -n 'reddit|replace_existing_items|retention_ttl_minutes|chat|personalized|mark=false' README.md AGENTS.md docs/adr docs/quality-followups.md docs/superpowers/specs/2026-09-05-reddit-integration-design.md
+rg -n '/r/[^` ]*\+[^` ]*/hot|full deletion compliance|guarantee.*read state' README.md AGENTS.md docs
 ```
 
-Expected: the README and invariant agree with the spec and implementation;
-`git diff --check` prints nothing.
+Expected: the first command shows consistent documentation; the second has no
+positive implementation claim or multi-subreddit endpoint (historical review
+wording such as “never use” may match and must be inspected).
 
-- [ ] **Step 5: Commit documentation**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add README.md AGENTS.md
-git add docs/LEARNINGS.md # only when Step 3 produced sanitized evidence
-git commit -m "docs: explain Reddit integration"
+git add docs/LEARNINGS.md
+git commit -m "docs: explain Reddit collection and lifecycle caveats"
 ```
 
 ---
 
-### Task 8: Final Verification and Review
+### Task 10: Final verification and review checkpoint
 
-**Files:**
-- Verify all files listed above; make no scope-expanding production changes.
+**Files:** review every file in the exact file map; change only defects found.
 
-**Interfaces:**
-- Consumes: the complete Reddit implementation.
-- Produces: evidence that the feature and existing source contracts pass together.
+- [ ] **Step 1: Run focused suites together**
 
-- [ ] **Step 1: Run the complete test suite**
+```bash
+bundle exec ruby -Itest test/rate_limit_headers_test.rb
+bundle exec ruby -Itest test/http_client_test.rb
+bundle exec ruby -Itest test/errors_test.rb
+bundle exec ruby -Itest test/reddit_rate_limit_coordinator_test.rb
+bundle exec ruby -Itest test/fetch_result_test.rb
+bundle exec ruby -Itest test/persistence_test.rb
+bundle exec ruby -Itest test/reddit_client_test.rb
+bundle exec ruby -Itest test/reddit_activity_test.rb
+bundle exec ruby -Itest test/adapters/reddit_test.rb
+bundle exec ruby -Itest test/adapter_registry_test.rb
+bundle exec ruby -Itest test/system/cli_system_test.rb
+```
 
-Run:
+Expected: all PASS with no network access.
+
+- [ ] **Step 2: Run complete project verification**
 
 ```bash
 bundle exec rake test
+bundle exec rubocop
+bundle exec brakeman
 ```
 
-Expected: PASS with zero failures and zero errors; test output must show no
-external-service request.
+Expected: all exit 0. If this repository does not define one of the latter two
+commands, report that exact absence; do not install or invent tooling.
 
-- [ ] **Step 2: Run formatting and secret/content scans**
+- [ ] **Step 3: Audit prohibited data and endpoints**
 
-Run:
+```bash
+rg -n 'selftext|author|Sendbird|sendbird|/r/[^ ]*\+[^ ]*/hot' lib/cybort test README.md AGENTS.md
+rg -n 'client_secret|refresh_token|access_token|Authorization' lib/cybort
+```
+
+Inspect every match. Credential terms may appear only at validation/request
+construction boundaries, never in result metadata, errors, or persistence.
+Fixtures contain synthetic values only. There must be no production `+` route.
+
+- [ ] **Step 4: Review architecture boundaries and diff**
 
 ```bash
 git diff --check
-rg -n "DO_NOT_STORE|fixture-access|Bearer secret|a\+b secret" lib README.md AGENTS.md
-rg -n "selftext|selftext_html|author|thumbnail|media" lib/cybort/adapters/reddit.rb
+git status --short
+git diff --stat HEAD~8..HEAD
+git log --oneline -10
 ```
 
-Expected: the first two commands print nothing. The field-name scan may show
-only explicit rejection/absence guards or comments; no value from those fields
-is assigned to `Item`, sync state, or metadata.
+Confirm no schema change, adapter SQL, orchestrator special case, global CLI
+sort change, or external-service test. Confirm snapshot delete precedes upsert
+inside one transaction and all rollback tests actually observe durable state
+from a fresh read.
 
-- [ ] **Step 3: Review architecture boundaries and repository status**
+- [ ] **Step 5: Request independent code review**
 
-Run:
+Use `superpowers:requesting-code-review` with the spec, ADR 0004, this plan,
+commit range, and verification output. Resolve correctness findings with tests
+first and rerun Steps 1–4.
 
-```bash
-git diff --stat HEAD~7..HEAD
-git status --short
-rg -n "Reddit|reddit" lib/cybort/orchestrator.rb lib/cybort/persistence.rb lib/cybort/schema.rb
-```
-
-Expected: orchestrator, persistence, and schema contain no Reddit-specific
-branch; status contains only intended work; the diff contains no
-`docs/initial-spitballing.md` change.
-
-- [ ] **Step 4: Request code review**
-
-Use `superpowers:requesting-code-review` to compare the completed implementation
-against `docs/superpowers/specs/2026-09-05-reddit-integration-design.md` and this
-plan. Resolve correctness, privacy, policy, and secret-handling findings before
-claiming completion.
-
-- [ ] **Step 5: Commit review fixes if needed**
-
-Stage each review-fix file explicitly after checking status, then commit:
+- [ ] **Step 6: Commit review fixes if any**
 
 ```bash
-git status --short
+git add lib test README.md AGENTS.md docs/LEARNINGS.md
+git diff --cached --quiet
 git commit -m "fix: address Reddit integration review"
 ```
 
-Skip this commit when review requires no changes. Re-run Steps 1 through 3 after
-any review fix. Never use `git add -A` for this checkpoint.
+Run the commit command only when the preceding check exits nonzero because
+review fixes are staged; otherwise skip it.
+
+Stop before pushing or merging. Hand off the commit range, verification output,
+whether the authenticated smoke test ran, and the known outage/explicit-deletion
+compliance caveats.
