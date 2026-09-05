@@ -57,9 +57,12 @@ invariants and workflow rules here, not session-by-session narration.
   documented paths, and unchanged qualifying unread state with `mark=false`.
   Scheduling, dashboards, and analysis/LLM workflows are not currently
   implemented or architected.
-- The CLI supports `init`, a normal fetch, and `--force-fetch`; it emits JSON.
-  Exit status `0` means success, `1` means source failure or partial failure,
-  and `2` means configuration or usage error.
+- The collector CLI supports `init`, a normal fetch, and `--force-fetch`.
+  Normal collection emits atomic, newline-terminated diagnostic progress and
+  error messages while sources run; `--json` explicitly requests the
+  machine-readable run summary. Dashboards are a separate, not-yet-designed
+  presentation pillar. Exit status `0` means success, `1` means source failure
+  or partial failure, and `2` means configuration or usage error.
 - Command-backed adapters declare executable dependencies. Startup validates all
   source configuration before persistence registration, freezes each cache vs
   remote decision once, and resolves each unique executable/version once per

@@ -118,6 +118,25 @@ class CliTest < Minitest::Test
     end
   end
 
+  def test_diagnostic_mode_reports_rss_progress_without_json_blob
+    Dir.mktmpdir do |directory|
+      root = File.join(directory, ".cybort")
+      write_config(root)
+      output = StringIO.new
+
+      status = Cybort::CLI.start(
+        ["--force-fetch"], out: output, err: StringIO.new, home: directory,
+        http_client: StubHttpClient.new(RSS_BODY), output_mode: :diagnostic
+      )
+
+      assert_equal 0, status
+      assert_includes output.string, "CLI RSS: Fetching RSS from https://example.test/feed.xml..."
+      assert_includes output.string, "1 articles found, 1 new, 0 already cached"
+      refute_match(/\A\s*\{/, output.string)
+      assert output.string.lines.all? { |line| line.end_with?("\n") }
+    end
+  end
+
   def test_emits_grouped_dependency_guidance_for_source_failure
     Dir.mktmpdir do |directory|
       root = File.join(directory, ".cybort")

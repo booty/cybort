@@ -88,6 +88,7 @@ module Cybort
 
       persistence_now = @clock.call
       successful_fetch_at = [result.finished_at, persistence_now].min
+      pruned_count = 0
 
       @database.transaction do
         result.items.each { |item| validate_item!(item, result.instance_id) }
@@ -98,7 +99,7 @@ module Cybort
         result.items.each { |item| upsert_item(item) }
         if retention_ttl_minutes
           cutoff = successful_fetch_at - (retention_ttl_minutes * 60)
-          prune_expired_items(instance_id: result.instance_id, cutoff: cutoff)
+          pruned_count = prune_expired_items(instance_id: result.instance_id, cutoff: cutoff)
         end
         update_instance_state(
           result,
@@ -107,6 +108,7 @@ module Cybort
         )
         insert_fetch_run(result, "successful")
       end
+      pruned_count
     end
 
     def record_fetch_failure(result)
@@ -156,6 +158,7 @@ module Cybort
         "DELETE FROM items WHERE instance_id = ? AND fetched_at <= ?",
         [instance_id, timestamp(cutoff)]
       )
+      @database.changes
     end
 
     def update_instance_state(result, last_successful_fetch:, updated_at:)

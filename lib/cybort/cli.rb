@@ -8,13 +8,14 @@ module Cybort
 
     def start(argv, out: $stdout, err: $stderr, home: Dir.home, input: $stdin, http_client: nil, registry: nil,
               clock: -> { Time.now.utc }, command_runner: nil, dependency_checker: nil,
-              monotonic_clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) })
+              monotonic_clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) },
+              output_mode: :json)
       args = argv.dup
       if args.first == "init"
         return initialize_installation(args[1] || File.join(home, ".cybort"), input: input, out: out, clock: clock)
       end
 
-      options = parse_options(args, out)
+      options = parse_options(args, out, output_mode: output_mode)
       root = File.join(home, ".cybort")
       configuration_path = File.join(root, "cybort.toml")
       unless File.file?(configuration_path)
@@ -36,28 +37,32 @@ module Cybort
         clock: clock,
         command_runner: command_runner,
         dependency_checker: dependency_checker,
-        monotonic_clock: monotonic_clock
+        monotonic_clock: monotonic_clock,
+        progress: options.fetch(:output_mode) == :diagnostic ? out : nil
       ).run(force_fetch: options.fetch(:force_fetch))
 
-      payload = {
-        status: result.overall_status,
-        unavailable_dependencies: result.unavailable_dependencies,
-        instances: result.instances.map do |status|
-          status.to_h.merge(items: persistence.items_for(instance_id: status.instance_id).map(&:to_h))
-        end
-      }
-      out.puts JSON.generate(payload)
+      if options.fetch(:output_mode) == :json
+        payload = {
+          status: result.overall_status,
+          unavailable_dependencies: result.unavailable_dependencies,
+          instances: result.instances.map do |status|
+            status.to_h.merge(items: persistence.items_for(instance_id: status.instance_id).map(&:to_h))
+          end
+        }
+        out.puts JSON.generate(payload)
+      end
       result.overall_status == :success ? 0 : 1
     rescue ConfigurationError, OptionParser::ParseError, SystemCallError => error
       err.puts error.message
       2
     end
 
-    def parse_options(args, out)
-      options = { force_fetch: false }
+    def parse_options(args, out, output_mode:)
+      options = { force_fetch: false, output_mode: output_mode }
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: cybort [--force-fetch]"
+        opts.banner = "Usage: cybort [--force-fetch] [--json]"
         opts.on("--force-fetch", "Ignore adapter TTLs") { options[:force_fetch] = true }
+        opts.on("--json", "Emit a machine-readable JSON run summary") { options[:output_mode] = :json }
         opts.on("--help", "Show this help") do
           out.puts opts
           exit 0

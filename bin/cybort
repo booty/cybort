@@ -4,9 +4,8 @@ $LOAD_PATH.unshift File.expand_path("../lib", __dir__)
 require "cybort"
 
 if defined?(Cybort::CLI)
-  exit Cybort::CLI.start(ARGV)
+  exit Cybort::CLI.start(ARGV, output_mode: :diagnostic)
 else
   warn "Cybort CLI is not initialized yet"
   exit 1
 end
-

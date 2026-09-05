@@ -1,8 +1,16 @@
 # Cybort
 
-Cybort is a local, single-user personal information collector. It fetches
-configured source instances concurrently, stores normalized items in one SQLite
-database, and presents cached or freshly fetched data through the CLI.
+Cybort is a local, single-user personal information collector. It has two
+separate pillars:
+
+- Collection fetches configured source instances, normalizes and caches their
+  data in one SQLite database, and prunes it according to the configured
+  retention policy.
+- Dashboards will present that collected data through CLI and web views in a
+  future phase; dashboard design has not started yet.
+
+The collector CLI is diagnostic: it reports source progress and outcomes so
+users can monitor collection and diagnose errors. It is not a dashboard.
 
 ## Requirements
 
@@ -205,8 +213,8 @@ Configure a read-only Gmail instance using the commented template in
 
 Before a stale or forced fetch, Cybort checks the required executable and its
 tested version range. Missing or unsupported dependencies fail only the
-affected source and include Homebrew/authentication guidance in the JSON
-result; fresh cached data remains available. The Gmail connector remains
+affected source and include Homebrew/authentication guidance in the diagnostic
+output; fresh cached data remains available. The Gmail connector remains
 experimental until an authenticated contract smoke test verifies the
 installed `gws` version, read-only scopes, and list/detail response shapes.
 
@@ -224,10 +232,24 @@ Ignore TTL checks and request fresh source data:
 bundle exec bin/cybort --force-fetch
 ```
 
-The command emits one JSON document containing overall status, grouped
-unavailable-dependency guidance, per-instance status, and persisted items. A
-source failure produces a partial-failure exit status while preserving
-successful results and the failed source’s last-known-good data.
+The default command emits one complete, newline-terminated diagnostic message
+for each source as it starts and finishes. A successful source reports its
+item count, new and cached counts, and any expired items purged; a failed
+source reports a concise error. A source failure produces a partial-failure
+exit status while preserving successful results and the failed source’s
+last-known-good data.
+
+For scripts that need the structured run summary, request the explicit JSON
+mode:
+
+```bash
+bundle exec bin/cybort --json
+bundle exec bin/cybort --json --force-fetch
+```
+
+JSON mode emits overall status, grouped unavailable-dependency guidance,
+per-instance status, and persisted items. Neither mode is a dashboard; both
+are collection interfaces over the same normalized store.
 
 ## Architecture
 
