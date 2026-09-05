@@ -1,0 +1,100 @@
+# ADR 0003: Configurable Item Retention
+
+- Status: Accepted
+- Date: 2026-09-05
+
+## Context
+
+Cybort currently retains normalized items indefinitely. Its existing
+`ttl_minutes` setting controls whether an adapter uses cached data or performs a
+remote fetch; it does not delete stored items. Some sources benefit from a
+bounded local lifetime while others should keep the existing retain-forever
+behavior.
+
+Retention must preserve Cybort's established ownership boundaries. Adapters do
+not own SQLite schema details or writes, and each successful adapter result is
+persisted independently in one transaction. Failed sources preserve their
+last-known-good data.
+
+## Decision
+
+Each configured adapter instance may define a positive integer
+`retention_ttl_minutes`. Omission means retain forever.
+
+For a configured instance, persistence will prune items only as part of writing
+a successful remote-fetch result for that instance. An item expires when its
+local `fetched_at` timestamp is at or before `result.finished_at` minus the
+configured duration. Returned items are upserted before pruning, so their new
+local fetch timestamps normally refresh their last-seen time.
+
+Validation, item upserts, instance-scoped pruning, synchronization-state update,
+and successful fetch-history insertion occur in the same per-result
+transaction. Cache hits and failed remote fetches do not prune. Retention
+applies only to normalized items, not adapter-instance records,
+synchronization state, or fetch history.
+
+Configuration remains the owner of the current policy; the duration is not
+copied into SQLite. The orchestrator passes it to the persistence write
+operation. No schema migration is required because existing `fetched_at`
+timestamps provide the last-seen boundary.
+
+## Alternatives considered
+
+### Treat `ttl_minutes` as retention
+
+Rejected. Cache freshness and data lifetime are independent concerns. Reusing
+one setting would make changing remote-fetch frequency delete data and would
+contradict the existing documented meaning of TTL.
+
+### Prune before fetching or reading cached data
+
+Rejected. This would enforce a strict wall-clock maximum but discard
+last-known-good data during source or dependency outages. The selected behavior
+prunes only after the source has supplied a successful current result.
+
+### Run cleanup in a separate transaction
+
+Rejected. Separate cleanup could commit without the corresponding upserts and
+state update, or fail after those changes commit. Retention is part of applying
+one successful source result and belongs in the same transaction.
+
+### Let adapters delete or filter persisted items
+
+Rejected. Adapter-owned cleanup would leak SQL or storage-specific behavior
+into source adapters and weaken the persistence boundary established by
+[ADR 0001](0001-persistence-storage-and-write-ownership.md).
+
+### Store retention policy in SQLite
+
+Rejected for this slice. Configuration is authoritative for runtime adapter
+behavior, and no background cleanup process needs a durable copy of the policy.
+Persisting it would add a schema migration without changing observable
+behavior.
+
+## Consequences
+
+Positive consequences:
+
+- existing configurations retain items forever without modification;
+- instances can opt into bounded item storage independently;
+- pruning is atomic with the successful result that authorizes it;
+- refetched items naturally refresh their last-seen timestamp;
+- failed sources retain their last-known-good data; and
+- adapters remain independent of SQL and retention implementation.
+
+Negative consequences:
+
+- items may remain beyond the configured duration while an instance is cached,
+  unavailable, or failing;
+- retention advances only when Cybort runs and the source fetch succeeds;
+- items omitted because of a source request limit age out like any other unseen
+  item; and
+- changing or removing the configured duration takes effect on the next
+  successful remote fetch and has no separately persisted audit record.
+
+## Implementation notes
+
+The accompanying
+[design specification](../superpowers/specs/2026-09-05-configurable-item-retention-design.md)
+defines configuration validation, the exact expiration boundary, transaction
+ordering, failure behavior, and required tests.

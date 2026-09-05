@@ -8,6 +8,7 @@ supersedes the old one instead of silently rewriting it.
 |---|---|---|---|
 | [0001](0001-persistence-storage-and-write-ownership.md) | Accepted | One SQLite database and orchestrator-owned sequential persistence | 2026-08-16 |
 | [0002](0002-external-command-dependencies-and-cli-adapters.md) | Proposed | Hybrid HTTP/CLI connectors with startup dependency preflight ([design](../superpowers/specs/2026-09-04-external-command-connectors-design.md), [plan](../superpowers/plans/2026-09-04-external-command-connectors.md)) | 2026-09-04 |
+| [0003](0003-configurable-item-retention.md) | Accepted | Optional per-instance item retention after successful remote fetches ([design](../superpowers/specs/2026-09-05-configurable-item-retention-design.md)) | 2026-09-05 |
 
 When adding an ADR:
 
