@@ -73,6 +73,128 @@ the configured duration. It is valid for retention to be shorter than
 `ttl_minutes`; in that case, a cache hit preserves the old items and the next
 successful remote fetch may remove every item it does not return.
 
+### Reddit connector
+
+Reddit uses the documented OAuth Data API directly. Configure an approved
+confidential OAuth application and obtain its authorization-code refresh token
+outside Cybort; Cybort does not provide an interactive login flow. The token,
+client secret, and client ID are configuration inputs only. Cybort exchanges the
+refresh token for short-lived bearer access and does not persist the access
+token.
+
+```toml
+[instances.personal_reddit]
+name = "Personal Reddit"
+adapter = "reddit"
+ttl_minutes = 15
+retention_ttl_minutes = 2880
+num_items_to_fetch = 50
+client_id = "..."
+client_secret = "..."
+refresh_token = "..."
+user_agent = "macos:com.example.cybort:v0.1.0 (by /u/example_user)"
+include_subreddits = ["news"]
+exclude_subreddits = ["memes"]
+```
+
+The Reddit-specific keys and limits are:
+
+- `client_id`, `client_secret`, and `refresh_token` are required nonblank
+  printable strings of at most 256, 1,024, and 4,096 UTF-8 bytes respectively.
+- `user_agent` is required, is limited to 256 bytes, and must identify the
+  application and Reddit user in the form
+  `product:app:version (by /u/username)`. C0 controls and DEL are rejected in
+  all four credential/User-Agent fields. These values never appear in stored
+  items, metadata, URLs, errors, or logs.
+- The external OAuth grant must include `read`, `mysubreddits`, and
+  `privatemessages` scopes. `read` permits thread listings, `mysubreddits`
+  discovers joined communities, and `privatemessages` reads the legacy unread
+  inbox listing.
+- `include_subreddits` and `exclude_subreddits` are optional arrays of at most
+  50 names each. Names omit `r/`, contain 2–21 letters, numbers, or
+  underscores, and are normalized case-insensitively. Exclusions win over
+  inclusions and subscriptions.
+- `num_items_to_fetch` must be an integer from 1 through 100. It limits the
+  final combined selection, not candidate scanning, subreddit discovery, or
+  retention.
+
+The default subreddit scope is all discovered subscriptions, but coverage is
+deliberately bounded: Cybort fully paginates subscription discovery and then
+samples one authenticated personalized `/hot` page, retaining only posts whose
+subreddit is in the effective joined set. This is not an exhaustive hot-page
+scan of every joined subreddit. Each explicit, non-subscribed included
+subreddit receives one documented `/r/<name>/hot` request. If `news` is joined,
+Cybort makes one additional `/r/news/hot` request so a megathread is not lost
+from the personalized sample; if `news` is explicitly included, its ordinary
+single-subreddit request is sufficient. Excluded communities receive neither
+selection nor avoidable outbound requests. Cybort never constructs a
+multi-subreddit `+` path and only fetches the first hot page from each listing.
+
+Unread collection uses `/message/unread` with `mark=false` and paginates before
+applying the quota so unrelated inbox objects cannot crowd out qualifying
+legacy private messages. V1 does not read consumer Reddit Chat: it reports chat
+as unsupported by the documented Data API. The authenticated release gate below
+must verify the observed unread state before this connector is treated as
+production-ready.
+
+Thread activity is deterministic. For each candidate, negative scores and
+comment counts are clamped to zero, `age_minutes` is
+`max(floor((fetched_at - created_utc) / 60), 60)`, and
+`activity_score_milli` is:
+
+```text
+floor((vote_score + (2 * comment_count)) * 60_000 / age_minutes)
+```
+
+Candidates rank by activity score descending, then comment count, visible vote
+score, creation time, and fullname (each descending except fullname, which is
+ascending). In `r/news`, a title matching `mega thread` or `live thread`
+(case-insensitively, allowing whitespace in “mega thread”) is a megathread;
+`stickied` is retained as metadata but does not define one. With a limit of 1,
+an unread message wins over a megathread, which wins over an ordinary thread.
+With a limit of at least 2, Cybort reserves an available message and thread,
+and reserves an available `r/news` megathread when capacity permits, then fills
+remaining slots in message, megathread, ordinary-thread order. Every selected
+item receives a one-based `info.selection_rank` in final output order. Message
+priority is 100; thread priority ranges from 99 to 0 by activity rank. Priority
+does not change the global CLI ordering: the CLI still presents durable items
+by `remote_created_at` (falling back to `fetched_at`) descending.
+
+Stored Reddit items contain message subjects or thread titles, canonical Reddit
+URLs, timestamps, the visible Reddit score, comment totals, and small typed
+metadata. They do not contain bodies, comments, authors/usernames, media,
+previews, outbound linked-page content, or raw API responses. Reddit's `score`
+is the visible/fuzzed value, not a guarantee of an exact vote total. LLM
+summaries and aggregate statistics about personal posts are deferred.
+
+Each complete successful remote Reddit fetch is a current bounded snapshot and
+atomically replaces that instance's prior selected items. A cache hit, failed
+fetch, or incomplete remote operation leaves the prior items intact. The normal
+`retention_ttl_minutes` transaction still applies to successful remote writes;
+for Reddit, configure it at or below 2,880 minutes (48 hours) unless there is
+a deliberate reason not to. Neither retention nor snapshot replacement can
+guarantee wall-clock deletion while the source is unreachable, because cache
+and failure paths preserve last-known-good data. Removing an instance does not
+automatically purge its local rows, and Cybort has no user-facing purge command
+yet. To remove locally stored Reddit data, stop Cybort and delete the intended
+SQLite installation data (normally `~/.cybort/cybort.sqlite3`); this is
+irreversible, so make any desired backup first. See
+[`docs/quality-followups.md`](docs/quality-followups.md) for the deferred
+lifecycle work.
+
+#### Reddit authenticated release gate
+
+Offline fixtures verify parsing and selection but cannot establish the live
+Reddit contract. Before declaring the connector production-ready, run one
+account-authenticated smoke test with the configured read-only scopes. Record
+only sanitized statuses and response shapes: successful token fields/scopes,
+valid `t5` and `t4` cursor shapes, `/hot` and one `/r/<name>/hot` request,
+rate-limit headers, absence of any `+` route, and the qualifying unread
+message IDs/count immediately before and after collection. The before/after
+check must show that the `mark=false` fetch did not change qualifying unread
+state. Do not record credentials, access tokens, bodies, authors, or raw
+responses. This gate has not been run in the current development environment.
+
 ### Gmail connector (experimental)
 
 Gmail uses the `gws` executable from the Google-maintained

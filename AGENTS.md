@@ -38,6 +38,18 @@ invariants and workflow rules here, not session-by-session narration.
 - RSS and GitHub adapters use direct HTTP APIs. Gmail has an experimental
   command-backed adapter for Google's `gws` CLI; it remains gated on a real
   authenticated smoke test because `gws` is not installed in every environment.
+  Reddit uses documented OAuth Data API endpoints only: subscriptions plus a
+  bounded personalized `/hot` sample, explicit single-subreddit `/r/<name>/hot`
+  calls, and the legacy unread-message listing. Reddit Chat is unsupported by
+  the documented read surface. Reddit complete remote successes opt into the
+  generic current-snapshot replacement contract; cache hits and failures leave
+  the prior selected set intact. Reddit storage is body-free and author-free,
+  retaining only titles/subjects, canonical URLs, timestamps, visible scores,
+  comment totals, and typed ranking metadata. The joined-community sample is
+  intentionally bounded rather than exhaustive; include/exclude rules are
+  resolved before outbound subreddit calls. A real authenticated Reddit smoke
+  test remains a release gate for token scopes, response shapes, rate headers,
+  documented paths, and unchanged qualifying unread state with `mark=false`.
   Scheduling, dashboards, and analysis/LLM workflows are not currently
   implemented or architected.
 - The CLI supports `init`, a normal fetch, and `--force-fetch`; it emits JSON.
