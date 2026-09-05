@@ -140,4 +140,28 @@ class CliTest < Minitest::Test
       refute_includes output.string, "stderr"
     end
   end
+
+  def test_invalid_toml_does_not_echo_configuration_contents
+    Dir.mktmpdir do |directory|
+      root = File.join(directory, ".cybort")
+      FileUtils.mkdir_p(root)
+      sentinel = "CLI_PARSE_SENTINEL"
+      File.write(File.join(root, "cybort.toml"), <<~TOML)
+        schema_version = 1
+
+        [instances.reddit]
+        name = "Reddit"
+        adapter = "reddit"
+        client_secret = #{sentinel}
+      TOML
+      output = StringIO.new
+      error_output = StringIO.new
+
+      status = Cybort::CLI.start([], out: output, err: error_output, home: directory)
+
+      assert_equal 2, status
+      refute_includes error_output.string, sentinel
+      refute_includes output.string, sentinel
+    end
+  end
 end

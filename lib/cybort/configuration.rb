@@ -15,6 +15,7 @@ module Cybort
 
     REQUIRED_INSTANCE_KEYS = %i[name adapter ttl_minutes num_items_to_fetch].freeze
     COMMON_INSTANCE_KEYS = (REQUIRED_INSTANCE_KEYS + %i[retention_ttl_minutes]).freeze
+    INVALID_TOML_MESSAGE = "invalid TOML configuration"
 
     attr_reader :schema_version, :instances
 
@@ -23,8 +24,8 @@ module Cybort
       new(data)
     rescue KeyError => error
       raise ConfigurationError, "missing configuration key: #{error.key}"
-    rescue Tomlrb::ParseError => error
-      raise ConfigurationError, "invalid TOML: #{error.message}"
+    rescue Tomlrb::ParseError
+      raise ConfigurationError, INVALID_TOML_MESSAGE
     end
 
     def initialize(data)

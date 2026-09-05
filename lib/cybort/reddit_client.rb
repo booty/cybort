@@ -223,11 +223,14 @@ module Cybort
           operation: operation
         )
         remaining = remaining_deadline!(operation, session)
-        response = if method == :post_form
-                     @http_client.post_form(url, form: form, headers: headers, timeout_seconds: remaining)
-                   else
-                     @http_client.get(url, headers: headers, timeout_seconds: remaining)
-                   end
+        response = request_http(
+          method: method,
+          url: url,
+          headers: headers,
+          form: form,
+          timeout_seconds: remaining,
+          deadline_monotonic: session.deadline_monotonic
+        )
         rate_metadata = RateLimitHeaders.parse(response.respond_to?(:headers) ? response.headers : {})
         status = response.respond_to?(:status) ? response.status.to_i : 0
         observe_rate(lease, rate_metadata, status)
@@ -255,6 +258,22 @@ module Cybort
       rate_metadata = RateLimitHeaders.parse(metadata)
       update_safe_metadata(rate_metadata)
       lease&.observe(metadata: rate_metadata, status: status)
+    end
+
+    def request_http(method:, url:, headers:, form:, timeout_seconds:, deadline_monotonic:)
+      arguments = { headers: headers, timeout_seconds: timeout_seconds }
+      arguments[:form] = form if method == :post_form
+      if http_method_accepts_keyword?(method, :deadline_monotonic)
+        arguments[:deadline_monotonic] = deadline_monotonic
+      end
+      @http_client.public_send(method, url, **arguments)
+    end
+
+    def http_method_accepts_keyword?(method, keyword)
+      parameters = @http_client.method(method).parameters
+      parameters.any? { |kind, name| kind == :keyrest || name == keyword }
+    rescue NameError
+      false
     end
 
     def parse_json(body, operation)

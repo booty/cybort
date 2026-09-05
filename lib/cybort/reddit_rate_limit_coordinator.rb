@@ -5,6 +5,7 @@ module Cybort
     DEFAULT_CLOCK = -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }
     DEFAULT_SLEEPER = ->(seconds) { sleep(seconds) }
     IN_FLIGHT_WAIT_SLICE_SECONDS = 0.05
+    UNKNOWN_RESET_COOLDOWN_SECONDS = 60.0
     ERROR_OPERATION = :home_hot
 
     State = Struct.new(:remaining, :reset_at, :lease_token, keyword_init: true)
@@ -78,7 +79,8 @@ module Cybort
           if state.lease_token
             wait_seconds = [deadline - now, IN_FLIGHT_WAIT_SLICE_SECONDS].min
           elsif state.remaining && state.remaining <= 0
-            reset_at = state.reset_at || Float::INFINITY
+            state.reset_at ||= now + UNKNOWN_RESET_COOLDOWN_SECONDS
+            reset_at = state.reset_at
             if reset_at <= now
               state.remaining = nil
               state.reset_at = nil
@@ -119,12 +121,14 @@ module Cybort
         if status.to_i == 429
           state.remaining = 0.0
           state.reset_at = if delays.empty?
-                             Float::INFINITY
+                             now + UNKNOWN_RESET_COOLDOWN_SECONDS
                            else
                              now + delays.max
                            end
         elsif !delays.empty?
           state.reset_at = now + delays.max
+        elsif state.remaining && state.remaining <= 0
+          state.reset_at = now + UNKNOWN_RESET_COOLDOWN_SECONDS
         end
       end
     end

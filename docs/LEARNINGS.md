@@ -4,6 +4,32 @@ This file records dated implementation discoveries and gotchas that are not
 architectural decisions. Each entry should include evidence and a status so a
 future agent can distinguish observed behavior from an open follow-up.
 
+## 2026-09-05 — Reddit transport deadlines and errors need boundary normalization
+
+**Status:** Active
+
+**Observation:** A per-request timeout alone is not a total Reddit fetch
+deadline: Net::HTTP read timeouts are inactivity-based and can reset between
+streamed chunks. Transport failures also need to be converted before adapter
+errors reach persistence, and a rate response without reset metadata must not
+poison a process-wide client key forever.
+
+**Evidence:** `lib/cybort/http_client.rb` enforces an injected monotonic
+deadline across streamed reads and maps common socket/EOF/TLS failures to
+`HttpTransportError`; `lib/cybort/reddit_rate_limit_coordinator.rb` uses a
+finite unknown-reset cooldown; `test/http_client_test.rb`,
+`test/reddit_rate_limit_coordinator_test.rb`, and
+`test/system/cli_system_test.rb` cover the regressions.
+
+**Impact:** Injected HTTP doubles may omit the optional deadline keyword, but
+the production `NetHttpTransport` must implement it for the absolute deadline
+contract. Configuration parse errors must remain content-free because CLI
+stderr is user-visible.
+
+**Next action:** Keep the authenticated Reddit smoke gate and real TCP/TLS
+transport coverage as release work; offline tests intentionally use injected
+transports.
+
 ## 2026-09-05 — Installed Minitest lacks arbitrary-object `stub`
 
 **Status:** Active

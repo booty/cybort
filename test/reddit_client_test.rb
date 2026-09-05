@@ -30,13 +30,19 @@ class RedditClientTest < Minitest::Test
       @calls = []
     end
 
-    def post_form(url, form:, headers:, timeout_seconds:)
-      @calls << { method: :post_form, url: url, form: form, headers: headers, timeout_seconds: timeout_seconds }
+    def post_form(url, form:, headers:, timeout_seconds:, deadline_monotonic: nil)
+      @calls << {
+        method: :post_form, url: url, form: form, headers: headers,
+        timeout_seconds: timeout_seconds, deadline_monotonic: deadline_monotonic
+      }
       response_or_error
     end
 
-    def get(url, headers:, timeout_seconds:)
-      @calls << { method: :get, url: url, headers: headers, timeout_seconds: timeout_seconds }
+    def get(url, headers:, timeout_seconds:, deadline_monotonic: nil)
+      @calls << {
+        method: :get, url: url, headers: headers,
+        timeout_seconds: timeout_seconds, deadline_monotonic: deadline_monotonic
+      }
       response_or_error
     end
 
@@ -47,6 +53,25 @@ class RedditClientTest < Minitest::Test
       return @response_block.call(@calls.last) if @response_block
 
       @responses.shift || raise("missing fake response")
+    end
+  end
+
+  class LegacyHttpClient
+    attr_reader :calls
+
+    def initialize(response)
+      @response = response
+      @calls = []
+    end
+
+    def post_form(url, form:, headers:, timeout_seconds:)
+      @calls << { method: :post_form, url: url, form: form, headers: headers, timeout_seconds: timeout_seconds }
+      @response
+    end
+
+    def get(url, headers:, timeout_seconds:)
+      @calls << { method: :get, url: url, headers: headers, timeout_seconds: timeout_seconds }
+      @response
     end
   end
 
@@ -88,7 +113,21 @@ class RedditClientTest < Minitest::Test
     assert_equal({ grant_type: "refresh_token", refresh_token: "refresh-token" }, call.fetch(:form))
     assert_equal "Basic #{['client-id:client-secret'].pack('m0')}", call.fetch(:headers).fetch("Authorization")
     assert_equal "macos:com.example.cybort:v0.1.0 (by /u/test_user)", call.fetch(:headers).fetch("User-Agent")
+    assert_equal 120.0, call.fetch(:deadline_monotonic)
     refute_includes call.fetch(:url), "refresh-token"
+  end
+
+  def test_supports_http_clients_without_deadline_keyword
+    @http = LegacyHttpClient.new(response({ access_token: "token", token_type: "bearer", expires_in: 1, scope: "*" }))
+    client = build_client
+
+    assert client.authenticate(
+      client_id: "client-id",
+      client_secret: "client-secret",
+      refresh_token: "refresh-token",
+      user_agent: valid_user_agent
+    )
+    assert_equal :post_form, @http.calls.first.fetch(:method)
   end
 
   def test_accepts_wildcard_scope_and_case_insensitive_bearer

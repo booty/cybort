@@ -40,13 +40,19 @@ class CliSystemTest < Minitest::Test
       @requested_urls = []
     end
 
-    def post_form(url, form:, headers:, timeout_seconds:)
-      record_call(:post_form, url, form: form, headers: headers, timeout_seconds: timeout_seconds)
+    def post_form(url, form:, headers:, timeout_seconds:, deadline_monotonic: nil)
+      record_call(
+        :post_form, url, form: form, headers: headers,
+        timeout_seconds: timeout_seconds, deadline_monotonic: deadline_monotonic
+      )
       response_for(@failures.fetch(:token, @routes.fetch(:token)))
     end
 
-    def get(url, headers: {}, timeout_seconds: nil)
-      record_call(:get, url, headers: headers, timeout_seconds: timeout_seconds)
+    def get(url, headers: {}, timeout_seconds: nil, deadline_monotonic: nil)
+      record_call(
+        :get, url, headers: headers,
+        timeout_seconds: timeout_seconds, deadline_monotonic: deadline_monotonic
+      )
       return response_for(@extra_responses.fetch(url)) if @extra_responses.key?(url)
 
       uri = URI.parse(url)
@@ -97,6 +103,16 @@ class CliSystemTest < Minitest::Test
 
     def empty_listing
       { "kind" => "Listing", "data" => { "children" => [], "after" => nil } }
+    end
+  end
+
+  class FailingRedditTransport
+    def post_form(_url, form:, headers:, **_options)
+      raise EOFError, "REDDIT_TRANSPORT_SENTINEL"
+    end
+
+    def get(_url, headers:, **_options)
+      raise EOFError, "REDDIT_TRANSPORT_SENTINEL"
     end
   end
 
@@ -593,6 +609,25 @@ class CliSystemTest < Minitest::Test
         refute_includes output.string, "MALFORMED_SECRET_TITLE", name
         refute_includes failure_run.fetch("error_message").to_s, "private title", name
       end
+    end
+  end
+
+  def test_reddit_transport_failure_is_sanitized_in_cli_and_fetch_history
+    Dir.mktmpdir do |directory|
+      root = File.join(directory, ".cybort")
+      write_reddit_config(root)
+      output = StringIO.new
+      status = Cybort::CLI.start(
+        ["--force-fetch"], out: output, err: StringIO.new, home: directory,
+        http_client: Cybort::HttpClient.new(transport: FailingRedditTransport.new)
+      )
+
+      persistence = Cybort::Persistence.new(File.join(root, "cybort.sqlite3"))
+      fetch_run = persistence.fetch_runs_for(instance_id: "reddit").last
+
+      assert_equal 1, status
+      refute_includes output.string, "REDDIT_TRANSPORT_SENTINEL"
+      refute_includes fetch_run.fetch("error_message").to_s, "REDDIT_TRANSPORT_SENTINEL"
     end
   end
 

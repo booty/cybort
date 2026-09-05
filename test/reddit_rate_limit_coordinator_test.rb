@@ -89,6 +89,38 @@ class RedditRateLimitCoordinatorTest < Minitest::Test
     released.release
   end
 
+  def test_unknown_429_uses_a_bounded_fallback_and_recovers
+    key = @coordinator.key_for("same")
+    lease = @coordinator.acquire(key: key, deadline_monotonic: 120.0)
+    lease.observe(metadata: {}, status: 429)
+    lease.release
+
+    assert_raises(Cybort::RedditApiError) do
+      @coordinator.acquire(key: key, deadline_monotonic: 59.0)
+    end
+    assert_equal 59.0, @clock.now
+
+    recovered = @coordinator.acquire(key: key, deadline_monotonic: 120.0)
+    assert_equal Cybort::RedditRateLimitCoordinator::UNKNOWN_RESET_COOLDOWN_SECONDS, @clock.now
+    recovered.release
+  end
+
+  def test_zero_remaining_without_reset_uses_a_bounded_fallback
+    key = @coordinator.key_for("same")
+    lease = @coordinator.acquire(key: key, deadline_monotonic: 120.0)
+    lease.observe(metadata: { ratelimit_remaining: 0.0 }, status: 200)
+    lease.release
+
+    assert_raises(Cybort::RedditApiError) do
+      @coordinator.acquire(key: key, deadline_monotonic: 59.0)
+    end
+    assert_equal 59.0, @clock.now
+
+    recovered = @coordinator.acquire(key: key, deadline_monotonic: 120.0)
+    assert_equal Cybort::RedditRateLimitCoordinator::UNKNOWN_RESET_COOLDOWN_SECONDS, @clock.now
+    recovered.release
+  end
+
   def test_release_is_idempotent_and_transport_failure_does_not_invent_capacity
     key = @coordinator.key_for("same")
     lease = @coordinator.acquire(key: key, deadline_monotonic: 20.0)

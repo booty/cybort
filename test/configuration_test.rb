@@ -53,6 +53,29 @@ class ConfigurationTest < Minitest::Test
     end
   end
 
+  def test_parse_errors_do_not_expose_malformed_configuration_contents
+    sentinel = "CONFIG_PARSE_SENTINEL"
+    source = <<~TOML
+      schema_version = 1
+
+      [instances.example]
+      name = "Example"
+      adapter = "reddit"
+      client_secret = #{sentinel}
+    TOML
+
+    Tempfile.create(["cybort-config", ".toml"]) do |file|
+      file.write(source)
+      file.flush
+
+      error = assert_raises(Cybort::ConfigurationError) do
+        Cybort::Configuration.load(file.path)
+      end
+
+      refute_includes error.message, sentinel
+    end
+  end
+
   def test_retention_is_independent_per_instance_and_may_be_shorter_than_cache_ttl
     fixture = File.expand_path("fixtures/configuration/rss_and_github.toml", __dir__)
     source = File.read(fixture).sub(
