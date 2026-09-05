@@ -90,4 +90,54 @@ class AdapterRegistryTest < Minitest::Test
     assert_includes dependency.environment_keys, "GOOGLE_WORKSPACE_CLI_TOKEN"
     assert_includes dependency.environment_keys, "GOOGLE_WORKSPACE_PROJECT_ID"
   end
+
+  def test_default_registry_builds_reddit_without_executable_dependencies
+    registry = Cybort::AdapterRegistry.default
+    instance = Cybort::Configuration::Instance.new(
+      id: "reddit", name: "Reddit", adapter: "reddit", ttl_minutes: 15,
+      num_items_to_fetch: 2,
+      options: {
+        client_id: "fake-client-id",
+        client_secret: "fake-client-secret",
+        refresh_token: "fake-refresh-token",
+        user_agent: "macos:com.example.cybort:v1 (by /u/test_user)"
+      }
+    )
+
+    registry.validate_configuration!(instance)
+    assert_empty registry.dependencies_for(instance)
+
+    adapter = registry.build(
+      instance: instance,
+      context: { items: [], last_successful_fetch: nil, sync_state: nil },
+      http_client: Object.new,
+      clock: -> { Time.utc(2026, 9, 5, 12) }
+    )
+    assert_instance_of Cybort::Adapters::Reddit, adapter
+  end
+
+  def test_reddit_validation_errors_are_aggregated_with_other_sources
+    registry = Cybort::AdapterRegistry.default
+    reddit = Cybort::Configuration::Instance.new(
+      id: "reddit", name: "Reddit", adapter: "reddit", ttl_minutes: 15,
+      num_items_to_fetch: 2,
+      options: {
+        client_id: "fake-client-id",
+        client_secret: "fake-client-secret",
+        refresh_token: " ",
+        user_agent: "macos:com.example.cybort:v1 (by /u/test_user)"
+      }
+    )
+    rss = Cybort::Configuration::Instance.new(
+      id: "rss", name: "RSS", adapter: "rss", ttl_minutes: 30,
+      num_items_to_fetch: 1, options: { url: "not-a-url" }
+    )
+
+    error = assert_raises(Cybort::ConfigurationError) do
+      registry.validate_configuration!({ "rss" => rss, "reddit" => reddit })
+    end
+
+    assert_equal "reddit: reddit refresh_token must be a nonblank printable string of at most 4096 bytes\n" \
+                 "rss: rss instance requires an HTTP(S) url", error.message
+  end
 end

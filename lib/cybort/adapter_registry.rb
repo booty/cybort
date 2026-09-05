@@ -6,6 +6,7 @@ module Cybort
       new.tap do |registry|
         registry.register("rss", Adapters::RSS)
         registry.register("github", Adapters::GitHub)
+        registry.register("reddit", Adapters::Reddit)
         registry.register(
           "gmail",
           Adapters::Gmail,
