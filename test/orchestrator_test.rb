@@ -80,6 +80,34 @@ class OrchestratorTest < Minitest::Test
     end
   end
 
+  class FixedResultAdapter
+    def initialize(result:, **)
+      @result = result
+    end
+
+    def fetch(force_fetch: false, fetch_mode: nil, planned_at: nil)
+      @result
+    end
+  end
+
+  class RetentionMutatingAdapter
+    def initialize(instance:, **)
+      @instance = instance
+    end
+
+    def fetch(force_fetch: false, fetch_mode: nil, planned_at: nil)
+      @instance.retention_ttl_minutes = nil
+      Cybort::FetchResult.success(
+        instance_id: @instance.id,
+        items: [],
+        sync_state: {},
+        started_at: Time.utc(2026, 8, 16, 12),
+        finished_at: Time.utc(2026, 8, 16, 12, 1),
+        source_fetched: true
+      )
+    end
+  end
+
   class PlanningAdapter < Cybort::Adapters::Base
     attr_reader :modes
 
@@ -206,6 +234,73 @@ class OrchestratorTest < Minitest::Test
       ["retained", 120],
       ["forever", nil]
     ], persistence.retention_writes
+  end
+
+  def test_uses_retention_policy_snapshotted_after_configuration_validation
+    registry = Cybort::AdapterRegistry.new
+    registry.register("mutating", RetentionMutatingAdapter)
+    configured = instance("mutable", retention_ttl_minutes: 120).tap do |value|
+      value.adapter = "mutating"
+    end
+    configuration = Struct.new(:instances).new({ "mutable" => configured })
+    persistence = PersistenceSpy.new
+    orchestrator = Cybort::Orchestrator.new(
+      configuration: configuration,
+      persistence: persistence,
+      registry: registry,
+      http_client: nil
+    )
+
+    orchestrator.run(force_fetch: true)
+
+    assert_nil configured.retention_ttl_minutes
+    assert_equal [["mutable", 120]], persistence.retention_writes
+  end
+
+  def test_success_result_with_wrong_instance_id_records_failure_for_configured_instance
+    with_database do |path|
+      persistence = Cybort::Persistence.new(path).setup!
+      wrong_result = Cybort::FetchResult.success(
+        instance_id: "supplied",
+        items: [Cybort::Item.new(instance_id: "supplied", canonical_id: "wrong", fetched_at: Time.utc(2026, 8, 16, 12), title: "Wrong")],
+        sync_state: { cursor: "wrong" },
+        started_at: Time.utc(2026, 8, 16, 12),
+        finished_at: Time.utc(2026, 8, 16, 12, 1),
+        source_fetched: true
+      )
+      run = run_fixed_result(instance("configured"), wrong_result, persistence)
+
+      assert_equal :failure, run.instances.first.status
+      assert_equal "configured", run.instances.first.instance_id
+      assert_empty persistence.items_for(instance_id: "supplied")
+      assert_nil persistence.context_for(instance_id: "supplied").fetch(:sync_state)
+      assert_nil persistence.context_for(instance_id: "supplied").fetch(:last_successful_fetch)
+      assert_empty persistence.fetch_runs_for(instance_id: "supplied")
+      assert_nil persistence.instance_record("supplied")
+      assert_equal ["failed"], persistence.fetch_runs_for(instance_id: "configured").map { |row| row.fetch("status") }
+    end
+  end
+
+  def test_failure_result_with_wrong_instance_id_records_failure_for_configured_instance
+    with_database do |path|
+      persistence = Cybort::Persistence.new(path).setup!
+      wrong_result = Cybort::FetchResult.failure(
+        instance_id: "supplied",
+        error: Cybort::SourceError.new("wrong source failed"),
+        started_at: Time.utc(2026, 8, 16, 12),
+        finished_at: Time.utc(2026, 8, 16, 12, 1)
+      )
+      run = run_fixed_result(instance("configured"), wrong_result, persistence)
+
+      assert_equal :failure, run.instances.first.status
+      assert_equal "configured", run.instances.first.instance_id
+      assert_empty persistence.items_for(instance_id: "supplied")
+      assert_nil persistence.context_for(instance_id: "supplied").fetch(:sync_state)
+      assert_nil persistence.context_for(instance_id: "supplied").fetch(:last_successful_fetch)
+      assert_empty persistence.fetch_runs_for(instance_id: "supplied")
+      assert_nil persistence.instance_record("supplied")
+      assert_equal ["failed"], persistence.fetch_runs_for(instance_id: "configured").map { |row| row.fetch("status") }
+    end
   end
 
   def test_configuration_validation_happens_before_persistence_registration
@@ -349,6 +444,29 @@ class OrchestratorTest < Minitest::Test
   end
 
   private
+
+  def with_database
+    Tempfile.create(["cybort", ".sqlite3"]) do |file|
+      file.close
+      yield file.path
+    end
+  end
+
+  def run_fixed_result(configured, result, persistence)
+    registry = Cybort::AdapterRegistry.new
+    registry.register(
+      "fixed",
+      ->(**kwargs) { FixedResultAdapter.new(**kwargs, result: result) }
+    )
+    configured.adapter = "fixed"
+    configuration = Struct.new(:instances).new({ configured.id => configured })
+    Cybort::Orchestrator.new(
+      configuration: configuration,
+      persistence: persistence,
+      registry: registry,
+      http_client: nil
+    ).run(force_fetch: true)
+  end
 
   def empty_context
     { items: [], last_successful_fetch: nil, sync_state: nil }

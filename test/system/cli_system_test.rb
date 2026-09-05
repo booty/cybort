@@ -114,8 +114,9 @@ class CliSystemTest < Minitest::Test
     TOML
   end
 
-  def write_gmail_config(root, ttl_minutes: 30, id: "gmail")
+  def write_gmail_config(root, ttl_minutes: 30, retention_ttl_minutes: nil, id: "gmail")
     FileUtils.mkdir_p(root)
+    retention = retention_ttl_minutes && "retention_ttl_minutes = #{retention_ttl_minutes}"
     File.write(File.join(root, "cybort.toml"), <<~TOML)
       schema_version = 1
 
@@ -123,6 +124,7 @@ class CliSystemTest < Minitest::Test
       name = "Gmail"
       adapter = "gmail"
       ttl_minutes = #{ttl_minutes}
+      #{retention}
       num_items_to_fetch = 2
       query = "in:anywhere"
     TOML
@@ -331,7 +333,7 @@ class CliSystemTest < Minitest::Test
   def test_stale_gmail_dependency_failure_does_not_block_rss
     Dir.mktmpdir do |directory|
       root = File.join(directory, ".cybort")
-      write_gmail_config(root)
+      write_gmail_config(root, retention_ttl_minutes: 60)
       File.open(File.join(root, "cybort.toml"), "a") do |file|
         file.puts <<~TOML
 
@@ -362,6 +364,7 @@ class CliSystemTest < Minitest::Test
       payload = JSON.parse(output.string)
       assert_equal %w[failure success], payload.fetch("instances").map { |value| value.fetch("status") }
       assert_equal ["gmail"], payload.fetch("unavailable_dependencies").first.fetch("instances")
+      assert_equal "Quarterly review", payload.fetch("instances").find { |value| value.fetch("id") == "gmail" }.fetch("items").first.fetch("title")
       assert_equal "First article", payload.fetch("instances").find { |value| value.fetch("id") == "rss" }.fetch("items").first.fetch("title")
     end
   end

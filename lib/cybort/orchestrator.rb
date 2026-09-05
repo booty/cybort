@@ -56,6 +56,9 @@ module Cybort
     def run(force_fetch: false)
       instances = @configuration.instances
       @registry.validate_configuration!(instances)
+      retention_ttl_minutes_by_instance_id = instances.values.to_h do |instance|
+        [instance.id, instance.retention_ttl_minutes]
+      end.freeze
       contexts = instances.transform_values { |instance| @persistence.context_for(instance_id: instance.id) }
 
       planned_at = @clock.call
@@ -144,7 +147,11 @@ module Cybort
       threads.each { |instance_id, thread| results[instance_id] = thread.value }
 
       statuses = instances.values.map do |instance|
-        persist_result(instance: instance, result: results.fetch(instance.id))
+        persist_result(
+          instance: instance,
+          result: results.fetch(instance.id),
+          retention_ttl_minutes: retention_ttl_minutes_by_instance_id.fetch(instance.id)
+        )
       end
       guidance = unavailable.values.map { |value| value.merge(instances: value.fetch(:instances).sort) }
       RunResult.new(statuses, unavailable_dependencies: guidance.sort_by { |value| [value.fetch(:tool), value.fetch(:instances)] })
@@ -152,30 +159,42 @@ module Cybort
 
     private
 
-    def persist_result(instance:, result:)
+    def persist_result(instance:, result:, retention_ttl_minutes:)
+      unless result.instance_id == instance.id
+        raise ValidationError,
+              "adapter result instance_id #{result.instance_id.inspect} does not match configured instance #{instance.id.inspect}"
+      end
+
       if result.failure?
-        @persistence.record_fetch_failure(result)
-        return InstanceRunStatus.new(instance_id: result.instance_id, status: :failure, source_fetched: false, item_count: 0, error: result.error, metadata: result.metadata)
+        failure = FetchResult.failure(
+          instance_id: instance.id,
+          error: result.error,
+          started_at: result.started_at,
+          finished_at: result.finished_at,
+          metadata: result.metadata
+        )
+        @persistence.record_fetch_failure(failure)
+        return InstanceRunStatus.new(instance_id: instance.id, status: :failure, source_fetched: false, item_count: 0, error: result.error, metadata: result.metadata)
       end
 
       if result.source_fetched
         @persistence.write_fetch_result(
           result,
-          retention_ttl_minutes: instance.retention_ttl_minutes
+          retention_ttl_minutes: retention_ttl_minutes
         )
       end
       status = result.source_fetched ? :success : :cached
-      InstanceRunStatus.new(instance_id: result.instance_id, status: status, source_fetched: result.source_fetched, item_count: result.items.length, metadata: result.metadata)
+      InstanceRunStatus.new(instance_id: instance.id, status: status, source_fetched: result.source_fetched, item_count: result.items.length, metadata: result.metadata)
     rescue StandardError => error
       failure = FetchResult.failure(
-        instance_id: result.instance_id,
+        instance_id: instance.id,
         error: error,
         started_at: result.started_at,
         finished_at: @clock.call,
         metadata: error.respond_to?(:safe_metadata) ? error.safe_metadata : {}
       )
       @persistence.record_fetch_failure(failure)
-      InstanceRunStatus.new(instance_id: result.instance_id, status: :failure, source_fetched: result.source_fetched, item_count: 0, error: error, metadata: failure.metadata)
+      InstanceRunStatus.new(instance_id: instance.id, status: :failure, source_fetched: result.source_fetched, item_count: 0, error: error, metadata: failure.metadata)
     end
 
     def dependency_failure_result(instance, resolutions)

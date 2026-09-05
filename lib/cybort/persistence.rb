@@ -74,16 +74,26 @@ module Cybort
 
     def write_fetch_result(result, retention_ttl_minutes: nil)
       raise ValidationError, "cannot persist a failed fetch result" unless result.success?
+      unless retention_ttl_minutes.nil? ||
+             (retention_ttl_minutes.is_a?(Integer) && retention_ttl_minutes.positive?)
+        raise ValidationError, "retention_ttl_minutes must be a positive integer"
+      end
+
+      persistence_now = @clock.call
+      successful_fetch_at = [result.finished_at, persistence_now].min
 
       @database.transaction do
         result.items.each { |item| validate_item!(item, result.instance_id) }
         result.items.each { |item| upsert_item(item) }
         if retention_ttl_minutes
-          reference_time = [result.finished_at, @clock.call].min
-          cutoff = reference_time - (retention_ttl_minutes * 60)
+          cutoff = successful_fetch_at - (retention_ttl_minutes * 60)
           prune_expired_items(instance_id: result.instance_id, cutoff: cutoff)
         end
-        update_instance_state(result)
+        update_instance_state(
+          result,
+          last_successful_fetch: successful_fetch_at,
+          updated_at: persistence_now
+        )
         insert_fetch_run(result, "successful")
       end
     end
@@ -137,16 +147,16 @@ module Cybort
       )
     end
 
-    def update_instance_state(result)
+    def update_instance_state(result, last_successful_fetch:, updated_at:)
       changes = @database.execute(
         <<~SQL,
           UPDATE adapter_instances
           SET last_successful_fetch = ?, sync_state_json = ?, updated_at = ?
           WHERE id = ?
         SQL
-        [timestamp(result.finished_at),
+        [timestamp(last_successful_fetch),
          result.sync_state.nil? ? nil : JSON.generate(result.sync_state),
-         timestamp(@clock.call),
+         timestamp(updated_at),
          result.instance_id]
       )
       raise ValidationError, "unknown adapter instance: #{result.instance_id}" if changes == 0

@@ -1,6 +1,14 @@
 require "test_helper"
 
 class PersistenceTest < Minitest::Test
+  INVALID_RETENTION_TTL_MINUTES = {
+    zero: 0,
+    negative: -1,
+    float: 1.5,
+    string: "60",
+    boolean: true
+  }.freeze
+
   def with_database
     Tempfile.create(["cybort", ".sqlite3"]) do |file|
       file.close
@@ -278,6 +286,39 @@ class PersistenceTest < Minitest::Test
       )
 
       assert_equal ["safe"], persistence.items_for(instance_id: "rss").map(&:canonical_id)
+      assert_equal now, persistence.context_for(instance_id: "rss").fetch(:last_successful_fetch)
+      assert_equal "2030-01-01T00:00:00.000000Z", persistence.fetch_runs_for(instance_id: "rss").last.fetch("finished_at")
+    end
+  end
+
+  INVALID_RETENTION_TTL_MINUTES.each do |description, invalid_value|
+    define_method("test_rejects_#{description}_retention_before_changing_persisted_data") do
+      with_database do |path|
+        persistence = Cybort::Persistence.new(path)
+        persistence.setup!
+        persistence.register_instance(instance)
+        persistence.write_fetch_result(
+          result(
+            items: [item(canonical_id: "old", fetched_at: Time.utc(2026, 8, 16, 10))],
+            sync_state: { cursor: "old" }
+          )
+        )
+
+        assert_raises(Cybort::ValidationError) do
+          persistence.write_fetch_result(
+            result(
+              items: [item(canonical_id: "new", fetched_at: Time.utc(2026, 8, 16, 13, 30))],
+              sync_state: { cursor: "new" },
+              finished_at: Time.utc(2026, 8, 16, 14)
+            ),
+            retention_ttl_minutes: invalid_value
+          )
+        end
+
+        assert_equal ["old"], persistence.items_for(instance_id: "rss").map(&:canonical_id)
+        assert_equal({ cursor: "old" }, persistence.context_for(instance_id: "rss").fetch(:sync_state))
+        assert_equal 1, persistence.fetch_runs_for(instance_id: "rss").length
+      end
     end
   end
 
@@ -299,7 +340,7 @@ class PersistenceTest < Minitest::Test
         assert_raises(RuntimeError) do
           persistence.write_fetch_result(
             result(
-              items: [],
+              items: [item(canonical_id: "new", fetched_at: Time.utc(2026, 8, 16, 13, 30))],
               sync_state: { cursor: "new" },
               finished_at: Time.utc(2026, 8, 16, 14)
             ),
@@ -311,6 +352,7 @@ class PersistenceTest < Minitest::Test
       end
 
       assert_equal ["old"], persistence.items_for(instance_id: "rss").map(&:canonical_id)
+      refute_includes persistence.items_for(instance_id: "rss").map(&:canonical_id), "new"
       assert_equal({ cursor: "old" }, persistence.context_for(instance_id: "rss").fetch(:sync_state))
       assert_equal 1, persistence.fetch_runs_for(instance_id: "rss").length
     end

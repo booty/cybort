@@ -4,6 +4,26 @@ This file records dated implementation discoveries and gotchas that are not
 architectural decisions. Each entry should include evidence and a status so a
 future agent can distinguish observed behavior from an open follow-up.
 
+## 2026-09-05 — Installed Minitest lacks arbitrary-object `stub`
+
+**Status:** Active
+
+**Observation:** Under the installed Minitest 6.0.6, ordinary objects do not
+respond to `stub`, so `persistence.stub(:method, replacement) { ... }` cannot be
+used for a scoped late-transaction failure.
+
+**Evidence:** `bundle exec ruby -Itest -e 'require "test_helper"; puts
+Minitest::VERSION; p Object.new.respond_to?(:stub)'` printed `6.0.6` and
+`false`. `test/persistence_test.rb` injects the fetch-history failure with a
+singleton-method override and restores it in `ensure`.
+
+**Impact:** Tests that need to replace a method on an arbitrary object must use
+another scoped mechanism and guarantee restoration even when an assertion
+fails.
+
+**Next action:** Keep the current singleton-method pattern unless the test
+framework gains an equivalent scoped arbitrary-object stub API.
+
 ## 2026-09-04 — Alternate installation paths are not selectable at runtime
 
 **Status:** Open

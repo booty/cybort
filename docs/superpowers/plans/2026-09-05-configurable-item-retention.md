@@ -4,7 +4,7 @@
 
 **Goal:** Add optional per-adapter-instance item retention that prunes expired items atomically after successful remote fetches while preserving indefinite retention by default.
 
-**Architecture:** Configuration exposes an optional positive integer `retention_ttl_minutes` as common instance state. The orchestrator passes that value only when persisting a successful remote fetch, and `Persistence` upserts current items and prunes expired rows for the same instance inside the existing per-result transaction. Persistence clamps the adapter's completion time to its own injected clock before calculating the destructive cutoff. Existing `items.fetched_at` values serve as last-seen timestamps, so neither the schema nor adapter and fetch-result contracts change.
+**Architecture:** Configuration exposes an optional positive integer `retention_ttl_minutes` as common instance state. Immediately after registry validation, the orchestrator snapshots that mutable value and validates each adapter result against the configured instance ID. It passes the snapshot only when persisting a successful remote fetch, and `Persistence` independently validates the policy, upserts current items, and prunes expired rows for the same instance inside the existing per-result transaction. Persistence uses one clock reading to clamp the adapter's completion time for both the destructive cutoff and durable cache freshness; fetch history retains the raw result timestamp. Existing `items.fetched_at` values serve as last-seen timestamps, so neither the schema nor adapter and fetch-result contracts change.
 
 **Tech Stack:** Ruby 4.0.1, Minitest, SQLite3, TOML via `tomlrb`
 
@@ -16,7 +16,11 @@
 - When present, `retention_ttl_minutes` must be a positive integer. Zero, negative values, strings, floats, and booleans are invalid configuration. This is intentionally stricter than the legacy positive-`Numeric` `ttl_minutes` contract because retention controls a destructive boundary; do not change the existing cache-TTL contract in this feature.
 - Retention may be less than or equal to `ttl_minutes`. Cache TTL is a freshness minimum, not a fetch schedule: cache hits may preserve items beyond retention, and the next successful remote fetch may remove every unseen item.
 - The configuration remains schema version 1, and `retention_ttl_minutes` is a common key rather than an adapter-specific option.
+- Snapshot each instance's validated `retention_ttl_minutes` immediately after registry configuration validation and before adapter planning or threads; do not read mutable instance policy after fetch.
+- Reject any `FetchResult` whose `instance_id` differs from its configured instance before success or failure persistence. Record mismatch and rescue failures under the configured ID only.
+- `Persistence#write_fetch_result` independently accepts only `nil` or a positive `Integer` policy and raises `ValidationError` before deletion for invalid direct callers.
 - An item expires when `item.fetched_at <= min(result.finished_at, persistence_clock_now) - (retention_ttl_minutes * 60)`.
+- Capture the persistence clock once per successful write where practical. Store `min(result.finished_at, persistence_clock_now)` as `last_successful_fetch`, but retain raw `result.finished_at` in fetch history.
 - Both stored `fetched_at` values and the cutoff must pass through `Persistence#timestamp` so lexicographic SQLite comparison remains chronological: UTC ISO 8601, six fractional digits, trailing `Z`.
 - Validate and upsert the current result before pruning. Prune only rows with the same `instance_id` as the successful result.
 - Upserts, pruning, synchronization-state updates, and successful fetch-history insertion remain one SQLite transaction.
@@ -25,6 +29,13 @@
 - Do not add a schema migration, background cleanup, adapter-owned SQL, per-item retention, count-based retention, or a CLI output change.
 - Tests must remain offline and use temporary SQLite databases and injected clients.
 - Do not modify `docs/initial-spitballing.md` or include the existing untracked `.serena/` directory in a commit.
+
+## Deferred quality follow-ups
+
+- Avoid eager hydration of every stored item into adapter contexts when a fetch
+  can be planned without item bodies.
+- Consider a composite pruning index and schema migration only after measured
+  database size/query evidence justifies it.
 
 ---
 
@@ -375,6 +386,9 @@ def test_future_result_timestamp_cannot_advance_cutoff_beyond_persistence_clock
     )
 
     assert_equal ["safe"], persistence.items_for(instance_id: "rss").map(&:canonical_id)
+    assert_equal now, persistence.context_for(instance_id: "rss").fetch(:last_successful_fetch)
+    assert_equal "2030-01-01T00:00:00.000000Z",
+                 persistence.fetch_runs_for(instance_id: "rss").last.fetch("finished_at")
   end
 end
 ```
@@ -383,10 +397,11 @@ The second test deliberately uses an empty successful result to prove that zero 
 
 - [ ] **Step 3: Add a failing rollback-after-pruning test**
 
-Use a scoped Minitest stub for the late transaction failure rather than adding
-a test subclass coupled to persistence inheritance. The stub still names the
-private transaction boundary intentionally, but confines that coupling to the
-single rollback example:
+Use a scoped singleton-method override for the late transaction failure rather
+than adding a test subclass coupled to persistence inheritance. The installed
+Minitest 6.0.6 does not add `stub` to arbitrary objects, so restore the private
+method in `ensure`. Return a new item in the attempted write to prove rollback
+removes an upsert that occurred before the forced history failure:
 
 ```ruby
 def test_failure_after_pruning_rolls_back_deletion_and_state_update
@@ -400,20 +415,26 @@ def test_failure_after_pruning_rolls_back_deletion_and_state_update
         sync_state: { cursor: "old" }
       )
     )
-    persistence.stub(:insert_fetch_run, ->(_result, _status) { raise "fetch history unavailable" }) do
+    persistence.define_singleton_method(:insert_fetch_run) do |_result, _status|
+      raise "fetch history unavailable"
+    end
+    begin
       assert_raises(RuntimeError) do
         persistence.write_fetch_result(
           result(
-            items: [],
+            items: [item(canonical_id: "new", fetched_at: Time.utc(2026, 8, 16, 13, 30))],
             sync_state: { cursor: "new" },
             finished_at: Time.utc(2026, 8, 16, 14)
           ),
           retention_ttl_minutes: 60
         )
       end
+    ensure
+      persistence.singleton_class.send(:remove_method, :insert_fetch_run)
     end
 
     assert_equal ["old"], persistence.items_for(instance_id: "rss").map(&:canonical_id)
+    refute_includes persistence.items_for(instance_id: "rss").map(&:canonical_id), "new"
     assert_equal({ cursor: "old" }, persistence.context_for(instance_id: "rss").fetch(:sync_state))
     assert_equal 1, persistence.fetch_runs_for(instance_id: "rss").length
   end
@@ -437,16 +458,26 @@ Change `Persistence#write_fetch_result` in `lib/cybort/persistence.rb` to:
 ```ruby
 def write_fetch_result(result, retention_ttl_minutes: nil)
   raise ValidationError, "cannot persist a failed fetch result" unless result.success?
+  unless retention_ttl_minutes.nil? ||
+         (retention_ttl_minutes.is_a?(Integer) && retention_ttl_minutes.positive?)
+    raise ValidationError, "retention_ttl_minutes must be a positive integer"
+  end
+
+  persistence_now = @clock.call
+  successful_fetch_at = [result.finished_at, persistence_now].min
 
   @database.transaction do
     result.items.each { |item| validate_item!(item, result.instance_id) }
     result.items.each { |item| upsert_item(item) }
     if retention_ttl_minutes
-      reference_time = [result.finished_at, @clock.call].min
-      cutoff = reference_time - (retention_ttl_minutes * 60)
+      cutoff = successful_fetch_at - (retention_ttl_minutes * 60)
       prune_expired_items(instance_id: result.instance_id, cutoff: cutoff)
     end
-    update_instance_state(result)
+    update_instance_state(
+      result,
+      last_successful_fetch: successful_fetch_at,
+      updated_at: persistence_now
+    )
     insert_fetch_run(result, "successful")
   end
 end
@@ -465,7 +496,9 @@ def prune_expired_items(instance_id:, cutoff:)
 end
 ```
 
-Capture `@clock.call` once per configured write. Do not pass the whole
+Validate the policy before any destructive statement and capture `@clock.call`
+once per successful write. Use the same clamp for pruning and
+`last_successful_fetch`, while leaving fetch history's completion time raw. Do not pass the whole
 `FetchResult` into the destructive helper, add a schema column, add an adapter
 callback, or expose a public standalone pruning method. A future-skewed adapter
 time is clamped; a past-skewed time safely under-prunes.
@@ -478,8 +511,9 @@ Run:
 bundle exec ruby -Itest test/persistence_test.rb
 ```
 
-Expected: PASS with no failures or errors, including the exact-boundary,
-future-clock-skew, durable-state, empty-database, and rollback assertions.
+Expected: PASS with no failures or errors, including direct invalid-policy,
+exact-boundary, future-clock-skew freshness/history, durable-state,
+empty-database, and rollback-of-a-new-upsert assertions.
 
 - [ ] **Step 7: Commit the persistence behavior**
 
@@ -603,6 +637,12 @@ assert_empty persistence.retention_writes
 ```
 
 The existing `test_stale_missing_dependency_fails_only_that_instance_and_groups_guidance` already proves dependency failures do not produce a write; retain its assertion that only the healthy source appears in `persistence.writes`.
+
+Also add a mutating-adapter regression that changes the instance field after
+validation and proves persistence receives the snapshot. Add success-result and
+failure-result mismatch regressions with real `Persistence`; both must create a
+failed run only for the configured ID and no rows, state, or history for the
+adapter-supplied ID.
 
 - [ ] **Step 3: Add CLI-system pruning and cache-hit tests**
 
@@ -741,59 +781,89 @@ end
 Run:
 
 ```bash
-bundle exec ruby -Itest test/orchestrator_test.rb test/system/cli_system_test.rb
+bundle exec ruby -Itest test/orchestrator_test.rb
+bundle exec ruby -Itest test/system/cli_system_test.rb
 ```
 
 Expected: FAIL because the orchestrator calls persistence without the instance's retention keyword, so the propagation assertion sees `nil` and the pruning system test retains the first fetch's items. The cache-hit system test may already pass; it is regression coverage for the non-pruning CLI path rather than evidence of the missing propagation.
 
-- [ ] **Step 5: Pass instance retention to persistence**
+- [ ] **Step 5: Snapshot retention, validate result identity, and pass policy to persistence**
 
-In `lib/cybort/orchestrator.rb`, replace the status mapping with:
+In `lib/cybort/orchestrator.rb`, snapshot retention immediately after
+configuration validation:
+
+```ruby
+@registry.validate_configuration!(instances)
+retention_ttl_minutes_by_instance_id = instances.values.to_h do |instance|
+  [instance.id, instance.retention_ttl_minutes]
+end.freeze
+```
+
+Pass the snapshot through the status mapping:
 
 ```ruby
 statuses = instances.values.map do |instance|
-  persist_result(instance: instance, result: results.fetch(instance.id))
+  persist_result(
+    instance: instance,
+    result: results.fetch(instance.id),
+    retention_ttl_minutes: retention_ttl_minutes_by_instance_id.fetch(instance.id)
+  )
 end
 ```
 
-Change the private persistence helper signature and successful-write call:
+Change the private persistence helper signature, validate identity before both
+result branches, and use the configured ID in every status and rescue failure:
 
 ```ruby
-def persist_result(instance:, result:)
+def persist_result(instance:, result:, retention_ttl_minutes:)
+  unless result.instance_id == instance.id
+    raise ValidationError,
+          "adapter result instance_id #{result.instance_id.inspect} does not match configured instance #{instance.id.inspect}"
+  end
+
   if result.failure?
-    @persistence.record_fetch_failure(result)
-    return InstanceRunStatus.new(instance_id: result.instance_id, status: :failure, source_fetched: false, item_count: 0, error: result.error, metadata: result.metadata)
+    failure = FetchResult.failure(
+      instance_id: instance.id,
+      error: result.error,
+      started_at: result.started_at,
+      finished_at: result.finished_at,
+      metadata: result.metadata
+    )
+    @persistence.record_fetch_failure(failure)
+    return InstanceRunStatus.new(instance_id: instance.id, status: :failure, source_fetched: false, item_count: 0, error: result.error, metadata: result.metadata)
   end
 
   if result.source_fetched
     @persistence.write_fetch_result(
       result,
-      retention_ttl_minutes: instance.retention_ttl_minutes
+      retention_ttl_minutes: retention_ttl_minutes
     )
   end
   status = result.source_fetched ? :success : :cached
-  InstanceRunStatus.new(instance_id: result.instance_id, status: status, source_fetched: result.source_fetched, item_count: result.items.length, metadata: result.metadata)
+  InstanceRunStatus.new(instance_id: instance.id, status: status, source_fetched: result.source_fetched, item_count: result.items.length, metadata: result.metadata)
 rescue StandardError => error
   failure = FetchResult.failure(
-    instance_id: result.instance_id,
+    instance_id: instance.id,
     error: error,
     started_at: result.started_at,
     finished_at: @clock.call,
     metadata: error.respond_to?(:safe_metadata) ? error.safe_metadata : {}
   )
   @persistence.record_fetch_failure(failure)
-  InstanceRunStatus.new(instance_id: result.instance_id, status: :failure, source_fetched: result.source_fetched, item_count: 0, error: error, metadata: failure.metadata)
+  InstanceRunStatus.new(instance_id: instance.id, status: :failure, source_fetched: result.source_fetched, item_count: 0, error: error, metadata: failure.metadata)
 end
 ```
 
-Do not put retention on `FetchResult` or call persistence for cached results.
+Do not put retention on `FetchResult`, trust an adapter-supplied mismatched ID,
+or call persistence for cached results.
 
 - [ ] **Step 6: Run the focused orchestration and system tests**
 
 Run:
 
 ```bash
-bundle exec ruby -Itest test/orchestrator_test.rb test/system/cli_system_test.rb
+bundle exec ruby -Itest test/orchestrator_test.rb
+bundle exec ruby -Itest test/system/cli_system_test.rb
 ```
 
 Expected: PASS with no failures or errors.
@@ -829,8 +899,13 @@ In `AGENTS.md`, update the stable invariants so they state:
   means retain items forever. When configured, a successful remote fetch
   prunes items for that instance whose local `fetched_at` is at or before the
   retention cutoff in the same transaction as the result upsert. Persistence
-  clamps the result completion time to its own clock before calculating that
-  cutoff. Cache hits and failed fetches do not prune.
+  validates the policy independently and clamps the result completion time to
+  one reading of its own clock for both that cutoff and durable cache
+  freshness. Fetch history retains the raw completion timestamp. Cache hits and
+  failed fetches do not prune.
+- The orchestrator snapshots each validated instance's retention policy before
+  adapter planning. It rejects mismatched adapter result IDs before persistence
+  and records mismatch and rescue failures only under the configured ID.
 ```
 
 Remove `retention policies` from the sentence that currently says scheduling,
@@ -863,10 +938,13 @@ Run:
 ```bash
 git status --short
 git diff --stat
-git diff -- lib/cybort/configuration.rb lib/cybort/persistence.rb lib/cybort/orchestrator.rb test/configuration_test.rb test/persistence_test.rb test/orchestrator_test.rb test/system/cli_system_test.rb README.md AGENTS.md
+git diff -- .gitignore AGENTS.md docs/LEARNINGS.md docs/adr/0003-configurable-item-retention.md docs/superpowers/specs/2026-09-05-configurable-item-retention-design.md docs/superpowers/plans/2026-09-05-configurable-item-retention.md lib/cybort/persistence.rb lib/cybort/orchestrator.rb test/persistence_test.rb test/orchestrator_test.rb test/system/cli_system_test.rb
 ```
 
-Expected: only the planned implementation, tests, and documentation are changed. `.serena/` remains untracked and unstaged. There is no change to `lib/cybort/schema.rb`, adapters, `FetchResult`, or `docs/initial-spitballing.md`.
+Expected: only the planned implementation, tests, documentation, and deliberate
+`.gitignore` cleanup are changed. `.serena/` remains ignored and unstaged. There
+is no change to `lib/cybort/schema.rb`, adapters, `FetchResult`, or
+`docs/initial-spitballing.md`.
 
 - [ ] **Step 10: Commit orchestration, system coverage, and documentation**
 
@@ -881,11 +959,14 @@ git commit -m "feat: apply per-instance item retention"
 
 - Existing schema-version-1 configuration files load unchanged and retain items forever.
 - A positive integer `retention_ttl_minutes` is exposed as common instance state and never leaks into adapter options; sibling instances remain independent and retention shorter than cache TTL is valid.
+- Each validated retention policy is snapshotted before adapter planning, and adapter mutation cannot change the policy used by that run.
+- Adapter result identity must match the configured instance before any success or failure persistence; mismatch and rescue failures are recorded under the configured ID only.
+- Persistence independently rejects direct retention values other than `nil` or a positive `Integer` before changing stored data.
 - A successful remote fetch atomically upserts current items and prunes expired items for only its own instance.
-- The cutoff uses the earlier of result completion and the persistence clock, the exact cutoff is expired, and refetched items use their refreshed local `fetched_at` timestamp.
+- The cutoff and durable `last_successful_fetch` use the earlier of result completion and one captured persistence clock, fetch history retains raw completion, the exact cutoff is expired, and refetched items use their refreshed local `fetched_at` timestamp.
 - Pruning preserves the adapter-instance record, synchronization state, and fetch history, including when no item rows existed before the write.
 - A successful empty result prunes, while cache hits and all failure paths preserve prior items.
-- A later failure in the result transaction rolls back both pruning and state changes.
+- A later failure in the result transaction rolls back new upserts, pruning, and state changes.
 - CLI output after a successful retained-source fetch reflects the post-pruning database contents without changing its JSON schema.
 - README, `AGENTS.md`, ADR index, ADR 0003, design specification, and implementation plan agree on the retention semantics.
 - The full offline test suite passes, documentation links resolve, and unrelated user files remain untouched.

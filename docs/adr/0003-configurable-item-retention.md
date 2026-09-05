@@ -28,7 +28,10 @@ duration. An item expires when its local `fetched_at` timestamp is at or before
 that cutoff. Returned items are upserted before pruning, so their new local
 fetch timestamps normally refresh their last-seen time. The clamp prevents a
 future-skewed adapter timestamp from authorizing deletion beyond persistence's
-notion of the present; past skew can only delay deletion.
+notion of the present. The same clamped time becomes the durable
+`last_successful_fetch`, preventing future skew from keeping cache freshness
+valid indefinitely, while fetch history retains the raw completion timestamp.
+Past skew can only delay deletion.
 
 Validation, item upserts, instance-scoped pruning, synchronization-state update,
 and successful fetch-history insertion occur in the same per-result
@@ -37,9 +40,19 @@ applies only to normalized items, not adapter-instance records,
 synchronization state, or fetch history.
 
 Configuration remains the owner of the current policy; the duration is not
-copied into SQLite. The orchestrator passes it to the persistence write
-operation. No schema migration is required because existing `fetched_at`
-timestamps provide the last-seen boundary.
+copied into SQLite. Because `Configuration::Instance` remains mutable for
+compatibility, the orchestrator snapshots each validated duration immediately
+after registry configuration validation and before adapter planning. It passes
+that snapshot to the persistence write operation. Persistence independently
+accepts only `nil` or a positive `Integer` before performing deletion. No schema
+migration is required because existing `fetched_at` timestamps provide the
+last-seen boundary.
+
+The configured instance ID is authoritative across orchestration. Before
+persisting either a successful or failed result, the orchestrator rejects an
+adapter result with a different `instance_id` and records the mismatch as a
+failed run for the configured ID. Rescue paths likewise use the configured ID,
+so an adapter-supplied ID cannot acquire rows, state, or history.
 
 `retention_ttl_minutes` uses a positive-integer contract even though the legacy
 `ttl_minutes` setting accepts any positive numeric value. Retention is a
@@ -96,8 +109,11 @@ Positive consequences:
 - instances can opt into bounded item storage independently;
 - pruning is atomic with the successful result that authorizes it;
 - refetched items naturally refresh their last-seen timestamp;
-- failed sources retain their last-known-good data; and
-- adapters remain independent of SQL and retention implementation.
+- failed sources retain their last-known-good data;
+- adapters remain independent of SQL and retention implementation;
+- mutable adapters cannot change the validated retention policy mid-run; and
+- future-skewed completion timestamps cannot indefinitely extend cache
+  freshness.
 
 Negative consequences:
 
@@ -110,6 +126,10 @@ Negative consequences:
   item; and
 - changing or removing the configured duration takes effect on the next
   successful remote fetch and has no separately persisted audit record.
+
+Eager all-item context hydration and a composite pruning index/schema migration
+remain deferred quality follow-ups. Neither changes the correctness contract
+accepted here.
 
 ## Implementation notes
 

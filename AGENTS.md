@@ -19,13 +19,17 @@ invariants and workflow rules here, not session-by-session narration.
   means retain items forever. When configured, a successful remote fetch
   prunes items for that instance whose local `fetched_at` is at or before the
   retention cutoff in the same transaction as the result upsert. Persistence
-  clamps the result completion time to its own clock before calculating that
-  cutoff. Cache hits and failed fetches do not prune.
+  validates the policy independently and clamps the result completion time to
+  one reading of its own clock for both that cutoff and durable cache
+  freshness. Fetch history retains the raw completion timestamp. Cache hits and
+  failed fetches do not prune.
 - Adapter threads fetch, validate, and normalize source data. They do not own
   SQLite schema details, SQL, transactions, or persistence writes.
-- The orchestrator starts one adapter thread per configured instance, waits for
-  every thread, then sends successful results sequentially to the shared
-  `Persistence` service.
+- The orchestrator snapshots each validated instance's retention policy before
+  adapter planning, starts one adapter thread per configured instance, waits
+  for every thread, then persists results sequentially. The configured instance
+  ID is authoritative: mismatched adapter result IDs become failures recorded
+  only for the configured ID.
 - Persistence owns SQLite access, upserts, synchronization state, and fetch
   history. Each successful adapter result has its own transaction; there is no
   transaction spanning all adapter instances.

@@ -30,6 +30,8 @@ duration.
   boundary.
 - Preserve last-known-good items after cache hits, source failures, dependency
   failures, and persistence failures.
+- Keep the configured instance ID authoritative across adapter and persistence
+  boundaries.
 
 ## Non-goals
 
@@ -42,6 +44,10 @@ duration.
 - per-item or per-item-type retention settings;
 - storage quotas or count-based retention; and
 - the Reddit adapter itself.
+
+Eager all-item context hydration and a composite pruning index/schema migration
+are deferred quality follow-ups. They are not required for retention
+correctness in this slice.
 
 ## Configuration
 
@@ -75,6 +81,12 @@ existing configuration files retain their behavior. The key is part of common
 instance configuration and must not appear in the adapter-specific `options`
 hash.
 
+`Configuration::Instance` remains mutable for compatibility with existing
+adapters and tests. Immediately after adapter configuration validation succeeds,
+the orchestrator snapshots every instance's `retention_ttl_minutes` before
+planning or starting adapters. The snapshot, rather than later mutable instance
+state, is the policy authority for that run.
+
 ## Retention semantics
 
 ### Expiration timestamp
@@ -88,9 +100,16 @@ cutoff = reference_time - (retention_ttl_minutes * 60)
 ```
 
 The clamp prevents a future-skewed adapter timestamp from authorizing deletion
-beyond persistence's own notion of the present. A past-skewed completion time
-can only under-prune, which is the safe failure direction for destructive
-cleanup.
+beyond persistence's own notion of the present. The same `reference_time` is
+stored as `last_successful_fetch`, so a future-skewed result cannot keep the
+cache fresh indefinitely. Fetch history retains the raw adapter
+`result.finished_at` as event data. A past-skewed completion time can only
+under-prune, which is the safe failure direction for destructive cleanup.
+
+Persistence captures its clock once per successful write where practical and
+independently validates the supplied policy as `nil` or a positive `Integer`
+before any deletion. This defense does not rely solely on configuration-layer
+validation.
 
 An existing item expires when both conditions are true:
 
@@ -132,9 +151,16 @@ during an outage.
 ## Ownership and data flow
 
 Configuration parses and validates `retention_ttl_minutes` as part of the
-common adapter-instance value object. The orchestrator keeps the association
-between each fetch result and its configured instance and passes the optional
-duration to `Persistence#write_fetch_result`.
+common adapter-instance value object. After registry validation, the
+orchestrator snapshots the duration, keeps the association between each fetch
+result and its configured instance, and passes the snapshot to
+`Persistence#write_fetch_result`.
+
+The configured instance ID is authoritative. Before either success or failure
+persistence, the orchestrator rejects a `FetchResult` whose `instance_id` does
+not match the configured instance. It converts that mismatch into a failed run
+for the configured ID; adapter-supplied mismatched IDs never receive items,
+state, or fetch history.
 
 Persistence remains the only owner of SQL and deletion. Its per-result
 transaction becomes conceptually:
@@ -149,8 +175,9 @@ BEGIN
 COMMIT
 ```
 
-Persistence uses its existing injected clock to clamp `result.finished_at` as
-described above. No database migration is needed: the existing
+Persistence uses one reading from its existing injected clock to clamp
+`result.finished_at` for both the retention cutoff and durable cache freshness,
+while successful fetch history retains the raw result timestamp. No database migration is needed: the existing
 `items.fetched_at` column supplies the last-seen timestamp, and the current
 configuration supplies the policy on every run.
 
@@ -164,11 +191,14 @@ document this invariant.
 
 - If item validation fails, no upsert, pruning, state update, or successful
   fetch-history record commits.
+- If persistence receives a retention duration other than `nil` or a positive
+  `Integer`, it raises `ValidationError` before deletion.
 - If pruning or a later statement fails, the entire adapter-result transaction
   rolls back, including the item upserts.
 - The orchestrator converts a persistence exception into the existing
   per-instance failure status and records a failed fetch independently.
-- A retention policy can delete items only for the result's instance ID.
+- A retention policy can delete items only for the configured instance ID
+  validated against the result.
 - Failure or pruning for one instance cannot roll back another instance's
   successful result.
 
@@ -185,7 +215,7 @@ semantics; the count is not redefined as the number of rows retained in SQLite.
 
 - omission produces `nil` and preserves indefinite retention;
 - a positive integer is exposed as `retention_ttl_minutes`;
-- the common key is removed from adapter-specific options; and
+- the common key is removed from adapter-specific options;
 - zero, negative, float, string, and boolean values are rejected;
 - a duration shorter than `ttl_minutes` is accepted; and
 - sibling instances independently retain an explicit duration or `nil`.
@@ -199,8 +229,12 @@ semantics; the count is not redefined as the number of rows retained in SQLite.
 - a returned item's refreshed `fetched_at` keeps it retained;
 - an empty successful result still prunes;
 - a configured instance with no stored items succeeds;
-- only the result's adapter instance is pruned; and
+- only the result's adapter instance is pruned;
 - a future-skewed result timestamp is clamped to the persistence clock;
+- durable cache freshness uses that clamp while fetch history retains the raw
+  completion timestamp;
+- invalid direct persistence policy values are rejected before stored data
+  changes;
 - pruning leaves the adapter-instance record, synchronization state, and fetch
   history intact; and
 - a failure after deletion rolls back pruning and all other result changes.
@@ -208,6 +242,10 @@ semantics; the count is not redefined as the number of rows retained in SQLite.
 ### Orchestrator and system tests
 
 - the configured duration reaches persistence for a successful remote fetch;
+- adapter mutation after configuration validation cannot change the snapshotted
+  duration for that run;
+- mismatched success and failure result IDs create only a failed run for the
+  configured instance;
 - cache hits do not prune;
 - an end-to-end CLI cache hit preserves an item older than the retention
   duration;
