@@ -23,12 +23,13 @@ class OrchestratorTest < Minitest::Test
   end
 
   class PersistenceSpy
-    attr_reader :writes, :failures, :registered
+    attr_reader :writes, :failures, :registered, :retention_writes
 
     def initialize
       @writes = []
       @failures = []
       @registered = []
+      @retention_writes = []
     end
 
     def register_instance(instance)
@@ -39,8 +40,9 @@ class OrchestratorTest < Minitest::Test
       { items: [], last_successful_fetch: nil, sync_state: nil }
     end
 
-    def write_fetch_result(result)
+    def write_fetch_result(result, retention_ttl_minutes: nil)
       @writes << result
+      @retention_writes << [result.instance_id, retention_ttl_minutes]
     end
 
     def record_fetch_failure(result)
@@ -120,12 +122,13 @@ class OrchestratorTest < Minitest::Test
     end
   end
 
-  def instance(id)
+  def instance(id, retention_ttl_minutes: nil)
     Cybort::Configuration::Instance.new(
       id: id,
       name: id.capitalize,
       adapter: "gate",
       ttl_minutes: 30,
+      retention_ttl_minutes: retention_ttl_minutes,
       num_items_to_fetch: 5,
       options: {}
     )
@@ -175,6 +178,36 @@ class OrchestratorTest < Minitest::Test
     assert_equal [true], calls
   end
 
+  def test_passes_each_instances_retention_to_persistence
+    calls = []
+    registry = Cybort::AdapterRegistry.new
+    registry.register(
+      "force",
+      ->(**kwargs) { ForceRecordingAdapter.new(**kwargs, calls: calls) }
+    )
+    retained = instance("retained", retention_ttl_minutes: 120).tap do |value|
+      value.adapter = "force"
+    end
+    forever = instance("forever").tap { |value| value.adapter = "force" }
+    configuration = Struct.new(:instances).new(
+      { "retained" => retained, "forever" => forever }
+    )
+    persistence = PersistenceSpy.new
+    orchestrator = Cybort::Orchestrator.new(
+      configuration: configuration,
+      persistence: persistence,
+      registry: registry,
+      http_client: nil
+    )
+
+    orchestrator.run(force_fetch: true)
+
+    assert_equal [
+      ["retained", 120],
+      ["forever", nil]
+    ], persistence.retention_writes
+  end
+
   def test_configuration_validation_happens_before_persistence_registration
     registry = Cybort::AdapterRegistry.new
     registry.register("invalid", ->(**_kwargs) { Object.new }, validate_configuration: ->(_instance) {
@@ -194,7 +227,7 @@ class OrchestratorTest < Minitest::Test
     registry = Cybort::AdapterRegistry.new
     modes = []
     registry.register("gmail", ->(**kwargs) { PlanningAdapter.new(**kwargs, modes: modes) }, dependencies: [dependency], validate_configuration: ->(_instance) {})
-    configured = instance("mail").tap { |value| value.adapter = "gmail" }
+    configured = instance("mail", retention_ttl_minutes: 60).tap { |value| value.adapter = "gmail" }
     configuration = Struct.new(:instances).new({ "mail" => configured })
     persistence = PersistenceSpyWithContexts.new(
       "mail" => { items: [], last_successful_fetch: Time.utc(2026, 8, 16, 12), sync_state: {} }
@@ -210,6 +243,7 @@ class OrchestratorTest < Minitest::Test
     assert_equal :cached, result.instances.first.status
     assert_empty checker.calls
     assert_equal [["mail", :cached]], modes
+    assert_empty persistence.retention_writes
   end
 
   def test_stale_missing_dependency_fails_only_that_instance_and_groups_guidance

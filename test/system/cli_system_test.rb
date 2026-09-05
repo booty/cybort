@@ -3,6 +3,12 @@ require "test_helper"
 class CliSystemTest < Minitest::Test
   RSS_URL = "https://example.test/feed.xml"
   GITHUB_URL = "https://api.example.test/notifications"
+  EMPTY_RSS_BODY = <<~XML
+    <?xml version="1.0"?>
+    <rss version="2.0">
+      <channel><title>Empty</title></channel>
+    </rss>
+  XML
 
   class FakeHttpClient
     def initialize(responses:, failures: [])
@@ -180,6 +186,90 @@ class CliSystemTest < Minitest::Test
       assert_equal 0, status
       assert_equal "success", payload.fetch("status")
       assert_equal "First article", payload.fetch("instances").first.fetch("items").first.fetch("title")
+    end
+  end
+
+  def test_successful_remote_fetch_prunes_expired_items_before_cli_output
+    Dir.mktmpdir do |directory|
+      root = File.join(directory, ".cybort")
+      FileUtils.mkdir_p(root)
+      File.write(File.join(root, "cybort.toml"), <<~TOML)
+        schema_version = 1
+
+        [instances.rss]
+        name = "RSS"
+        adapter = "rss"
+        ttl_minutes = 30
+        retention_ttl_minutes = 60
+        num_items_to_fetch = 5
+        url = "#{RSS_URL}"
+      TOML
+      now = [Time.utc(2026, 9, 5, 10)]
+      populated_client = FakeHttpClient.new(responses: { RSS_URL => rss_body })
+      empty_client = FakeHttpClient.new(responses: { RSS_URL => EMPTY_RSS_BODY })
+
+      first_status = Cybort::CLI.start(
+        ["--force-fetch"], out: StringIO.new, err: StringIO.new, home: directory,
+        http_client: populated_client, clock: -> { now.fetch(0) }
+      )
+      now[0] = Time.utc(2026, 9, 5, 12)
+      output = StringIO.new
+      second_status = Cybort::CLI.start(
+        ["--force-fetch"], out: output, err: StringIO.new, home: directory,
+        http_client: empty_client, clock: -> { now.fetch(0) }
+      )
+
+      payload = JSON.parse(output.string)
+      assert_equal 0, first_status
+      assert_equal 0, second_status
+      assert_equal "success", payload.fetch("status")
+      assert_empty payload.fetch("instances").first.fetch("items")
+
+      persistence = Cybort::Persistence.new(File.join(root, "cybort.sqlite3"))
+      assert_empty persistence.items_for(instance_id: "rss")
+      assert_equal 2, persistence.fetch_runs_for(instance_id: "rss").length
+    end
+  end
+
+  def test_cache_hit_preserves_items_older_than_retention_duration
+    Dir.mktmpdir do |directory|
+      root = File.join(directory, ".cybort")
+      FileUtils.mkdir_p(root)
+      File.write(File.join(root, "cybort.toml"), <<~TOML)
+        schema_version = 1
+
+        [instances.rss]
+        name = "RSS"
+        adapter = "rss"
+        ttl_minutes = 30
+        retention_ttl_minutes = 5
+        num_items_to_fetch = 5
+        url = "#{RSS_URL}"
+      TOML
+      now = [Time.utc(2026, 9, 5, 10)]
+      http_client = FakeHttpClient.new(responses: { RSS_URL => rss_body })
+
+      first_status = Cybort::CLI.start(
+        ["--force-fetch"], out: StringIO.new, err: StringIO.new, home: directory,
+        http_client: http_client, clock: -> { now.fetch(0) }
+      )
+      now[0] = Time.utc(2026, 9, 5, 10, 10)
+      output = StringIO.new
+      second_status = Cybort::CLI.start(
+        [], out: output, err: StringIO.new, home: directory,
+        http_client: http_client, clock: -> { now.fetch(0) }
+      )
+
+      payload = JSON.parse(output.string)
+      instance_payload = payload.fetch("instances").first
+      assert_equal 0, first_status
+      assert_equal 0, second_status
+      assert_equal "cached", instance_payload.fetch("status")
+      refute_empty instance_payload.fetch("items")
+
+      persistence = Cybort::Persistence.new(File.join(root, "cybort.sqlite3"))
+      refute_empty persistence.items_for(instance_id: "rss")
+      assert_equal 1, persistence.fetch_runs_for(instance_id: "rss").length
     end
   end
 

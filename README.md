@@ -38,7 +38,8 @@ backup requires a second confirmation.
 
 Configuration is stored in `~/.cybort/cybort.toml`. Each instance has a stable
 ID, a display name, an adapter type, a freshness TTL, and a
-`num_items_to_fetch` source limit.
+`num_items_to_fetch` source limit. An instance may also define optional item
+retention.
 
 ```toml
 schema_version = 1
@@ -47,6 +48,7 @@ schema_version = 1
 name = "Personal RSS"
 adapter = "rss"
 ttl_minutes = 30
+retention_ttl_minutes = 10080
 num_items_to_fetch = 25
 url = "https://example.com/feed.xml"
 
@@ -59,7 +61,17 @@ api_url = "https://api.github.com/notifications"
 token = "..."
 ```
 
-`num_items_to_fetch` limits a source request. It is not a retention policy.
+`ttl_minutes` controls how long cached data is considered fresh before Cybort
+performs another remote fetch. `num_items_to_fetch` limits one source request.
+Neither setting deletes stored items.
+
+`retention_ttl_minutes` is optional and defaults to retaining items forever.
+When configured, Cybort deletes items last seen at or before the retention
+cutoff only after that instance completes a successful remote fetch. Cache hits
+and failed fetches preserve the existing items, even when they are older than
+the configured duration. It is valid for retention to be shorter than
+`ttl_minutes`; in that case, a cache hit preserves the old items and the next
+successful remote fetch may remove every item it does not return.
 
 ### Gmail connector (experimental)
 
@@ -163,3 +175,6 @@ external services or invoke `gws`.
 - [External command connector design](docs/superpowers/specs/2026-09-04-external-command-connectors-design.md)
 - [External command connector implementation plan](docs/superpowers/plans/2026-09-04-external-command-connectors.md)
 - [Implementation plan](docs/superpowers/plans/2026-08-16-cybort-core-implementation.md)
+- [Configurable item retention design](docs/superpowers/specs/2026-09-05-configurable-item-retention-design.md)
+- [Configurable item retention ADR](docs/adr/0003-configurable-item-retention.md)
+- [Configurable item retention implementation plan](docs/superpowers/plans/2026-09-05-configurable-item-retention.md)

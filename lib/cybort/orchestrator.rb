@@ -143,20 +143,27 @@ module Cybort
       end
       threads.each { |instance_id, thread| results[instance_id] = thread.value }
 
-      statuses = instances.keys.map { |instance_id| persist_result(results.fetch(instance_id)) }
+      statuses = instances.values.map do |instance|
+        persist_result(instance: instance, result: results.fetch(instance.id))
+      end
       guidance = unavailable.values.map { |value| value.merge(instances: value.fetch(:instances).sort) }
       RunResult.new(statuses, unavailable_dependencies: guidance.sort_by { |value| [value.fetch(:tool), value.fetch(:instances)] })
     end
 
     private
 
-    def persist_result(result)
+    def persist_result(instance:, result:)
       if result.failure?
         @persistence.record_fetch_failure(result)
         return InstanceRunStatus.new(instance_id: result.instance_id, status: :failure, source_fetched: false, item_count: 0, error: result.error, metadata: result.metadata)
       end
 
-      @persistence.write_fetch_result(result) if result.source_fetched
+      if result.source_fetched
+        @persistence.write_fetch_result(
+          result,
+          retention_ttl_minutes: instance.retention_ttl_minutes
+        )
+      end
       status = result.source_fetched ? :success : :cached
       InstanceRunStatus.new(instance_id: result.instance_id, status: status, source_fetched: result.source_fetched, item_count: result.items.length, metadata: result.metadata)
     rescue StandardError => error

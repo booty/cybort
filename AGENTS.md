@@ -15,6 +15,12 @@ invariants and workflow rules here, not session-by-session narration.
   instance has a stable ID, display name, adapter type, TTL, and
   `num_items_to_fetch`.
 - `num_items_to_fetch` limits one source fetch. It is not a retention policy.
+- A configured source instance may define `retention_ttl_minutes`. Omission
+  means retain items forever. When configured, a successful remote fetch
+  prunes items for that instance whose local `fetched_at` is at or before the
+  retention cutoff in the same transaction as the result upsert. Persistence
+  clamps the result completion time to its own clock before calculating that
+  cutoff. Cache hits and failed fetches do not prune.
 - Adapter threads fetch, validate, and normalize source data. They do not own
   SQLite schema details, SQL, transactions, or persistence writes.
 - The orchestrator starts one adapter thread per configured instance, waits for
@@ -28,8 +34,8 @@ invariants and workflow rules here, not session-by-session narration.
 - RSS and GitHub adapters use direct HTTP APIs. Gmail has an experimental
   command-backed adapter for Google's `gws` CLI; it remains gated on a real
   authenticated smoke test because `gws` is not installed in every environment.
-  Scheduling, retention policies, dashboards, and analysis/LLM workflows are
-  not currently implemented or architected.
+  Scheduling, dashboards, and analysis/LLM workflows are not currently
+  implemented or architected.
 - The CLI supports `init`, a normal fetch, and `--force-fetch`; it emits JSON.
   Exit status `0` means success, `1` means source failure or partial failure,
   and `2` means configuration or usage error.
