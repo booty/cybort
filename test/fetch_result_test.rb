@@ -16,6 +16,21 @@ class FetchResultTest < Minitest::Test
     refute result.failure?
     assert_equal({ cursor: "next" }, result.sync_state)
     refute result.source_fetched
+    refute result.replace_existing_items
+  end
+
+  def test_success_result_can_opt_into_current_snapshot_replacement
+    result = Cybort::FetchResult.success(
+      instance_id: "reddit",
+      items: [],
+      sync_state: {},
+      started_at: Time.utc(2026, 8, 16, 12),
+      finished_at: Time.utc(2026, 8, 16, 12, 1),
+      source_fetched: true,
+      replace_existing_items: true
+    )
+
+    assert result.replace_existing_items
   end
 
   def test_failure_result_preserves_original_error
@@ -30,6 +45,7 @@ class FetchResultTest < Minitest::Test
     refute result.success?
     assert result.failure?
     assert_same error, result.error
+    refute result.replace_existing_items
   end
 
   def test_failure_result_preserves_safe_metadata
@@ -43,5 +59,32 @@ class FetchResultTest < Minitest::Test
     )
 
     assert_equal metadata, result.metadata
+  end
+
+  def test_direct_construction_defaults_replacement_to_false
+    result = Cybort::FetchResult.new(
+      instance_id: "rss",
+      items: [],
+      sync_state: nil,
+      started_at: Time.utc(2026, 8, 16, 12),
+      finished_at: Time.utc(2026, 8, 16, 12, 1),
+      source_fetched: true
+    )
+
+    refute result.replace_existing_items
+  end
+
+  [nil, 0, "true"].each do |invalid_value|
+    define_method("test_direct_construction_rejects_#{invalid_value.inspect.gsub(/\W+/, "_")}_replacement") do
+      assert_raises(ArgumentError) do
+        Cybort::FetchResult.new(replace_existing_items: invalid_value)
+      end
+    end
+  end
+
+  def test_direct_construction_rejects_replacement_on_error_result
+    assert_raises(ArgumentError) do
+      Cybort::FetchResult.new(error: RuntimeError.new("boom"), replace_existing_items: true)
+    end
   end
 end

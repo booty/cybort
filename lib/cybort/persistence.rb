@@ -74,6 +74,13 @@ module Cybort
 
     def write_fetch_result(result, retention_ttl_minutes: nil)
       raise ValidationError, "cannot persist a failed fetch result" unless result.success?
+      replacement = result.replace_existing_items
+      unless replacement == true || replacement == false
+        raise ValidationError, "replace_existing_items must be true or false"
+      end
+      if replacement && !result.source_fetched
+        raise ValidationError, "replacement requires a remote fetch result"
+      end
       unless retention_ttl_minutes.nil? ||
              (retention_ttl_minutes.is_a?(Integer) && retention_ttl_minutes.positive?)
         raise ValidationError, "retention_ttl_minutes must be a positive integer"
@@ -84,6 +91,10 @@ module Cybort
 
       @database.transaction do
         result.items.each { |item| validate_item!(item, result.instance_id) }
+        @database.execute(
+          "DELETE FROM items WHERE instance_id = ?",
+          [result.instance_id]
+        ) if replacement
         result.items.each { |item| upsert_item(item) }
         if retention_ttl_minutes
           cutoff = successful_fetch_at - (retention_ttl_minutes * 60)

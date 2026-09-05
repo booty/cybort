@@ -13,7 +13,12 @@ class BaseAdapterTest < Minitest::Test
 
     def fetch_from_source
       @source_calls += 1
-      { items: [item], sync_state: { cursor: "new" }, metadata: { status: 200 } }
+      {
+        items: [item],
+        sync_state: { cursor: "new" },
+        metadata: { status: 200 },
+        replace_existing_items: true
+      }
     end
 
     def item
@@ -58,6 +63,7 @@ class BaseAdapterTest < Minitest::Test
 
     assert result.success?
     refute result.source_fetched
+    refute result.replace_existing_items
     assert_equal ["cached"], result.items.map(&:canonical_id)
   end
 
@@ -74,6 +80,7 @@ class BaseAdapterTest < Minitest::Test
 
     assert result.success?
     assert result.source_fetched
+    assert result.replace_existing_items
     assert_equal 1, adapter_instance.source_calls
     assert_equal({ cursor: "new" }, result.sync_state)
   end
@@ -117,6 +124,7 @@ class BaseAdapterTest < Minitest::Test
     refute result.success?
     assert_equal "RuntimeError", result.error.class.name
     assert_equal [], result.items
+    refute result.replace_existing_items
   end
 
   def test_plan_captures_stale_mode_once

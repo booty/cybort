@@ -45,7 +45,8 @@ class PersistenceTest < Minitest::Test
 
   def result(instance_id: "rss", items: [item(instance_id: instance_id)],
              sync_state: { cursor: "next" },
-             finished_at: Time.utc(2026, 8, 16, 12, 1))
+             finished_at: Time.utc(2026, 8, 16, 12, 1),
+             source_fetched: true, replace_existing_items: false)
     Cybort::FetchResult.success(
       instance_id: instance_id,
       items: items,
@@ -53,7 +54,8 @@ class PersistenceTest < Minitest::Test
       started_at: finished_at - 60,
       finished_at: finished_at,
       metadata: { status: 200 },
-      source_fetched: true
+      source_fetched: source_fetched,
+      replace_existing_items: replace_existing_items
     )
   end
 
@@ -110,6 +112,111 @@ class PersistenceTest < Minitest::Test
       assert_equal "Updated", persistence.items_for(instance_id: "rss").first.title
       assert_equal 1, persistence.items_for(instance_id: "other").length
       assert_equal 2, persistence.items_for.length
+    end
+  end
+
+  def test_replacement_removes_items_missing_from_the_complete_snapshot
+    with_database do |path|
+      persistence = Cybort::Persistence.new(path)
+      persistence.setup!
+      persistence.register_instance(instance)
+      persistence.write_fetch_result(
+        result(items: [item(canonical_id: "old-a"), item(canonical_id: "old-b")])
+      )
+
+      persistence.write_fetch_result(
+        result(
+          items: [item(canonical_id: "old-b", title: "Refreshed"), item(canonical_id: "new-c")],
+          replace_existing_items: true
+        )
+      )
+
+      assert_equal %w[new-c old-b], persistence.items_for(instance_id: "rss").map(&:canonical_id).sort
+      assert_equal "Refreshed", persistence.items_for(instance_id: "rss").find { |value| value.canonical_id == "old-b" }.title
+    end
+  end
+
+  def test_empty_replacement_clears_the_instance_items
+    with_database do |path|
+      persistence = Cybort::Persistence.new(path)
+      persistence.setup!
+      persistence.register_instance(instance)
+      persistence.write_fetch_result(result)
+
+      persistence.write_fetch_result(result(items: [], replace_existing_items: true))
+
+      assert_empty persistence.items_for(instance_id: "rss")
+    end
+  end
+
+  def test_default_false_success_keeps_items_missing_from_the_result
+    with_database do |path|
+      persistence = Cybort::Persistence.new(path)
+      persistence.setup!
+      persistence.register_instance(instance)
+      persistence.write_fetch_result(result)
+
+      persistence.write_fetch_result(result(items: [item(canonical_id: "new")]))
+
+      assert_equal %w[entry-1 new], persistence.items_for(instance_id: "rss").map(&:canonical_id).sort
+    end
+  end
+
+  def test_replacement_requires_a_remote_success
+    with_database do |path|
+      persistence = Cybort::Persistence.new(path)
+      persistence.setup!
+      persistence.register_instance(instance)
+
+      cached = result(items: [], source_fetched: false, replace_existing_items: true)
+      assert_raises(Cybort::ValidationError) { persistence.write_fetch_result(cached) }
+
+      failure = Cybort::FetchResult.failure(
+        instance_id: "rss",
+        error: RuntimeError.new("unavailable"),
+        started_at: Time.utc(2026, 8, 16, 12),
+        finished_at: Time.utc(2026, 8, 16, 12, 1)
+      )
+      failure.replace_existing_items = true
+      assert_raises(Cybort::ValidationError) { persistence.write_fetch_result(failure) }
+    end
+  end
+
+  def test_replacement_and_retention_apply_in_the_same_write
+    with_database do |path|
+      now = Time.utc(2026, 8, 16, 13)
+      persistence = Cybort::Persistence.new(path, clock: -> { now })
+      persistence.setup!
+      persistence.register_instance(instance)
+      persistence.write_fetch_result(
+        result(items: [item(canonical_id: "old", fetched_at: Time.utc(2026, 8, 16, 10))])
+      )
+
+      persistence.write_fetch_result(
+        result(
+          items: [item(canonical_id: "fresh", fetched_at: now)],
+          finished_at: now,
+          replace_existing_items: true
+        ),
+        retention_ttl_minutes: 60
+      )
+
+      assert_equal ["fresh"], persistence.items_for(instance_id: "rss").map(&:canonical_id)
+    end
+  end
+
+  def test_persistence_rejects_mutated_replacement_flag_before_changing_data
+    with_database do |path|
+      persistence = Cybort::Persistence.new(path)
+      persistence.setup!
+      persistence.register_instance(instance)
+      persistence.write_fetch_result(result(items: [item(canonical_id: "old")], sync_state: { cursor: "old" }))
+      invalid = result(items: [item(canonical_id: "new")], sync_state: { cursor: "new" })
+      invalid.replace_existing_items = "true"
+
+      assert_raises(Cybort::ValidationError) { persistence.write_fetch_result(invalid) }
+      assert_equal ["old"], persistence.items_for(instance_id: "rss").map(&:canonical_id)
+      assert_equal({ cursor: "old" }, persistence.context_for(instance_id: "rss").fetch(:sync_state))
     end
   end
 
@@ -342,7 +449,8 @@ class PersistenceTest < Minitest::Test
             result(
               items: [item(canonical_id: "new", fetched_at: Time.utc(2026, 8, 16, 13, 30))],
               sync_state: { cursor: "new" },
-              finished_at: Time.utc(2026, 8, 16, 14)
+              finished_at: Time.utc(2026, 8, 16, 14),
+              replace_existing_items: true
             ),
             retention_ttl_minutes: 60
           )
@@ -353,6 +461,56 @@ class PersistenceTest < Minitest::Test
 
       assert_equal ["old"], persistence.items_for(instance_id: "rss").map(&:canonical_id)
       refute_includes persistence.items_for(instance_id: "rss").map(&:canonical_id), "new"
+      assert_equal({ cursor: "old" }, persistence.context_for(instance_id: "rss").fetch(:sync_state))
+      assert_equal 1, persistence.fetch_runs_for(instance_id: "rss").length
+    end
+  end
+
+  def test_upsert_failure_after_replacement_rolls_back_the_delete
+    with_database do |path|
+      persistence = Cybort::Persistence.new(path)
+      persistence.setup!
+      persistence.register_instance(instance)
+      persistence.write_fetch_result(result(items: [item(canonical_id: "old")], sync_state: { cursor: "old" }))
+      persistence.define_singleton_method(:upsert_item) { |_item| raise "upsert unavailable" }
+
+      begin
+        assert_raises(RuntimeError) do
+          persistence.write_fetch_result(
+            result(items: [item(canonical_id: "new")], sync_state: { cursor: "new" }, replace_existing_items: true)
+          )
+        end
+      ensure
+        persistence.singleton_class.send(:remove_method, :upsert_item)
+      end
+
+      assert_equal ["old"], persistence.items_for(instance_id: "rss").map(&:canonical_id)
+      assert_equal({ cursor: "old" }, persistence.context_for(instance_id: "rss").fetch(:sync_state))
+      assert_equal 1, persistence.fetch_runs_for(instance_id: "rss").length
+    end
+  end
+
+  def test_state_update_failure_after_replacement_rolls_back_the_delete
+    with_database do |path|
+      persistence = Cybort::Persistence.new(path)
+      persistence.setup!
+      persistence.register_instance(instance)
+      persistence.write_fetch_result(result(items: [item(canonical_id: "old")], sync_state: { cursor: "old" }))
+      persistence.define_singleton_method(:update_instance_state) do |_result, last_successful_fetch:, updated_at:|
+        raise "state unavailable"
+      end
+
+      begin
+        assert_raises(RuntimeError) do
+          persistence.write_fetch_result(
+            result(items: [item(canonical_id: "new")], sync_state: { cursor: "new" }, replace_existing_items: true)
+          )
+        end
+      ensure
+        persistence.singleton_class.send(:remove_method, :update_instance_state)
+      end
+
+      assert_equal ["old"], persistence.items_for(instance_id: "rss").map(&:canonical_id)
       assert_equal({ cursor: "old" }, persistence.context_for(instance_id: "rss").fetch(:sync_state))
       assert_equal 1, persistence.fetch_runs_for(instance_id: "rss").length
     end

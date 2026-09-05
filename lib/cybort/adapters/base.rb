@@ -94,7 +94,8 @@ module Cybort
           started_at: started_at,
           finished_at: clock.call,
           metadata: fetched.fetch(:metadata, {}),
-          source_fetched: true
+          source_fetched: true,
+          replace_existing_items: fetched.fetch(:replace_existing_items, false)
         )
       rescue StandardError => error
         FetchResult.failure(
