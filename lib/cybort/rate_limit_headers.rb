@@ -19,13 +19,14 @@ module Cybort
       parsed = {}
 
       RATE_HEADER_NAMES.each do |header_name, metadata_key|
+        canonical_name = metadata_key.to_s.tr("_", "-")
         value = parse_nonnegative_float(
-          normalized[header_name] || normalized.fetch(header_name.delete_prefix("x-"), nil)
+          normalized[header_name] || normalized[header_name.delete_prefix("x-")] || normalized[canonical_name]
         )
         parsed[metadata_key] = value unless value.nil?
       end
 
-      retry_after = normalized[RETRY_AFTER_HEADER]
+      retry_after = normalized[RETRY_AFTER_HEADER] || normalized["retry-after-seconds"]
       if retry_after.is_a?(Integer) && retry_after >= 0
         parsed[:retry_after_seconds] = retry_after
       elsif retry_after.is_a?(String) && retry_after.match?(INTEGER_PATTERN)

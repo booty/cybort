@@ -38,4 +38,23 @@ class RateLimitHeadersTest < Minitest::Test
 
     assert_empty parsed
   end
+
+  def test_accepts_canonical_metadata_keys_when_reprocessing_safe_metadata
+    parsed = Cybort::RateLimitHeaders.parse(
+      ratelimit_used: 3.5,
+      ratelimit_remaining: 1.0,
+      ratelimit_reset_seconds: 12.0,
+      retry_after_seconds: 7
+    )
+
+    assert_equal(
+      {
+        ratelimit_used: 3.5,
+        ratelimit_remaining: 1.0,
+        ratelimit_reset_seconds: 12.0,
+        retry_after_seconds: 7
+      },
+      parsed
+    )
+  end
 end
