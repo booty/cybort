@@ -68,10 +68,31 @@ invariants and workflow rules here, not session-by-session narration.
   current design spec and accepted ADRs as authoritative design records, and do
   not modify the spitballing document unless the user explicitly requests it.
 
+## Subagent delegation for tests and logs
+
+Codex MUST delegate the following work to a `gpt-5.6-luna` or Haiku subagent using medium reasoning effort:
+
+- Running any test command, including focused tests and full test suites.
+- Exploring, filtering, or analyzing test output, build logs, server logs, stack traces, or other noisy command output.
+
+The Luna subagent should operate read-only: it may run tests and inspect files or logs, but must not modify source code, tests, configuration, or git state.
+
+Keep raw output out of the main conversation whenever possible. The subagent must return a concise, bounded summary containing:
+
+1. Command executed.
+2. Pass/fail status.
+3. Failing tests or relevant log entries.
+4. The first actionable error.
+5. Likely cause, clearly labeled as an inference.
+6. Recommended next diagnostic or implementation step.
+
+Do not paste complete logs into the main conversation unless explicitly requested. The primary Codex agent remains responsible for interpreting the summary, making changes, and performing final verification.
+
 ## General
 
 - Include units in identifier names when applicable, ie "ttl_minutes" instead of
   "ttl" or "length_km" instead of "length"
+- Update inline comments when changing corresponding code
 
 ## Planning and execution boundary
 
