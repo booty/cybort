@@ -32,8 +32,8 @@ module Cybort
       end
 
       def item_from(entry, feed, url)
-        title = entry.title.to_s
-        link = entry.link.to_s
+        title = text_value(entry.title).to_s
+        link = entry_link(entry)
         remote_created_at = entry_date(entry)
         canonical_id = entry_guid(entry) || Digest::SHA256.hexdigest([link, remote_created_at, title].join("\0"))
 
@@ -44,9 +44,33 @@ module Cybort
           fetched_at: clock.call,
           remote_created_at: remote_created_at,
           title: title,
-          body: entry.description,
-          info: { feed_title: feed.channel.title, feed_url: url }
+          body: entry_body(entry),
+          info: { feed_title: feed_title(feed), feed_url: url }
         )
+      end
+
+      def feed_title(feed)
+        title = if feed.respond_to?(:channel)
+                  feed.channel&.title
+                elsif feed.respond_to?(:title)
+                  feed.title
+                end
+        text_value(title)
+      end
+
+      def entry_link(entry)
+        link = entry.link if entry.respond_to?(:link)
+        link = link.first if link.is_a?(Array)
+        link = link.href if link.respond_to?(:href)
+        text_value(link).to_s
+      end
+
+      def entry_body(entry)
+        description = entry.description if entry.respond_to?(:description)
+        return text_value(description) unless description.nil?
+
+        content = entry.content if entry.respond_to?(:content)
+        text_value(content)
       end
 
       def entry_date(entry)
@@ -54,9 +78,17 @@ module Cybort
           next unless entry.respond_to?(method_name)
 
           value = entry.public_send(method_name)
+          return value.content if value.respond_to?(:content)
           return value unless value.nil?
         end
         nil
+      end
+
+      def text_value(value)
+        return nil if value.nil?
+
+        value = value.content if value.respond_to?(:content)
+        value.to_s
       end
 
       def entry_guid(entry)

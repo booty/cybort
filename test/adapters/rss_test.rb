@@ -70,6 +70,19 @@ class RssAdapterTest < Minitest::Test
     assert_equal Time.utc(2026, 8, 16, 11), item.remote_created_at
   end
 
+  def test_maps_atom_content_when_description_is_unavailable
+    body = File.read(File.expand_path("../fixtures/rss/atom.xml", __dir__))
+
+    result = adapter(body).fetch
+    item = result.items.first
+
+    assert result.success?
+    assert_equal "Atom article", item.title
+    assert_equal ["https://example.test/atom-first"], item.urls
+    assert_equal "Article body from Atom", item.body
+    assert_equal "Example Atom Feed", item.info.fetch(:feed_title)
+  end
+
   def test_malformed_feed_is_a_failure
     result = adapter("<rss><channel>").fetch
 
