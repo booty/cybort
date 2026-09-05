@@ -46,6 +46,13 @@ invariants and workflow rules here, not session-by-session narration.
   current design spec and accepted ADRs as authoritative design records, and do
   not modify the spitballing document unless the user explicitly requests it.
 
+## General
+
+- Include units in identifier names when applicable, ie "ttl_minutes" instead of
+  "ttl" or "length_km" instead of "length"
+
+# Memory/Decision/Documentation system
+
 ## Documentation authority
 
 When documents disagree, use this hierarchy to distinguish actual behavior
