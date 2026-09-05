@@ -19,12 +19,13 @@ class PersistenceTest < Minitest::Test
     )
   end
 
-  def item(instance_id: "rss", canonical_id: "entry-1", title: "Article")
+  def item(instance_id: "rss", canonical_id: "entry-1", title: "Article",
+           fetched_at: Time.utc(2026, 8, 16, 12))
     Cybort::Item.new(
       instance_id: instance_id,
       canonical_id: canonical_id,
       urls: ["https://example.test/#{canonical_id}"],
-      fetched_at: Time.utc(2026, 8, 16, 12),
+      fetched_at: fetched_at,
       remote_created_at: Time.utc(2026, 8, 16, 11),
       title: title,
       body: "Body",
@@ -34,13 +35,15 @@ class PersistenceTest < Minitest::Test
     )
   end
 
-  def result(instance_id: "rss", items: [item(instance_id: instance_id)], sync_state: { cursor: "next" })
+  def result(instance_id: "rss", items: [item(instance_id: instance_id)],
+             sync_state: { cursor: "next" },
+             finished_at: Time.utc(2026, 8, 16, 12, 1))
     Cybort::FetchResult.success(
       instance_id: instance_id,
       items: items,
       sync_state: sync_state,
-      started_at: Time.utc(2026, 8, 16, 12),
-      finished_at: Time.utc(2026, 8, 16, 12, 1),
+      started_at: finished_at - 60,
+      finished_at: finished_at,
       metadata: { status: 200 },
       source_fetched: true
     )
@@ -157,6 +160,159 @@ class PersistenceTest < Minitest::Test
       assert_empty persistence.items_for(instance_id: "rss")
       assert_equal({ cursor: "empty-page" }, persistence.context_for(instance_id: "rss").fetch(:sync_state))
       assert_equal "successful", persistence.fetch_runs_for(instance_id: "rss").first.fetch("status")
+    end
+  end
+
+  def test_omitted_retention_keeps_old_items
+    with_database do |path|
+      persistence = Cybort::Persistence.new(path)
+      persistence.setup!
+      persistence.register_instance(instance)
+      persistence.write_fetch_result(
+        result(items: [item(canonical_id: "old", fetched_at: Time.utc(2026, 8, 16, 10))])
+      )
+
+      persistence.write_fetch_result(
+        result(items: [], finished_at: Time.utc(2026, 8, 16, 14))
+      )
+
+      assert_equal ["old"], persistence.items_for(instance_id: "rss").map(&:canonical_id)
+    end
+  end
+
+  def test_retention_prunes_older_and_boundary_items_for_only_one_instance
+    with_database do |path|
+      now = Time.utc(2026, 8, 16, 13)
+      persistence = Cybort::Persistence.new(path, clock: -> { now })
+      persistence.setup!
+      persistence.register_instance(instance("rss"))
+      persistence.register_instance(instance("other"))
+      persistence.write_fetch_result(
+        result(
+          items: [
+            item(canonical_id: "older", fetched_at: Time.utc(2026, 8, 16, 11, 59, 59)),
+            item(canonical_id: "boundary", fetched_at: Time.utc(2026, 8, 16, 12)),
+            item(canonical_id: "newer", fetched_at: Time.utc(2026, 8, 16, 12, 0, 1))
+          ]
+        )
+      )
+      persistence.write_fetch_result(
+        result(
+          instance_id: "other",
+          items: [item(instance_id: "other", canonical_id: "other-old", fetched_at: Time.utc(2026, 8, 16, 10))]
+        )
+      )
+
+      persistence.write_fetch_result(
+        result(items: [], finished_at: Time.utc(2026, 8, 16, 13)),
+        retention_ttl_minutes: 60
+      )
+
+      assert_equal ["newer"], persistence.items_for(instance_id: "rss").map(&:canonical_id)
+      assert_equal ["other-old"], persistence.items_for(instance_id: "other").map(&:canonical_id)
+      refute_nil persistence.instance_record("rss")
+      assert_equal({ cursor: "next" }, persistence.context_for(instance_id: "rss").fetch(:sync_state))
+      assert_equal 2, persistence.fetch_runs_for(instance_id: "rss").length
+      assert_equal 1, persistence.fetch_runs_for(instance_id: "other").length
+    end
+  end
+
+  def test_returned_item_refreshes_last_seen_timestamp_before_pruning
+    with_database do |path|
+      persistence = Cybort::Persistence.new(path)
+      persistence.setup!
+      persistence.register_instance(instance)
+      persistence.write_fetch_result(
+        result(items: [item(canonical_id: "seen-again", fetched_at: Time.utc(2026, 8, 16, 10))])
+      )
+
+      persistence.write_fetch_result(
+        result(
+          items: [item(canonical_id: "seen-again", fetched_at: Time.utc(2026, 8, 16, 13))],
+          finished_at: Time.utc(2026, 8, 16, 13, 1)
+        ),
+        retention_ttl_minutes: 60
+      )
+
+      stored = persistence.items_for(instance_id: "rss")
+      assert_equal ["seen-again"], stored.map(&:canonical_id)
+      assert_equal Time.utc(2026, 8, 16, 13), stored.first.fetched_at
+    end
+  end
+
+  def test_retention_succeeds_when_the_instance_has_no_stored_items
+    with_database do |path|
+      now = Time.utc(2026, 8, 16, 13)
+      persistence = Cybort::Persistence.new(path, clock: -> { now })
+      persistence.setup!
+      persistence.register_instance(instance)
+
+      persistence.write_fetch_result(
+        result(items: [], finished_at: now),
+        retention_ttl_minutes: 60
+      )
+
+      assert_empty persistence.items_for(instance_id: "rss")
+      assert_equal 1, persistence.fetch_runs_for(instance_id: "rss").length
+    end
+  end
+
+  def test_future_result_timestamp_cannot_advance_cutoff_beyond_persistence_clock
+    with_database do |path|
+      now = Time.utc(2026, 8, 16, 13)
+      persistence = Cybort::Persistence.new(path, clock: -> { now })
+      persistence.setup!
+      persistence.register_instance(instance)
+      persistence.write_fetch_result(
+        result(
+          items: [
+            item(canonical_id: "expired", fetched_at: Time.utc(2026, 8, 16, 11, 59, 59)),
+            item(canonical_id: "safe", fetched_at: Time.utc(2026, 8, 16, 12, 0, 1))
+          ]
+        )
+      )
+
+      persistence.write_fetch_result(
+        result(items: [], finished_at: Time.utc(2030, 1, 1)),
+        retention_ttl_minutes: 60
+      )
+
+      assert_equal ["safe"], persistence.items_for(instance_id: "rss").map(&:canonical_id)
+    end
+  end
+
+  def test_failure_after_pruning_rolls_back_deletion_and_state_update
+    with_database do |path|
+      persistence = Cybort::Persistence.new(path)
+      persistence.setup!
+      persistence.register_instance(instance)
+      persistence.write_fetch_result(
+        result(
+          items: [item(canonical_id: "old", fetched_at: Time.utc(2026, 8, 16, 10))],
+          sync_state: { cursor: "old" }
+        )
+      )
+      persistence.define_singleton_method(:insert_fetch_run) do |_result, _status|
+        raise "fetch history unavailable"
+      end
+      begin
+        assert_raises(RuntimeError) do
+          persistence.write_fetch_result(
+            result(
+              items: [],
+              sync_state: { cursor: "new" },
+              finished_at: Time.utc(2026, 8, 16, 14)
+            ),
+            retention_ttl_minutes: 60
+          )
+        end
+      ensure
+        persistence.singleton_class.send(:remove_method, :insert_fetch_run)
+      end
+
+      assert_equal ["old"], persistence.items_for(instance_id: "rss").map(&:canonical_id)
+      assert_equal({ cursor: "old" }, persistence.context_for(instance_id: "rss").fetch(:sync_state))
+      assert_equal 1, persistence.fetch_runs_for(instance_id: "rss").length
     end
   end
 

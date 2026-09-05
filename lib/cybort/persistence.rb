@@ -72,12 +72,17 @@ module Cybort
       query("SELECT * FROM fetch_runs WHERE instance_id = ? ORDER BY id", instance_id)
     end
 
-    def write_fetch_result(result)
+    def write_fetch_result(result, retention_ttl_minutes: nil)
       raise ValidationError, "cannot persist a failed fetch result" unless result.success?
 
       @database.transaction do
         result.items.each { |item| validate_item!(item, result.instance_id) }
         result.items.each { |item| upsert_item(item) }
+        if retention_ttl_minutes
+          reference_time = [result.finished_at, @clock.call].min
+          cutoff = reference_time - (retention_ttl_minutes * 60)
+          prune_expired_items(instance_id: result.instance_id, cutoff: cutoff)
+        end
         update_instance_state(result)
         insert_fetch_run(result, "successful")
       end
@@ -120,6 +125,15 @@ module Cybort
           item.action_item.nil? ? nil : (item.action_item ? 1 : 0),
           JSON.generate(item.info)
         ]
+      )
+    end
+
+    def prune_expired_items(instance_id:, cutoff:)
+      # Both values compared here pass through #timestamp, whose fixed-width UTC
+      # ISO 8601 representation makes SQLite TEXT ordering chronological.
+      @database.execute(
+        "DELETE FROM items WHERE instance_id = ? AND fetched_at <= ?",
+        [instance_id, timestamp(cutoff)]
       )
     end
 
