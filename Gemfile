@@ -7,3 +7,6 @@ gem "rss"
 
 gem "minitest"
 gem "rake"
+
+gem "rubocop", "~> 1.90"
+gem "rubocop-performance", "~> 1.27"
