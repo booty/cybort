@@ -164,6 +164,12 @@ assert_equal :authorization, api.safe_metadata.fetch(:category)
 refute_includes api.safe_metadata.to_s, "secret"
 ```
 
+Also assert `RedditApiError#message` is a constant/allowlisted rendering that
+does not include an injected token, response body, title, or URL. In an
+adapter/system test, inject each sentinel into malformed JSON and transport
+failures and assert the sentinel is absent from the failure result JSON and the
+persisted `fetch_runs.error_message`, not only from `safe_metadata`.
+
 - [ ] **Step 2: Write HTTP form, timeout, and size tests**
 
 Extend the fake transport to capture all unit-named values. Add tests proving:
@@ -457,6 +463,13 @@ client.subreddit_hot(session:, subreddit:, operation: :subreddit_hot)
 client.safe_metadata
 ```
 
+`authenticate` begins one bounded fetch session: it resets the request counter,
+120-second monotonic deadline, safe metadata, and token state. Listing methods
+require that session and reject use after its deadline. A second sequential
+`authenticate` on the same injected client starts a new session; concurrent
+sessions on one client are rejected. The coordinator must not hold its mutex
+while waiting or sleeping.
+
 - [ ] **Step 1: Write separate token-response contract tests**
 
 Assert the token call uses Basic authentication, form data, User-Agent, and no
@@ -505,6 +518,10 @@ seconds during pagination and assert `category: :deadline`, no partial return,
 and no next request. Assert the HTTP call receives the positive remaining
 deadline as `timeout_seconds`. Map transport timeout/oversize categories into
 the operation-specific `RedditApiError` without copying response data.
+Authenticate twice sequentially and assert both sessions receive independent
+request budgets/deadlines; attempt concurrent reuse and assert a safe
+validation error. Use two client identities while one coordinator lease waits
+to prove the coordinator mutex is not held during sleep.
 
 - [ ] **Step 4: Run and verify RED**
 
@@ -711,8 +728,11 @@ For t3 candidates independently reject:
 - `.`/`..` traversal segments including percent-encoded forms; and
 - a decoded subreddit or comment ID mismatch.
 
-Assert inconsistent duplicates with one fullname but different identity fields
-fail. Assert the valid path
+Assert duplicates with one fullname and different stable identity fields fail.
+For duplicates whose mutable scores/comments/titles differ, assert deterministic
+precedence: dedicated single-subreddit data wins over personalized-home data,
+dedicated `news` wins over other sources, and first observation wins within one
+source. Assert the valid path
 `/r/news/comments/abc123/example_title/` produces exactly
 `https://www.reddit.com/r/news/comments/abc123/example_title/` even if the source
 object contains an outbound `url` field.
@@ -763,8 +783,9 @@ Implement in this order:
    once after exclusion;
 6. validate/filter/dedupe t3s, calculate/rank, then bounded-select;
 7. construct minimized `Item`s and safe bounded metadata; and
-8. return `FetchResult.success(..., source_fetched: true,
-   replace_existing_items: true)` only now.
+8. return a source payload hash with `replace_existing_items: true` only now;
+   `Adapters::Base` constructs the `FetchResult` and supplies the canonical
+   instance ID, timestamps, and cache/failure behavior.
 
 Rescue source errors through the established base adapter path. Cached base
 results retain default replacement false and empty metadata; do not restore

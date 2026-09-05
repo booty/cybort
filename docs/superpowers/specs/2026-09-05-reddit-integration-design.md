@@ -195,9 +195,11 @@ Candidate calls use only documented endpoints:
    `/r/news/hot?limit=100&raw_json=1` request so the megathread detector is not
    dependent on personalized-home placement.
 
-V1 never constructs `/r/name+name/hot` or any other multi-subreddit path. Hot
-listings are not paginated. Candidates are filtered against `effective` and
-deduplicated by validated `t3` fullname before ranking.
+V1 never constructs `/r/name+name/hot` or any other multi-subreddit path. V1
+intentionally fetches only the first hot page from each endpoint; this is a
+bounded selection contract, not exhaustive hot-list pagination. Candidates are
+filtered against `effective` and deduplicated by validated `t3` fullname before
+ranking.
 
 Remote-success metadata exposes the limitation without leaking membership:
 
@@ -236,8 +238,10 @@ A qualifying V1 message is conservatively defined as:
 
 Non-`t4` children are ignored. A `t4` child with malformed required identity or
 timestamp fields fails the page; a valid `t4` that is not new or is a comment
-reply is filtered out. Comment replies, mentions, announcements, and modmail
-therefore cannot become V1 items. The
+reply is filtered out. The documented response shape does not provide a
+general discriminator for every legacy/system message class, so V1 labels the
+stored category **unread legacy inbox messages** and does not claim to exclude
+announcements or modmail beyond the explicit predicate above. The
 documented `mark=false` parameter and absence of write endpoints mean Cybort
 does not intend to change read state; the design does not claim that the
 parameter alone guarantees server behavior. Before release, an authenticated
@@ -283,8 +287,14 @@ r / <normalized-subreddit> / comments / <id>
 
 The adapter re-encodes the safe decoded path segments and constructs the
 canonical URL as `https://www.reddit.com/<segments>`. It never trusts an
-absolute source URL or stores a submission's outbound link. Inconsistent
-duplicates sharing a fullname fail instead of silently choosing one.
+absolute source URL or stores a submission's outbound link. Duplicates sharing
+a fullname must agree on stable identity fields (fullname, normalized
+subreddit, and canonical path). If mutable fields differ because home and a
+dedicated request raced, the deterministic source precedence is dedicated
+single-subreddit data over the personalized-home sample, dedicated `news` over
+other sources, then first observation within the same source. The selected
+record's title, counters, stickiness, and score come from that winning record;
+stable identity disagreement fails the complete result.
 Name/ID/subreddit/permalink mismatches fail the complete result, preventing
 unstable identity or host/path confusion.
 
@@ -421,9 +431,13 @@ ambiguity about where rate metadata lives.
 
 Owns token refresh, safe headers/query encoding, JSON/listing validation,
 cursor validation, request counting, centralized rate observation, and a
-120-second monotonic per-fetch deadline. It checks the deadline before and
-after requests, passes remaining seconds down as the request timeout cap, and
-does not return partial data after expiry.
+120-second monotonic per-fetch deadline. `authenticate` begins a fresh session:
+it resets that session's request counter, deadline, safe metadata, and token
+state. Listing methods require the returned session and cannot be reused after
+the session expires; a second sequential authentication starts a new bounded
+session. It checks the deadline before and after requests, passes remaining
+seconds down as the request timeout cap, and does not return partial data after
+expiry.
 
 ### `RedditRateLimitCoordinator`
 
@@ -439,17 +453,20 @@ lease. An `ensure` path releases a lease after transport failures without
 inventing new capacity.
 
 The coordinator covers multiple configured instances in one Cybort process
-that share a client identity. It cannot coordinate other processes, machines,
-or restarts and does not make the 90-request bound a global compliance
-guarantee.
+that share a client identity. Its mutex protects state transitions only; waits
+and sleeps happen outside the mutex so unrelated client identities remain
+admissible. It cannot coordinate other processes, machines, or restarts and
+does not make the 90-request bound a global compliance guarantee.
 
 ### `RedditActivity` and `Adapters::Reddit`
 
 The pure activity module owns candidate values, the exact score and sort key,
 megathread classification, priority, and bounded category selection. The
 adapter validates options, drives client operations, validates identities,
-normalizes `Item`s, and returns the existing result type with snapshot intent.
-Neither owns persistence.
+normalizes source items, and returns the payload consumed by `Adapters::Base`,
+including `replace_existing_items: true` only for a complete remote success.
+`Adapters::Base` remains the sole constructor of the existing result type.
+Neither layer owns persistence.
 
 `Adapters::Base` carries an optional source payload
 `replace_existing_items` into the remote-success `FetchResult`, defaulting to
@@ -487,9 +504,15 @@ metadata. Operations are `token`, `subscriptions`, `unread_messages`,
 - `request_budget` or `deadline`; and
 - `timeout` or `response_too_large` from the HTTP transport.
 
-Tests distinguish token from data 401/403 failures through `operation`. Errors
-never contain access/refresh tokens, client values, response bodies, subjects,
-titles, usernames, full URLs, or membership. Remote-success metadata contains
+Tests distinguish token from data 401/403 failures through `operation`.
+`RedditApiError` messages are constant templates assembled only from the
+allowlisted operation, category, and status; upstream exception messages,
+response excerpts, URLs, headers, subjects, and titles are never wrapped.
+This matters because the existing base/CLI and fetch-history paths expose
+`error.message` as well as `safe_metadata`. All Reddit errors therefore remain
+body-free in result JSON and persisted fetch history. Errors never contain
+access/refresh tokens, client values, response bodies, subjects, titles,
+usernames, full URLs, or membership. Remote-success metadata contains
 only bounded counts/capability/rate values. A failed result preserves old data.
 
 ## Cache, lifecycle, compliance, and privacy
