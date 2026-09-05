@@ -51,6 +51,17 @@ invariants and workflow rules here, not session-by-session narration.
 - Include units in identifier names when applicable, ie "ttl_minutes" instead of
   "ttl" or "length_km" instead of "length"
 
+## Planning and execution boundary
+
+- During design, specification, or implementation-plan work, inspect existing
+  tests but do not run tests, linters, builds, or other project execution merely
+  to establish a baseline. Run them only when the user explicitly requests it
+  or when execution is necessary to investigate a known failure that materially
+  affects the document.
+- Validate documentation-only work with relevant read-only checks such as diff
+  review, formatting checks, link checks, and consistency checks. Reserve the
+  project test suite for implementation work and explicit user requests.
+
 # Memory/Decision/Documentation system
 
 ## Documentation authority
@@ -107,5 +118,8 @@ index with status `Superseded` and a link to the newer ADR. Do not delete useful
 history merely because the code has evolved. Keep memory updates in the same
 commit as the implementation or decision they explain whenever practical.
 
-Before handing off work, verify documentation links, run the relevant tests,
-and ensure that new decisions are represented in the ADR index.
+Before handing off implementation work, verify documentation links, run the
+relevant tests, and ensure that new decisions are represented in the ADR index.
+Before handing off design, specification, or plan-only work, verify the changed
+documents without running the project test suite unless the planning boundary
+above permits it.
