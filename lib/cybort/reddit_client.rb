@@ -216,7 +216,7 @@ module Cybort
       count_request!(operation, session)
       lease = nil
       begin
-        remaining = remaining_deadline!(operation, session)
+        remaining_deadline!(operation, session)
         lease = @coordinator.acquire(
           key: current_client_key,
           deadline_monotonic: session.deadline_monotonic,
@@ -335,7 +335,7 @@ module Cybort
       end
     end
 
-    def count_request!(operation, session)
+    def count_request!(operation, _session)
       @state_mutex.synchronize do
         unless @request_count < @request_limit
           raise_api(operation, :request_budget)
@@ -352,7 +352,7 @@ module Cybort
       remaining
     end
 
-    def data_headers(session)
+    def data_headers(_session)
       {
         "Authorization" => "Bearer #{current_access_token}",
         "User-Agent" => current_user_agent

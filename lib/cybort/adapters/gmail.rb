@@ -41,7 +41,7 @@ module Cybort
         raise_command_error("list", "invalid_json", dependency) unless raw_messages.is_a?(Array)
 
         ids = raw_messages.first(instance.num_items_to_fetch).map { |message| message_id!(message, dependency) }.uniq
-        items = ids.map.with_index do |message_id, index|
+        items = ids.map do |message_id|
           detail = run_gws(
             dependency,
             "get",
@@ -187,7 +187,7 @@ module Cybort
       end
 
       def safe_exit_code(result)
-        result.status&.respond_to?(:exitstatus) ? result.status.exitstatus : nil
+        result.status.respond_to?(:exitstatus) ? result.status.exitstatus : nil
       end
 
       def raise_command_error(operation, category, dependency, command_index: @command_index, exit_code: nil)

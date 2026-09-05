@@ -58,9 +58,9 @@ module Cybort
       response
     rescue HttpError, HttpTransportError
       raise
-    rescue Net::OpenTimeout, Net::ReadTimeout, Net::WriteTimeout, Timeout::Error
+    rescue Timeout::Error
       raise HttpTransportError.new(category: :timeout)
-    rescue URI::InvalidURIError, EOFError, IOError, Net::HTTPBadResponse, OpenSSL::SSL::SSLError, SocketError, SystemCallError
+    rescue URI::InvalidURIError, IOError, Net::HTTPBadResponse, OpenSSL::SSL::SSLError, SocketError, SystemCallError
       raise HttpTransportError.new(category: :network)
     end
 
@@ -77,7 +77,7 @@ module Cybort
       raise unless error.name == method
 
       raise HttpTransportError.new(category: :network)
-    rescue URI::InvalidURIError, EOFError, IOError, Net::HTTPBadResponse, OpenSSL::SSL::SSLError, SocketError, SystemCallError
+    rescue URI::InvalidURIError, IOError, Net::HTTPBadResponse, OpenSSL::SSL::SSLError, SocketError, SystemCallError
       raise HttpTransportError.new(category: :network)
     end
 
@@ -189,9 +189,9 @@ module Cybort
       response_payload
     rescue HttpTransportError
       raise
-    rescue Net::OpenTimeout, Net::ReadTimeout, Net::WriteTimeout, Timeout::Error
+    rescue Timeout::Error
       raise HttpTransportError.new(category: :timeout)
-    rescue URI::InvalidURIError, EOFError, IOError, Net::HTTPBadResponse, OpenSSL::SSL::SSLError, SocketError, SystemCallError
+    rescue URI::InvalidURIError, IOError, Net::HTTPBadResponse, OpenSSL::SSL::SSLError, SocketError, SystemCallError
       raise HttpTransportError.new(category: :network)
     end
 

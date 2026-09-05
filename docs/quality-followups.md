@@ -6,6 +6,25 @@ deferred because they require broader measurement, lifecycle UX, or an
 architecture change, not because they are needed for the approved
 success-triggered retention and current-snapshot contracts.
 
+## Establish a staged RuboCop baseline
+
+The repository now bundles RuboCop and RuboCop Performance, but the existing
+codebase has no `.rubocop.yml`; a full run currently reports 2,754 offenses
+across 52 files, mostly legacy string-literal, frozen-string, layout, and
+metrics defaults. The reviewed Reddit/transport production files are clean for
+the focused Lint and Security departments.
+
+Follow-up: agree on a project style baseline, add configuration in stages, and
+ratchet only changed files or newly touched cops before enabling a whole-tree
+gate. Do not mass-autocorrect the existing suite without a separately reviewed
+formatting change.
+
+Evidence: `bundle exec rubocop --format simple` and
+`bundle exec rubocop --only Lint,Security --format simple
+lib/cybort/http_client.rb lib/cybort/reddit_client.rb
+lib/cybort/adapters/gmail.rb lib/cybort/reddit_rate_limit_coordinator.rb
+lib/cybort/configuration.rb` on 2026-09-05.
+
 ## Avoid eager item hydration during remote-only runs
 
 `Orchestrator#run` currently asks `Persistence#context_for` for every instance
