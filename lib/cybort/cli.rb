@@ -16,7 +16,14 @@ module Cybort
 
       options = parse_options(args, out)
       root = File.join(home, ".cybort")
-      configuration = Configuration.load(File.join(root, "cybort.toml"))
+      configuration_path = File.join(root, "cybort.toml")
+      unless File.file?(configuration_path)
+        raise ConfigurationError,
+              "No Cybort configuration found at #{configuration_path}. " \
+              "Run `bundle exec bin/cybort init` to create it, then edit the config file and run Cybort again."
+      end
+
+      configuration = Configuration.load(configuration_path)
       persistence = Persistence.new(File.join(root, "cybort.sqlite3"), clock: clock)
       persistence.setup!
       command_runner ||= CommandRunner.new(monotonic_clock: monotonic_clock)

@@ -84,6 +84,21 @@ class CliTest < Minitest::Test
     end
   end
 
+  def test_missing_configuration_explains_how_to_initialize_cybort
+    Dir.mktmpdir do |directory|
+      output = StringIO.new
+      error_output = StringIO.new
+
+      status = Cybort::CLI.start([], out: output, err: error_output, home: directory)
+
+      assert_equal 2, status
+      assert_empty output.string
+      assert_includes error_output.string, "No Cybort configuration found"
+      assert_includes error_output.string, "cybort init"
+      assert_includes error_output.string, "cybort.toml"
+    end
+  end
+
   def test_fetches_and_then_uses_cached_rss_data
     Dir.mktmpdir do |directory|
       root = File.join(directory, ".cybort")
