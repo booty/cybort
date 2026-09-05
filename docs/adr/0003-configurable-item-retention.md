@@ -123,7 +123,7 @@ Negative consequences:
   and the next successful remote fetch may remove every item it does not return;
 - retention advances only when Cybort runs and the source fetch succeeds;
 - items omitted because of a source request limit age out like any other unseen
-  item; and
+  item;
 - changing or removing the configured duration takes effect on the next
   successful remote fetch and has no separately persisted audit record.
 

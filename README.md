@@ -178,3 +178,4 @@ external services or invoke `gws`.
 - [Configurable item retention design](docs/superpowers/specs/2026-09-05-configurable-item-retention-design.md)
 - [Configurable item retention ADR](docs/adr/0003-configurable-item-retention.md)
 - [Configurable item retention implementation plan](docs/superpowers/plans/2026-09-05-configurable-item-retention.md)
+- [Deferred quality follow-ups](docs/quality-followups.md)
