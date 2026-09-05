@@ -80,7 +80,7 @@ module Cybort
         end
       end.new(input, out)
       result = Installer.new(io: io, clock: clock).run(location: path)
-      out.puts "Initialized Cybort at #{path}" if %i[created reset reset_with_config].include?(result)
+      out.puts "Initialized Cybort at #{path}; edit #{path}/cybort.toml to configure" if %i[created reset reset_with_config].include?(result)
       %i[created kept reset reset_with_config].include?(result) ? 0 : 1
     end
   end

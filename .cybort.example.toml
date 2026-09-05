@@ -1,0 +1,78 @@
+# Cybort configuration examples
+#
+# This file is intentionally fully commented out. Do not put real credentials
+# in the repository. First initialize the default installation:
+#
+#   bundle exec bin/cybort init
+#
+# Then edit ~/.cybort/cybort.toml, uncomment only the instances you want, and
+# replace every placeholder. You can keep multiple instances of one adapter
+# with different stable IDs. Run a normal fetch with:
+#
+#   bundle exec bin/cybort
+#
+# Use --force-fetch when you want to ignore each instance's freshness TTL.
+#
+# Shared instance fields:
+#   name                 Display name in CLI output.
+#   adapter              Registered connector type.
+#   ttl_minutes          Freshness window before a remote fetch is needed.
+#   num_items_to_fetch   Per-fetch source/selection limit.
+#   retention_ttl_minutes Optional local item retention window in minutes.
+#                         Omit it to retain items forever. Pruning occurs only
+#                         after a successful remote fetch.
+#
+# Keep this file free of access tokens, passwords, refresh tokens, and private
+# URLs. See README.md for connector behavior, limits, and release caveats.
+
+# schema_version = 1
+
+# RSS: fetch a public RSS or Atom feed.
+# [instances.personal_rss]
+# name = "Personal RSS"
+# adapter = "rss"
+# ttl_minutes = 30
+# retention_ttl_minutes = 10080 # 7 days; optional
+# num_items_to_fetch = 25
+# url = "https://example.com/feed.xml"
+
+# GitHub: fetch notifications through the GitHub Notifications API.
+# [instances.github]
+# name = "GitHub Notifications"
+# adapter = "github"
+# ttl_minutes = 15
+# num_items_to_fetch = 25
+# api_url = "https://api.github.com/notifications" # optional; this is the default
+# token = "replace-with-a-github-token"
+
+# Reddit: fetch unread legacy inbox messages and activity-ranked threads.
+# Obtain an approved OAuth refresh token outside Cybort. Chat is not included
+# in V1. The user-agent must identify your application and Reddit user.
+# [instances.personal_reddit]
+# name = "Personal Reddit"
+# adapter = "reddit"
+# ttl_minutes = 15
+# retention_ttl_minutes = 2880 # 48 hours is the documented Reddit default
+# num_items_to_fetch = 50
+# client_id = "replace-with-reddit-client-id"
+# client_secret = "replace-with-reddit-client-secret"
+# refresh_token = "replace-with-reddit-refresh-token"
+# user_agent = "macos:com.example.cybort:v0.1.0 (by /u/example_user)"
+# include_subreddits = ["news", "programming"] # optional additions
+# exclude_subreddits = ["memes"] # optional; exclusions win
+
+# Gmail (experimental): fetch message metadata through Google's gws CLI.
+# Install/authenticate gws separately and grant only the read-only scope.
+# The connector remains behind its authenticated smoke-test release gate.
+# [instances.personal_gmail]
+# name = "Personal Gmail"
+# adapter = "gmail"
+# ttl_minutes = 60
+# num_items_to_fetch = 25
+# user_id = "me"
+# query = "in:anywhere"
+
+# When adding a connector, update this template in the same change: add its
+# commented instance shape, required fields, safe placeholder guidance, and any
+# important limits or authentication caveats. Keep README.md linked to this
+# file rather than copying configuration blocks into multiple documents.

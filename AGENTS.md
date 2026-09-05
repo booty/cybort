@@ -14,6 +14,11 @@ invariants and workflow rules here, not session-by-session narration.
 - The default configuration is `~/.cybort/cybort.toml`. A configured source
   instance has a stable ID, display name, adapter type, TTL, and
   `num_items_to_fetch`.
+- `.cybort.example.toml` is the canonical repository template for user
+  configuration. When adding or changing a connector, update its commented
+  example, placeholders, limits, and authentication caveats in the same
+  change; keep README configuration guidance linked to the template rather
+  than duplicating TOML blocks.
 - `num_items_to_fetch` limits one source fetch. It is not a retention policy.
 - A configured source instance may define `retention_ttl_minutes`. Omission
   means retain items forever. When configured, a successful remote fetch

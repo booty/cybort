@@ -39,27 +39,10 @@ backup requires a second confirmation.
 Configuration is stored in `~/.cybort/cybort.toml`. Each instance has a stable
 ID, a display name, an adapter type, a freshness TTL, and a
 `num_items_to_fetch` source limit. An instance may also define optional item
-retention.
-
-```toml
-schema_version = 1
-
-[instances.personal_rss]
-name = "Personal RSS"
-adapter = "rss"
-ttl_minutes = 30
-retention_ttl_minutes = 10080
-num_items_to_fetch = 25
-url = "https://example.com/feed.xml"
-
-[instances.github]
-name = "GitHub Notifications"
-adapter = "github"
-ttl_minutes = 15
-num_items_to_fetch = 25
-api_url = "https://api.github.com/notifications"
-token = "..."
-```
+retention. See [.cybort.example.toml](.cybort.example.toml) for commented
+configuration templates for every registered connector. Copy the relevant
+fields into `~/.cybort/cybort.toml` and replace all placeholders; never commit
+credentials.
 
 `ttl_minutes` controls how long cached data is considered fresh before Cybort
 performs another remote fetch. `num_items_to_fetch` limits one source request.
@@ -81,21 +64,6 @@ outside Cybort; Cybort does not provide an interactive login flow. The token,
 client secret, and client ID are configuration inputs only. Cybort exchanges the
 refresh token for short-lived bearer access and does not persist the access
 token.
-
-```toml
-[instances.personal_reddit]
-name = "Personal Reddit"
-adapter = "reddit"
-ttl_minutes = 15
-retention_ttl_minutes = 2880
-num_items_to_fetch = 50
-client_id = "..."
-client_secret = "..."
-refresh_token = "..."
-user_agent = "macos:com.example.cybort:v0.1.0 (by /u/example_user)"
-include_subreddits = ["news"]
-exclude_subreddits = ["memes"]
-```
 
 The Reddit-specific keys and limits are:
 
@@ -232,17 +200,8 @@ credential creation. If `gcloud` is unavailable, complete the equivalent
 manual Cloud Console setup described by `gws`, then run `gws auth login`.
 Cybort never performs an interactive login or stores OAuth credentials.
 
-Configure a read-only Gmail instance like this:
-
-```toml
-[instances.personal_gmail]
-name = "Personal Gmail"
-adapter = "gmail"
-ttl_minutes = 60
-num_items_to_fetch = 25
-user_id = "me"
-query = "in:anywhere"
-```
+Configure a read-only Gmail instance using the commented template in
+[`.cybort.example.toml`](.cybort.example.toml).
 
 Before a stale or forced fetch, Cybort checks the required executable and its
 tested version range. Missing or unsupported dependencies fail only the
