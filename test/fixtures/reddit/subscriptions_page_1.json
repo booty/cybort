@@ -1,0 +1,24 @@
+{
+  "kind": "Listing",
+  "data": {
+    "children": [
+      {
+        "kind": "t5",
+        "data": {
+          "id": "ruby",
+          "name": "t5_ruby",
+          "display_name": "Ruby"
+        }
+      },
+      {
+        "kind": "t5",
+        "data": {
+          "id": "news",
+          "name": "t5_news",
+          "display_name": "News"
+        }
+      }
+    ],
+    "after": "t5_memes"
+  }
+}

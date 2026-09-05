@@ -1,0 +1,29 @@
+{
+  "kind": "Listing",
+  "data": {
+    "children": [
+      {
+        "kind": "t4",
+        "data": {
+          "id": "e5",
+          "name": "t4_e5",
+          "new": true,
+          "created_utc": 1788681780,
+          "subject": "Another synthetic private message"
+        }
+      },
+      {
+        "kind": "t4",
+        "data": {
+          "id": "f6",
+          "name": "t4_f6",
+          "new": true,
+          "was_comment": false,
+          "created_utc": 1788681840,
+          "subject": "Final synthetic private message"
+        }
+      }
+    ],
+    "after": null
+  }
+}

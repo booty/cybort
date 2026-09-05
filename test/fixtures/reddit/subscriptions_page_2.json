@@ -1,0 +1,16 @@
+{
+  "kind": "Listing",
+  "data": {
+    "children": [
+      {
+        "kind": "t5",
+        "data": {
+          "id": "memes",
+          "name": "t5_memes",
+          "display_name": "Memes"
+        }
+      }
+    ],
+    "after": null
+  }
+}

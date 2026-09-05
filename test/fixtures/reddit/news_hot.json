@@ -1,0 +1,36 @@
+{
+  "kind": "Listing",
+  "data": {
+    "children": [
+      {
+        "kind": "t3",
+        "data": {
+          "id": "d4",
+          "name": "t3_d4",
+          "subreddit": "news",
+          "title": "LIVE THREAD: Synthetic news event",
+          "score": 75,
+          "num_comments": 55,
+          "created_utc": 1788676200,
+          "stickied": false,
+          "permalink": "/r/news/comments/d4/live-thread-synthetic-news-event/"
+        }
+      },
+      {
+        "kind": "t3",
+        "data": {
+          "id": "e5",
+          "name": "t3_e5",
+          "subreddit": "news",
+          "title": "Daily links and headlines",
+          "score": 200,
+          "num_comments": 3,
+          "created_utc": 1788675600,
+          "stickied": true,
+          "permalink": "/r/news/comments/e5/daily-links-and-headlines/"
+        }
+      }
+    ],
+    "after": null
+  }
+}

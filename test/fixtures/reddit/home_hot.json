@@ -1,0 +1,36 @@
+{
+  "kind": "Listing",
+  "data": {
+    "children": [
+      {
+        "kind": "t3",
+        "data": {
+          "id": "a1",
+          "name": "t3_a1",
+          "subreddit": "ruby",
+          "title": "Synthetic Ruby thread",
+          "score": 100,
+          "num_comments": 20,
+          "created_utc": 1788678000,
+          "stickied": false,
+          "permalink": "/r/ruby/comments/a1/synthetic-ruby-thread/"
+        }
+      },
+      {
+        "kind": "t3",
+        "data": {
+          "id": "b2",
+          "name": "t3_b2",
+          "subreddit": "outside",
+          "title": "Out of scope recommendation",
+          "score": 900,
+          "num_comments": 90,
+          "created_utc": 1788677400,
+          "stickied": false,
+          "permalink": "/r/outside/comments/b2/out-of-scope-recommendation/"
+        }
+      }
+    ],
+    "after": null
+  }
+}

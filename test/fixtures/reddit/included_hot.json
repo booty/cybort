@@ -1,0 +1,36 @@
+{
+  "kind": "Listing",
+  "data": {
+    "children": [
+      {
+        "kind": "t3",
+        "data": {
+          "id": "c3",
+          "name": "t3_c3",
+          "subreddit": "askscience",
+          "title": "Synthetic explicit thread",
+          "score": 40,
+          "num_comments": 12,
+          "created_utc": 1788676800,
+          "stickied": false,
+          "permalink": "/r/askscience/comments/c3/synthetic-explicit-thread/"
+        }
+      },
+      {
+        "kind": "t3",
+        "data": {
+          "id": "a1",
+          "name": "t3_a1",
+          "subreddit": "ruby",
+          "title": "Synthetic Ruby thread duplicate",
+          "score": 100,
+          "num_comments": 20,
+          "created_utc": 1788678000,
+          "stickied": false,
+          "permalink": "/r/ruby/comments/a1/synthetic-ruby-thread/"
+        }
+      }
+    ],
+    "after": null
+  }
+}
