@@ -22,10 +22,13 @@ Each configured adapter instance may define a positive integer
 `retention_ttl_minutes`. Omission means retain forever.
 
 For a configured instance, persistence will prune items only as part of writing
-a successful remote-fetch result for that instance. An item expires when its
-local `fetched_at` timestamp is at or before `result.finished_at` minus the
-configured duration. Returned items are upserted before pruning, so their new
-local fetch timestamps normally refresh their last-seen time.
+a successful remote-fetch result for that instance. It clamps the result's
+completion time to its own injected clock, then subtracts the configured
+duration. An item expires when its local `fetched_at` timestamp is at or before
+that cutoff. Returned items are upserted before pruning, so their new local
+fetch timestamps normally refresh their last-seen time. The clamp prevents a
+future-skewed adapter timestamp from authorizing deletion beyond persistence's
+notion of the present; past skew can only delay deletion.
 
 Validation, item upserts, instance-scoped pruning, synchronization-state update,
 and successful fetch-history insertion occur in the same per-result
@@ -37,6 +40,13 @@ Configuration remains the owner of the current policy; the duration is not
 copied into SQLite. The orchestrator passes it to the persistence write
 operation. No schema migration is required because existing `fetched_at`
 timestamps provide the last-seen boundary.
+
+`retention_ttl_minutes` uses a positive-integer contract even though the legacy
+`ttl_minutes` setting accepts any positive numeric value. Retention is a
+destructive boundary, so V1 deliberately uses whole minutes without changing
+the older cache-TTL contract. Retention may be shorter than or equal to the
+cache TTL: the cache TTL is a freshness minimum, not a fetch schedule, and a
+cache hit still does not prune.
 
 ## Alternatives considered
 
@@ -71,6 +81,13 @@ behavior, and no background cleanup process needs a durable copy of the policy.
 Persisting it would add a schema migration without changing observable
 behavior.
 
+### Trust the adapter completion time without a clamp
+
+Rejected. Adapter timestamps remain useful event data, but an erroneous future
+timestamp must not expand a destructive cutoff beyond the persistence service's
+own clock. Clamping preserves deterministic clock injection in tests and fails
+safely by retaining extra data when the adapter clock is behind.
+
 ## Consequences
 
 Positive consequences:
@@ -86,6 +103,8 @@ Negative consequences:
 
 - items may remain beyond the configured duration while an instance is cached,
   unavailable, or failing;
+- when retention is shorter than cache TTL, a cache hit may preserve old items
+  and the next successful remote fetch may remove every item it does not return;
 - retention advances only when Cybort runs and the source fetch succeeds;
 - items omitted because of a source request limit age out like any other unseen
   item; and

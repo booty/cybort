@@ -57,8 +57,18 @@ num_items_to_fetch = 50
 ```
 
 The value must be a positive integer when present. Zero, negative values,
-strings, floats, and booleans are configuration errors. An omitted key becomes
-`nil` in the instance value object and means retain forever.
+strings, floats, and booleans are configuration errors. This is intentionally
+stricter than the legacy `ttl_minutes` contract, which accepts any positive
+numeric value: retention controls a destructive boundary, so V1 uses whole
+minutes rather than introducing fractional deletion cutoffs. Changing the
+existing `ttl_minutes` contract is outside this feature's scope.
+
+An omitted key becomes `nil` in the instance value object and means retain
+forever. `retention_ttl_minutes` may be less than or equal to `ttl_minutes`.
+That configuration is valid because `ttl_minutes` is a cache-freshness minimum,
+not a fetch schedule. It intentionally means that a cache hit can preserve
+items beyond the retention duration, while the next successful remote fetch
+can remove every item not returned by that fetch.
 
 The configuration schema remains version 1 because the key is optional and
 existing configuration files retain their behavior. The key is part of common
@@ -69,11 +79,18 @@ hash.
 
 ### Expiration timestamp
 
-For a successful remote fetch result, the cutoff is:
+For a successful remote fetch result, persistence captures its own current
+time and computes the cutoff as:
 
 ```text
-cutoff = result.finished_at - (retention_ttl_minutes * 60)
+reference_time = min(result.finished_at, persistence_clock_now)
+cutoff = reference_time - (retention_ttl_minutes * 60)
 ```
+
+The clamp prevents a future-skewed adapter timestamp from authorizing deletion
+beyond persistence's own notion of the present. A past-skewed completion time
+can only under-prune, which is the safe failure direction for destructive
+cleanup.
 
 An existing item expires when both conditions are true:
 
@@ -132,10 +149,16 @@ BEGIN
 COMMIT
 ```
 
-The transaction uses `result.finished_at` as its deterministic reference time,
-so persistence does not need another clock dependency. No database migration is
-needed: the existing `items.fetched_at` column supplies the last-seen timestamp,
-and the current configuration supplies the policy on every run.
+Persistence uses its existing injected clock to clamp `result.finished_at` as
+described above. No database migration is needed: the existing
+`items.fetched_at` column supplies the last-seen timestamp, and the current
+configuration supplies the policy on every run.
+
+SQLite compares the stored cutoff and `fetched_at` values lexicographically.
+That is chronologically correct only because every value on both sides is
+normalized through persistence's `timestamp` helper to UTC ISO 8601 with six
+fractional digits and a trailing `Z`. The pruning helper must preserve and
+document this invariant.
 
 ## Failure and transaction behavior
 
@@ -163,7 +186,9 @@ semantics; the count is not redefined as the number of rows retained in SQLite.
 - omission produces `nil` and preserves indefinite retention;
 - a positive integer is exposed as `retention_ttl_minutes`;
 - the common key is removed from adapter-specific options; and
-- zero, negative, float, string, and boolean values are rejected.
+- zero, negative, float, string, and boolean values are rejected;
+- a duration shorter than `ttl_minutes` is accepted; and
+- sibling instances independently retain an explicit duration or `nil`.
 
 ### Persistence tests
 
@@ -173,13 +198,19 @@ semantics; the count is not redefined as the number of rows retained in SQLite.
 - a newer item remains;
 - a returned item's refreshed `fetched_at` keeps it retained;
 - an empty successful result still prunes;
+- a configured instance with no stored items succeeds;
 - only the result's adapter instance is pruned; and
+- a future-skewed result timestamp is clamped to the persistence clock;
+- pruning leaves the adapter-instance record, synchronization state, and fetch
+  history intact; and
 - a failure after deletion rolls back pruning and all other result changes.
 
 ### Orchestrator and system tests
 
 - the configured duration reaches persistence for a successful remote fetch;
 - cache hits do not prune;
+- an end-to-end CLI cache hit preserves an item older than the retention
+  duration;
 - source and dependency failures do not prune;
 - an instance without a retention setting keeps existing behavior; and
 - CLI output after a successful fetch excludes items pruned in that result's
