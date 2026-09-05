@@ -9,6 +9,7 @@ end
 require "cybort/configuration"
 require "cybort/item"
 require "cybort/fetch_result"
+require "cybort/rate_limit_headers"
 require "cybort/errors"
 require "cybort/command_runner"
 require "cybort/dependency"
