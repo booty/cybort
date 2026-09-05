@@ -34,7 +34,7 @@ module Cybort
       def item_from(entry, feed, url)
         title = entry.title.to_s
         link = entry.link.to_s
-        remote_created_at = entry.pubDate || entry.dc_date
+        remote_created_at = entry_date(entry)
         canonical_id = entry_guid(entry) || Digest::SHA256.hexdigest([link, remote_created_at, title].join("\0"))
 
         Item.new(
@@ -49,8 +49,24 @@ module Cybort
         )
       end
 
+      def entry_date(entry)
+        %i[pubDate dc_date date published updated].each do |method_name|
+          next unless entry.respond_to?(method_name)
+
+          value = entry.public_send(method_name)
+          return value unless value.nil?
+        end
+        nil
+      end
+
       def entry_guid(entry)
-        guid = entry.guid
+        guid = if entry.respond_to?(:guid)
+                 entry.guid
+               elsif entry.respond_to?(:about)
+                 entry.about
+               elsif entry.respond_to?(:dc_identifier)
+                 entry.dc_identifier
+               end
         value = guid.respond_to?(:content) ? guid.content : guid
         value.to_s unless value.nil? || value.to_s.empty?
       end

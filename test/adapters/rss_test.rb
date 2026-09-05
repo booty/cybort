@@ -58,6 +58,18 @@ class RssAdapterTest < Minitest::Test
     assert_equal first, second
   end
 
+  def test_maps_rdf_items_with_dublin_core_dates
+    body = File.read(File.expand_path("../fixtures/rss/rdf.xml", __dir__))
+
+    result = adapter(body).fetch
+    item = result.items.first
+
+    assert result.success?
+    assert_equal "RDF article", item.title
+    assert_equal "https://example.test/rdf-first", item.canonical_id
+    assert_equal Time.utc(2026, 8, 16, 11), item.remote_created_at
+  end
+
   def test_malformed_feed_is_a_failure
     result = adapter("<rss><channel>").fetch
 
