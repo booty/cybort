@@ -796,7 +796,16 @@ this task.
 - Consumes tested runtime implementation and the exact setup procedure in the spec.
 - Produces user-facing migration guidance and explicit offline/live verification status.
 
-- [ ] **Step 1: Update the canonical Gmail example.** Replace the `gws` comments,
+**Execution note (2026-09-06):** The delegation/medium-effort and no-push
+constraints above record the planning-time workflow. For this implementation
+task, the user explicitly authorized the assigned executor to run the full
+offline suite with xhigh reasoning and permits a feature-branch commit/push
+after root review. No live account calls, user-configuration changes, merge to
+main, or release action is authorized. Root review has now approved the
+documentation handoff; the offline verification is complete and the
+authenticated live gate remains open.
+
+- [x] **Step 1: Update the canonical Gmail example.** Replace the `gws` comments,
   preserve the stable instance format, and use this commented configuration:
 
   ```toml
@@ -813,7 +822,7 @@ this task.
   # include_spam_trash = true # optional; default false
   ```
 
-- [ ] **Step 2: Replace README Gmail setup with the spec's actual procedure.**
+- [x] **Step 2: Replace README Gmail setup with the spec's actual procedure.**
   Include Google Console links, Desktop OAuth client versus authorized-user
   file distinction, `CLOUDSDK_CONFIG` isolation, explicit Gmail scope, Testing
   token expiry, private file permissions, static errors, and per-account
@@ -823,7 +832,7 @@ this task.
   the erroneous claim that runtime Gmail requires gcloud. Do not run login or
   delete previous gws state automatically.
 
-- [ ] **Step 3: Update durable records precisely.** In `AGENTS.md`, change Gmail's
+- [x] **Step 3: Update durable records precisely.** In `AGENTS.md`, change Gmail's
   actual runtime description to direct API plus externally bootstrapped
   credentials, preserving the generic command adapter invariant. In the dated
   gws learning, mark the former runtime path superseded by this implementation
@@ -832,13 +841,21 @@ this task.
   ADR 0005's decision is already Accepted; implementation/live readiness is a
   separate status. Keep ADR 0002 Superseded in the index.
 
-- [ ] **Step 4: Delegate `bundle exec rake test` for final offline verification.**
+- [x] **Step 4: Delegate `bundle exec rake test` for final offline verification.**
   Also run read-only `git diff --check`, review changed documentation links,
   inspect `git diff --stat`, and check production Gmail files contain no `gws`
   invocation or dependency. `Gemfile`, `Gemfile.lock`, schema, and historical
   spitballing documents should remain unchanged. Do not claim a test count
   before the delegated result supplies it. Investigate unrelated baseline
   failures separately and report them; do not hide them.
+
+  **Verification (2026-09-06):** Under the user's explicit xhigh execution
+  authorization, `bundle exec rake test` passed with 285 runs, 1,498
+  assertions, 0 failures, 0 errors, and 0 skips. `git diff --check`, local
+  Markdown-link checks, the production Gmail/registry `gws` scan, and checks
+  for unchanged `Gemfile`, `Gemfile.lock`, schema, and historical
+  spitballing paths also passed. No tests were rerun after the final docs-only
+  review refinements.
 
 - [ ] **Step 5: Complete the authenticated gate only if an authorized account is available.**
   Use the spec's dedicated credential setup and one-message adapter smoke test.
@@ -851,11 +868,27 @@ this task.
   retain the experimental designation; do not invent success or run login on
   a user's behalf without the required interactive participation.
 
-- [ ] **Step 6: Commit documentation and final fixes** with message
+  **Status (2026-09-06):** Open/skipped for this task. No authorized account or
+  credential file was available, so no login, mailbox, token, or live Gmail
+  request was run. Gmail remains experimental pending the dedicated
+  authenticated token/list/get smoke test and unchanged read/unread-label
+  check.
+
+- [x] **Step 6: Commit documentation and final fixes** with message
   `docs: document direct Gmail authentication and migration`.
-  Hand off the changes with offline results and live-gate status. No push,
-  merge, release, or change to the user's real configuration is part of this
-  plan's execution authority.
+  Hand off the changes with offline results and live-gate status. A
+  feature-branch commit/push is user-authorized after root review; merge,
+  release, and changes to the user's real configuration remain out of scope.
+
+#### Task 6 final verification evidence
+
+- Documentation review approved by root on 2026-09-06.
+- Offline suite: 285 runs, 1,498 assertions, 0 failures, 0 errors, 0 skips.
+- Read-only checks passed: `git diff --check`, local Markdown links,
+  production Gmail/registry `gws` scan, and unchanged dependency/schema/
+  historical-document checks.
+- No authenticated Gmail account was available. The live release gate remains
+  explicitly open and Gmail remains experimental.
 
 ## Design-to-task coverage
 

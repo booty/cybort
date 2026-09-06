@@ -61,16 +61,18 @@
 # include_subreddits = ["news", "programming"] # optional additions
 # exclude_subreddits = ["memes"] # optional; exclusions win
 
-# Gmail (experimental): fetch message metadata through Google's gws CLI.
-# Install/authenticate gws separately and grant only the read-only scope.
-# The connector remains behind its authenticated smoke-test release gate.
+# Gmail: direct read-only Gmail API; authorize once via README Gmail setup.
+# The connector remains experimental until its authenticated smoke gate passes.
+# Runtime does not execute gws or gcloud. Keep credentials outside the repo.
 # [instances.personal_gmail]
 # name = "Personal Gmail"
 # adapter = "gmail"
 # ttl_minutes = 60
-# num_items_to_fetch = 25
+# num_items_to_fetch = 200 # integer 1..500; one bounded list page
+# credentials_file = "~/.cybort/google-auth/personal_gmail/application_default_credentials.json"
 # user_id = "me"
 # query = "in:anywhere"
+# include_spam_trash = true # optional; default false
 
 # When adding a connector, update this template in the same change: add its
 # commented instance shape, required fields, safe placeholder guidance, and any

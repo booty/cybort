@@ -40,9 +40,12 @@ invariants and workflow rules here, not session-by-session narration.
   transaction spanning all adapter instances.
 - A failed source must not discard successful results from other sources.
 - Item identity is scoped by `(adapter_instance_id, canonical_id)`.
-- RSS and GitHub adapters use direct HTTP APIs. Gmail has an experimental
-  command-backed adapter for Google's `gws` CLI; it remains gated on a real
-  authenticated smoke test because `gws` is not installed in every environment.
+- RSS and GitHub adapters use direct HTTP APIs. Gmail uses the direct Gmail
+  REST API with an explicit per-instance `authorized_user` credential file
+  bootstrapped externally through Google's Cloud CLI; collection does not
+  execute or depend on `gws` or `gcloud`. Gmail remains experimental until a
+  real authenticated smoke test verifies the token/list/get contract, granted
+  scope, metadata shape, cache behavior, and unchanged read/unread labels.
   Reddit uses documented OAuth Data API endpoints only: subscriptions plus a
   bounded personalized `/hot` sample, explicit single-subreddit `/r/<name>/hot`
   calls, and the legacy unread-message listing. Reddit Chat is unsupported by

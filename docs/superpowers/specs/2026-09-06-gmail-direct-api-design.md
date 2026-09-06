@@ -1,6 +1,7 @@
 # Gmail Direct API Connector Design
 
-**Status:** Selected for implementation; not implemented or live-verified
+**Status:** Implemented and offline-verified; not authenticated/live-verified
+(Gmail remains experimental)
 
 **Date:** 2026-09-06
 
@@ -9,8 +10,9 @@
 **Implementation:** [Task plan](../plans/2026-09-06-gmail-direct-api.md)
 
 The user requested an autonomous design and implementation plan, without human
-approval checkpoints. This document selects the design; it does not claim that
-the existing `gws` adapter has already been replaced.
+approval checkpoints. The implementation now follows this design; the separate
+authenticated release gate has not been run because no authorized account was
+available for this task.
 
 ## Decision and rationale
 
@@ -285,7 +287,7 @@ from static strings; input/remote content is never interpolated.
 | Missing config/file | `missing` | Configure credentials_file using README Gmail setup |
 | Open/owner/mode/type rejection | `unreadable` | Check credential ownership and private file permissions |
 | File JSON/schema/size rejection | `invalid_credentials` | Use authorized_user JSON, not downloaded OAuth client JSON |
-| Token HTTP 400/401 | `authentication` | Reauthorize with the same desktop OAuth client |
+| Token HTTP 400/401 | `authentication` | Reauthorize Gmail credentials |
 | API HTTP 401 | `authentication` | Reauthorize Gmail credentials |
 | Token expiry | `token_expired` | Run collection again; reauthorize if it persists |
 | Returned scope lacks read-only scope | `scope` | Authorize gmail.readonly explicitly |
@@ -313,17 +315,21 @@ ID so local data cannot be silently mixed. No old data is deleted during setup.
 
 ADR 0005 supersedes ADR 0002 and explicitly carries forward its useful generic
 command infrastructure. Old Gmail spec/plan records receive historical links;
-their original reasoning remains readable. At implementation time update the
-canonical template, README setup, `AGENTS.md`, and the dated Gmail learning.
-During this document-only task README keeps the actual `gws` instructions and
-links to this planned replacement; do not publish future config as working.
+their original reasoning remains readable. The direct implementation updates
+the canonical template, README setup, `AGENTS.md`, and the dated Gmail
+learning. README documents external OAuth bootstrap and migration; it does not
+run login or manipulate prior `gws` state. The authenticated smoke test remains
+a separate release gate.
 
 Offline tests cover credential boundaries, HTTP contracts and bounds,
 normalization, safe failures, cache behavior, cross-instance token isolation,
 source isolation, retention, and unchanged persistence identity. They use local
-fixtures/injected clients and no external services. Test execution must be
-delegated to a read-only `gpt-5.6-luna` agent at medium effort per `AGENTS.md`.
-No tests, builds, or linters are run merely for this planning task.
+fixtures/injected clients and no external services. The medium-effort,
+read-only `gpt-5.6-luna` delegation sentence above was the planning-time rule
+for this design record; it is retained as historical evidence. During the
+later implementation task, the user explicitly authorized the primary agent
+to run the full offline suite with xhigh reasoning. No tests, builds, or
+linters were run merely for the planning task.
 
 Before calling the replacement production-ready, run a separate authenticated
 read-only smoke test: bootstrap the dedicated credential directory; verify
