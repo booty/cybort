@@ -83,7 +83,7 @@ worktree at execution time if needed; preserve all pre-existing user changes.
 - Produces `GmailCredentials.printable?(value, maximum_bytes)` for shared
   validation. It checks String, valid encoding, nonblank, size, and no C0/DEL.
 
-- [ ] **Step 1: Add focused failing tests.** Include this test skeleton in a
+- [x] **Step 1: Add focused failing tests.** Include this test skeleton in a
   new `GmailCredentialsTest < Minitest::Test` requiring `test_helper`:
 
   ```ruby
@@ -143,10 +143,10 @@ worktree at execution time if needed; preserve all pre-existing user changes.
   root/chown. Prove bytes are read with an explicit limit and the
   descriptor is closed on failure. Do not create a blocking FIFO reader.
 
-- [ ] **Step 2: Delegate `bundle exec ruby -Itest test/gmail_credentials_test.rb`.**
+- [x] **Step 2: Delegate `bundle exec ruby -Itest test/gmail_credentials_test.rb`.**
   Expected failure: missing Gmail classes, not unrelated framework failures.
 
-- [ ] **Step 3: Add the error mapping.** In `errors.rb`, define operations
+- [x] **Step 3: Add the error mapping.** In `errors.rb`, define operations
   `%i[credentials token list get]` and a frozen category-to-hint hash containing
   every category in the spec's error table. Reject unknown operations/categories
   and non-integer/non-100..599 HTTP statuses with fixed `ArgumentError` text.
@@ -167,7 +167,7 @@ worktree at execution time if needed; preserve all pre-existing user changes.
   error message or Google's error description. Add direct tests for unknown
   enum/status rejection and exact 403 guidance within the credential test file.
 
-- [ ] **Step 4: Implement the loader.** Use private initialization and copy/freeze
+- [x] **Step 4: Implement the loader.** Use private initialization and copy/freeze
   the three strings, overriding inspection. Implement `.load` with this I/O
   structure (constants and helpers defined immediately below):
 
@@ -222,9 +222,9 @@ worktree at execution time if needed; preserve all pre-existing user changes.
   and return `"#<Cybort::GmailCredentials [REDACTED]>"` for `inspect` and `to_s`.
   Add the require after `errors.rb` in `lib/cybort.rb`.
 
-- [ ] **Step 5: Delegate the same focused test file; inspect the bounded summary.**
+- [x] **Step 5: Delegate the same focused test file; inspect the bounded summary.**
   Expected: all credential/error contracts pass without external access.
-- [ ] **Step 6: Commit only Task 1 files** with message
+- [x] **Step 6: Commit only Task 1 files** with message
   `feat: load explicit Gmail OAuth credentials safely`.
 
 ### Task 2: Implement refresh-token requests and bounded HTTP behavior
