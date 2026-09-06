@@ -72,13 +72,13 @@ invariants and workflow rules here, not session-by-session narration.
   design.
 - Tests use local fixtures and injected clients; they must not contact external
   services. Run them with `bundle exec rake test`.
-- `docs/initial-spitballing.md` is historical exploratory material. Treat the
+- `docs/spitballing/initial-spitballing.md` is historical exploratory material. Treat the
   current design spec and accepted ADRs as authoritative design records, and do
   not modify the spitballing document unless the user explicitly requests it.
 
 ## Subagent delegation for tests and logs
 
-Codex MUST delegate the following work to a `gpt-5.6-luna` or Haiku subagent using medium reasoning effort:
+To conserve usage quotas, Codex MUST delegate the following work to a `gpt-5.6-luna` or Haiku subagent using medium reasoning effort when it would save tokens. Luna and Haiku tokens are approximately 5%-10% the cost of Sol/Opus/Fable/Astra tokens.
 
 - Running any test command, including focused tests and full test suites.
 - Exploring, filtering, or analyzing test output, build logs, server logs, stack traces, or other noisy command output.
@@ -124,7 +124,7 @@ from intended design:
 2. Accepted ADRs describe architectural decisions and their rationale.
 3. The current design spec describes intended architecture and scope.
 4. `README.md` describes current user-facing setup and usage.
-5. `docs/initial-spitballing.md` is historical exploration only.
+5. `docs/spitballing/initial-spitballing.md` is historical exploration only.
 
 Do not silently resolve a contradiction by rewriting history. Update the
 affected document, or create a new ADR when an accepted decision changes.

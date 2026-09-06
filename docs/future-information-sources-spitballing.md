@@ -1,0 +1,16 @@
+- Weather alerts (tornado warnings, extreme weather warnings)
+  - https://www.weather.gov/documentation/services-web-API
+- Earthquakes in my area (< 200mi)
+- Public safety alerts (???)
+- Audubon news
+  - Official announcements?
+  - FB posts?
+- iMessages?
+- Sports scores
+- Apple Reminders
+- Slickdeals alerts
+- CamelCamelCamel alerts
+- MacOS error/warning log items
+- Upcoming calendar events
+- Upcoming Holidays
+- Upcoming birthdays
