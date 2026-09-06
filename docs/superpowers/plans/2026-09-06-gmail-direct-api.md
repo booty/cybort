@@ -676,7 +676,7 @@ extend `test/support/gmail_http_fixture.rb` only if shared routing is needed.
 - Produces offline integration evidence with temporary configuration/SQLite and
   fake HTTP responses, retaining all generic command-preflight coverage.
 
-- [ ] **Step 1: Port system-test helpers and add failing regressions.**
+- [x] **Step 1: Port system-test helpers and add failing regressions.**
   Change `write_gmail_config` to accept an explicit credential-file path and
   optional inclusion of its TOML key; keep retention and ID parameters. Create
   chmod-0600 authorized-user files in the temporary test installation. Replace
@@ -739,12 +739,12 @@ extend `test/support/gmail_http_fixture.rb` only if shared routing is needed.
   stored in items; secrecy assertions target diagnostics/metadata, not all
   successful item JSON.
 
-- [ ] **Step 2: Delegate focused system/orchestrator tests.** Commands:
+- [x] **Step 2: Delegate focused system/orchestrator tests.** Commands:
   `bundle exec ruby -Itest test/system/cli_system_test.rb` and
   `bundle exec ruby -Itest test/orchestrator_test.rb`.
   Expected: old Gmail-as-command assumptions fail until Step 3 is complete.
 
-- [ ] **Step 3: Preserve command-infrastructure tests with synthetic adapters.**
+- [x] **Step 3: Preserve command-infrastructure tests with synthetic adapters.**
   In `orchestrator_test.rb`, replace fake adapter names/tool labels `gmail/gws`
   with `command_fixture/fixture-tool` for tests already using `PlanningAdapter`
   and an explicitly registered dependency. In system tests requiring command
@@ -765,11 +765,27 @@ extend `test/support/gmail_http_fixture.rb` only if shared routing is needed.
   corresponding existing system fake); retain its constructor and returned
   `FetchResult`. Do not introduce a production synthetic connector.
 
-- [ ] **Step 4: Delegate focused tests again.** Repair only evidence-backed
+- [x] **Step 4: Delegate focused tests again.** Repair only evidence-backed
   integration issues. Any runtime defect returns to its owning task's failing
   test; avoid rewriting shared orchestration just to accommodate test fakes.
-- [ ] **Step 5: Commit Task 5 changes** with message
+- [x] **Step 5: Commit Task 5 changes** with message
   `test: cover Gmail REST migration and source isolation`.
+
+#### Task 5 review evidence
+
+Root review approved the Task 5 test diff after confirming that the privacy
+regression exercises the real `HttpClient` body-discard path and that the Gmail
+fixture derives bounded IDs directly from the parsed list. Focused verification:
+
+- `bundle exec ruby -Itest test/system/cli_system_test.rb`: 28 runs, 249
+  assertions, 0 failures, 0 errors.
+- `bundle exec ruby -Itest test/orchestrator_test.rb`: 13 runs, 52 assertions,
+  0 failures, 0 errors.
+- `git diff --check`: clean before commit.
+
+The Task 5 commit is `4e18f3c` on `gmail-direct-api`, pushed to
+`origin/gmail-direct-api`. No full suite or live Gmail smoke test was run for
+this task.
 
 ### Task 6: Publish setup, verify the implementation, and record release status
 
