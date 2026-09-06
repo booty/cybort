@@ -241,7 +241,7 @@ worktree at execution time if needed; preserve all pre-existing user changes.
 - Produces test helper `GmailHttpFixture.new(responses:)`, `calls`, `get`, and
   `post_form`. Responses are ordered `HttpResponse` or exception objects.
 
-- [ ] **Step 1: Add the recording fake and token tests.** Require the helper
+- [x] **Step 1: Add the recording fake and token tests.** Require the helper
   explicitly from each consumer, not automatically from production code:
 
   ```ruby
@@ -309,20 +309,20 @@ worktree at execution time if needed; preserve all pre-existing user changes.
   oversized response, and deadline exhaustion before a request. For scope use
   the literal full `https://www.googleapis.com/auth/gmail.readonly` string.
 
-- [ ] **Step 2: Delegate `bundle exec ruby -Itest test/gmail_client_test.rb`.**
+- [x] **Step 2: Delegate `bundle exec ruby -Itest test/gmail_client_test.rb`.**
   Expected: new client is missing.
 
-- [ ] **Step 3: Implement the client boundary.** Define fixed `TOKEN_URL`,
+- [x] **Step 3: Implement the client boundary.** Define fixed `TOKEN_URL`,
   `DATA_URL = "https://gmail.googleapis.com/gmail/v1"`, `READONLY_SCOPE`, and
   `REQUEST_TIMEOUT_SECONDS = 30`. Initialize client/clock/deadline references
   and nil token/expiry. Private `fail_api(operation, category, status: nil)`
   raises `GmailApiError` with `cause: nil`. Private `ensure_deadline!(operation)`
-  raises `deadline` when `@monotonic_clock.call >= @deadline_monotonic`.
+  raises `deadline` when `@monotonic_clock.call >= @deadline_monotonic` and
+  returns that validated clock reading when the deadline remains available.
 
   ```ruby
   def request_json(operation:, url:, form: nil, headers: {})
-    ensure_deadline!(operation)
-    now = @monotonic_clock.call
+    now = ensure_deadline!(operation)
     request_deadline = [@deadline_monotonic, now + REQUEST_TIMEOUT_SECONDS].min
     options = { headers: headers, timeout_seconds: request_deadline - now,
                 deadline_monotonic: request_deadline }
@@ -331,8 +331,8 @@ worktree at execution time if needed; preserve all pre-existing user changes.
     else
       @http_client.get(url, **options)
     end
-    ensure_deadline!(operation)
-    fail_api(operation, :timeout) if @monotonic_clock.call >= request_deadline
+    now = ensure_deadline!(operation)
+    fail_api(operation, :timeout) if now >= request_deadline
     payload = JSON.parse(response.body)
     fail_api(operation, :invalid_shape) unless payload.is_a?(Hash)
     payload
@@ -388,10 +388,17 @@ worktree at execution time if needed; preserve all pre-existing user changes.
   client state. Give `GmailClient#inspect`/`to_s` a redacted string as well.
   Add the require after `http_client.rb` and before the Gmail adapter.
 
-- [ ] **Step 4: Delegate the focused client test file.** Assert single requests
+- [x] **Step 4: Delegate the focused client test file.** Assert single requests
   on failure, and no output contains sentinel secrets.
-- [ ] **Step 5: Commit Task 2 files** with message
+- [x] **Step 5: Commit Task 2 files** with message
   `feat: exchange Gmail refresh tokens through bounded HTTP`.
+
+**Review evidence (2026-09-06):** Focused client tests pass with 14 runs and
+101 assertions. Root review approved the refresh-token contract, safe error
+classification, redaction, and one-reading deadline fix. The boundary
+regression drives the clock across the attempt deadline and verifies that the
+HTTP fake receives a positive 1.0-second timeout rather than zero or a
+negative value. No live OAuth or Gmail account access was used.
 
 ### Task 3: Implement the bounded Gmail list/get contract
 
