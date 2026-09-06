@@ -3,6 +3,13 @@
 **Status:** Proposed for implementation planning
 **Date:** 2026-09-04
 
+**2026-09-06 replacement:** The Gmail mechanism and its `gws` release gate are
+superseded by the [direct Gmail API design](2026-09-06-gmail-direct-api-design.md)
+and [ADR 0005](../../adr/0005-gmail-direct-api-and-external-oauth-bootstrap.md).
+Generic command/preflight infrastructure remains supported. The original
+design below records the implemented experimental `gws` path; the replacement
+has not yet been implemented.
+
 ## Summary
 
 Cybort will support both direct HTTP adapters and adapters backed by local

@@ -1,5 +1,11 @@
 # External Command Connectors and Gmail Implementation Plan
 
+**Historical Gmail plan:** As of 2026-09-06, use the
+[direct Gmail API implementation plan](2026-09-06-gmail-direct-api.md) for new
+Gmail work. [ADR 0005](../../adr/0005-gmail-direct-api-and-external-oauth-bootstrap.md)
+replaces the `gws` direction while preserving generic command infrastructure.
+The replacement remains unimplemented; the task text below is retained as history.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add safe, context-aware external-command support and a read-only Gmail adapter backed by the Google-maintained `gws` CLI while preserving Cybort's existing adapter, cache, persistence, and failure contracts.

@@ -173,6 +173,11 @@ responses. This gate has not been run in the current development environment.
 
 ### Gmail connector (experimental)
 
+A replacement using direct Gmail API access is
+[designed](docs/superpowers/specs/2026-09-06-gmail-direct-api-design.md) and
+[planned](docs/superpowers/plans/2026-09-06-gmail-direct-api.md), but not yet
+implemented. The current connector and instructions below still use `gws`.
+
 Gmail uses the `gws` executable from the Google-maintained
 [`googleworkspace/cli`](https://github.com/googleworkspace/cli) project. It is
 in the Google Workspace GitHub organization, but its own README says it is not

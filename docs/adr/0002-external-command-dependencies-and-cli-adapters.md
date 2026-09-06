@@ -1,7 +1,11 @@
 # ADR 0002: External Command Dependencies and CLI-backed Adapters
 
-- Status: Proposed
+- Status: Superseded by [ADR 0005](0005-gmail-direct-api-and-external-oauth-bootstrap.md) on 2026-09-06
 - Date: 2026-09-04
+
+The original decision below is retained as history. ADR 0005 retains the
+generic command/preflight infrastructure but selects direct Gmail API access
+with external OAuth bootstrap. The replacement is not yet implemented.
 
 ## Context
 
@@ -103,5 +107,6 @@ and [implementation plan](../superpowers/plans/2026-09-04-external-command-conne
 define the exact registry metadata, `DependencyChecker`, `CommandRunner`,
 Gmail command contract, fixtures, and CLI guidance. This ADR is the
 architectural rationale; those documents may specify details without changing
-this decision. The decision remains Proposed until the authenticated `gws`
-contract smoke test documented in those records succeeds.
+this decision. The original decision was left Proposed pending the authenticated
+`gws` contract smoke test. ADR 0005 now replaces that release direction; it does
+not retroactively claim the old smoke test succeeded.

@@ -69,7 +69,9 @@ setting before documenting alternate paths as a complete runtime workflow.
 
 ## 2026-09-04 — Gmail connector remains experimental pending gws contract smoke test
 
-**Status:** Open
+**Status:** Superseded as implementation direction on 2026-09-06 by
+[ADR 0005](adr/0005-gmail-direct-api-and-external-oauth-bootstrap.md).
+The observed failure remains relevant to the current, still-unreplaced `gws` runtime.
 
 **Observation:** The Gmail adapter is implemented behind the Google-maintained
 `googleworkspace/cli` `gws` executable, with an explicit read-only scope and a
@@ -87,15 +89,12 @@ changed the Cybort failure from missing credentials to API exit code 1 with
 expected Gmail list endpoint. The manual gate is documented in the connector
 design and README.
 
-**Impact:** ADR 0002 and the connector design must remain Proposed, and README
-must describe Gmail as experimental until a real account verifies the granted
-read-only scope, list JSON, and detail JSON. The version parser now accepts the
-installed CLI's `gws X.Y.Z` output.
+**Impact:** This evidence originally kept ADR 0002 Proposed and Gmail
+experimental. ADR 0005 now supersedes that architectural direction, with a
+separate direct-API release gate. The existing runtime remains experimental.
+The version parser accepts the installed CLI's `gws X.Y.Z` output.
 
-**Next action:** Re-run `gws auth login --scopes
-https://www.googleapis.com/auth/gmail.readonly` in the same host/keyring used by
-Cybort, or provide a documented `GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE` /
-Gmail-scoped `GOOGLE_WORKSPACE_CLI_TOKEN`. Then run `gws auth status`, one
-explicit-scope list request, and one metadata detail request; record only the
-version, scope names, exit statuses, and sanitized JSON shape before changing
-the supported range or ADR status.
+**Next action:** Implement the
+[direct Gmail API plan](superpowers/plans/2026-09-06-gmail-direct-api.md), then
+verify its dedicated OAuth bootstrap and authenticated read contract. Do not
+interpret this historical failure as proof of the cause of every later Gmail error.
