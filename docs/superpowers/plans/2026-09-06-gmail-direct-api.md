@@ -413,7 +413,7 @@ negative value. No live OAuth or Gmail account access was used.
 - Private `segment(value)` percent-encodes one path segment;
   `valid_id?(value)` implements the spec's bounded opaque-ID contract.
 
-- [ ] **Step 1: Add failing contract tests.** Use the existing client helper and
+- [x] **Step 1: Add failing contract tests.** Use the existing client helper and
   a `token_response` helper returning the valid token fixture from Task 2.
 
   ```ruby
@@ -454,10 +454,10 @@ negative value. No live OAuth or Gmail account access was used.
   correct fields mask, no pagination, no calls after expired token or deadline,
   and 404 get failure (without success/partial-result semantics).
 
-- [ ] **Step 2: Delegate `bundle exec ruby -Itest test/gmail_client_test.rb`.**
+- [x] **Step 2: Delegate `bundle exec ruby -Itest test/gmail_client_test.rb`.**
   Expected: missing list/get methods.
 
-- [ ] **Step 3: Implement listing and retrieval.** Use `URI.encode_www_form`
+- [x] **Step 3: Implement listing and retrieval.** Use `URI.encode_www_form`
   for query encoding and `URI.encode_www_form_component(value).gsub("+", "%20")`
   for each path segment; never interpolate raw IDs into a path.
 
@@ -491,9 +491,9 @@ negative value. No live OAuth or Gmail account access was used.
   end
 
   def get_json(operation:, path:, params:)
-    ensure_deadline!(operation)
+    now = ensure_deadline!(operation)
     fail_api(operation, :authentication) unless @access_token
-    fail_api(operation, :token_expired) if @monotonic_clock.call >= @expires_at_monotonic
+    fail_api(operation, :token_expired) if now >= @expires_at_monotonic
     request_json(operation: operation, url: "#{DATA_URL}#{path}?#{URI.encode_www_form(params)}",
                  headers: { "Authorization" => "Bearer #{@access_token}" })
   end
@@ -526,10 +526,20 @@ negative value. No live OAuth or Gmail account access was used.
   Do not reject malformed `internalDate` here: adapter normalization tolerates
   it as nil. Add one test per wrong optional-field type and null-as-absent case.
 
-- [ ] **Step 4: Delegate the client tests.** Verify bounds and exact request
+- [x] **Step 4: Delegate the client tests.** Verify bounds and exact request
   arguments; no shared client state across instances.
-- [ ] **Step 5: Commit Task 3 changes** with message
+- [x] **Step 5: Commit Task 3 changes** with message
   `feat: fetch bounded Gmail metadata over REST`.
+
+**Review evidence (2026-09-06):** Root review approved the implementation's
+prefix-before-deduplication bound, fixed encoded endpoints, typed metadata
+parameters, safe failure behavior, and use of the validated monotonic reading
+from `ensure_deadline!` for token expiry. Focused client tests pass with 29
+runs and 206 assertions, with 0 failures, 0 errors, and 0 skips. The suite
+covers empty and malformed list shapes, inspected-prefix bounds, opaque ID
+validation, query/path encoding, repeated metadata headers, optional-field
+validation, token/deadline guards, 404 handling, and per-client token
+isolation. No live OAuth or Gmail account access was used.
 
 ### Task 4: Replace the Gmail adapter and registry entry
 
