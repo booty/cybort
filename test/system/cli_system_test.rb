@@ -198,36 +198,6 @@ class CliSystemTest < Minitest::Test
     end
   end
 
-  class RawGmailTransport
-    attr_reader :calls
-
-    def initialize(responses:)
-      @responses = responses
-      @calls = []
-      @mutex = Mutex.new
-    end
-
-    def post_form(url, form:, **options)
-      record(:post_form, url, form: form, **options)
-      next_response
-    end
-
-    def get(url, **options)
-      record(:get, url, **options)
-      next_response
-    end
-
-    private
-
-    def record(method, url, **options)
-      @mutex.synchronize { @calls << { method: method, url: url }.merge(options) }
-    end
-
-    def next_response
-      @mutex.synchronize { @responses.shift }
-    end
-  end
-
   READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 
   class FakeDependencyChecker
@@ -359,15 +329,13 @@ class CliSystemTest < Minitest::Test
     Cybort::HttpResponse.new(status: status, headers: {}, body: body)
   end
 
-  def gmail_token_response(access_token: "fake-access", refresh_token: nil)
-    response = {
+  def gmail_token_response(access_token: "fake-access")
+    {
       "access_token" => access_token,
       "token_type" => "Bearer",
       "expires_in" => 3_600,
       "scope" => READONLY_SCOPE
     }
-    response["refresh_token"] = refresh_token if refresh_token
-    response
   end
 
   def gmail_success_http(list: fixture_json("list_valid.json"), details: {
@@ -1072,7 +1040,6 @@ class CliSystemTest < Minitest::Test
       append_rss_config(root)
       gmail_http = GmailHttpFixture.new(responses: [gmail_response(gmail_token_response), Cybort::HttpError.new(status: 403)])
       output = StringIO.new
-      payload = nil
       status = Cybort::CLI.start(
         ["--json", "--force-fetch"], home: directory, out: output, err: StringIO.new,
         http_client: combined_gmail_rss_http(gmail_http),
@@ -1231,7 +1198,7 @@ class CliSystemTest < Minitest::Test
         root, credentials_file: credentials_file, id: "jer_gmail", query: "SECRET_QUERY", user_id: "SECRET_USER@example.test"
       )
       raw_error_body = "RAW_ERROR_BODY"
-      transport = RawGmailTransport.new(responses: [
+      transport = GmailHttpFixture.new(responses: [
         gmail_response(gmail_token_response(access_token: "SECRET_ACCESS_TOKEN")),
         gmail_response(raw_error_body, status: 403)
       ])

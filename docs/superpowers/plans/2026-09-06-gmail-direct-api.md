@@ -890,6 +890,14 @@ authenticated live gate remains open.
 - No authenticated Gmail account was available. The live release gate remains
   explicitly open and Gmail remains experimental.
 
+#### Final code-quality cleanup (2026-09-06)
+
+Root-approved review removed the duplicate Gmail raw transport fixture, trimmed
+an unused token-helper argument, and removed one redundant local assignment.
+The focused system suite (28 runs, 249 assertions) and full offline suite (285
+runs, 1,498 assertions) remained clean; no additional test rerun was needed
+after this unchanged-docs review.
+
 ## Design-to-task coverage
 
 | Design requirement | Task |
