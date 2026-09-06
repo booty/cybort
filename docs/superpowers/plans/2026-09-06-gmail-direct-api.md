@@ -552,7 +552,7 @@ isolation. No live OAuth or Gmail account access was used.
 - Produces the same Gmail `Item` mapping and `FetchResult` semantics, with safe
   Gmail errors, no executable requirement, and the new configuration fields.
 
-- [ ] **Step 1: Port adapter fixture wiring, retaining meaningful assertions.**
+- [x] **Step 1: Port adapter fixture wiring, retaining meaningful assertions.**
   Replace `StubCommandRunner`/`dependency_resolution` helpers with the recording
   HTTP fake. Write an `authorized_user` fixture to a chmod-0600 file inside each
   test's `Dir.mktmpdir`; pass its absolute path in instance options. The adapter
@@ -583,12 +583,12 @@ isolation. No live OAuth or Gmail account access was used.
   items, and unchanged `replace_existing_items == false`. Use a path guaranteed
   not to exist for the cache/remote pair; do not use the user's real directory.
 
-- [ ] **Step 2: Delegate the adapter and registry test files individually.**
+- [x] **Step 2: Delegate the adapter and registry test files individually.**
   Commands: `bundle exec ruby -Itest test/adapters/gmail_test.rb` and
   `bundle exec ruby -Itest test/adapter_registry_test.rb`.
   Expected red cases demonstrate remaining `gws` construction/dependency.
 
-- [ ] **Step 3: Implement static validation.** Retain integer 1–500 validation.
+- [x] **Step 3: Implement static validation.** Retain integer 1–500 validation.
   Add max lengths and path rules from the spec using `GmailCredentials.printable?`.
   For query allow `""`/whitespace without making `.printable?` reject it:
 
@@ -614,7 +614,7 @@ isolation. No live OAuth or Gmail account access was used.
   fields, relative/`~other` paths, 0/501 limits, and valid UTF-8 queries. Ensure
   the missing key is accepted but a present nil/blank file path is rejected.
 
-- [ ] **Step 4: Replace fetching and preserve normalization.**
+- [x] **Step 4: Replace fetching and preserve normalization.**
 
   ```ruby
   def fetch_from_source
@@ -658,11 +658,11 @@ isolation. No live OAuth or Gmail account access was used.
   Remove the registry test that asserts `GOOGLE_WORKSPACE_CLI_*` propagation;
   generic runner environment coverage remains in `command_runner_test.rb`.
 
-- [ ] **Step 5: Delegate the focused adapter/registry tests.** Include injected
+- [x] **Step 5: Delegate the focused adapter/registry tests.** Include injected
   clock transitions proving credential time counts against the attempt budget,
   no detail request starts after expiry/deadline, and success is checked after
   the last response. Expected: no subprocess calls in any Gmail path.
-- [ ] **Step 6: Commit Task 4 files** with message
+- [x] **Step 6: Commit Task 4 files** with message
   `feat: replace Gmail gws adapter with direct API collection`.
 
 ### Task 5: Verify migration, failure isolation, and generic dependencies
