@@ -67,34 +67,48 @@ normal CLI without additional path-selection support.
 **Next action:** Add an explicit installation-path option or environment
 setting before documenting alternate paths as a complete runtime workflow.
 
-## 2026-09-04 — Gmail connector remains experimental pending gws contract smoke test
+## 2026-09-04 — Gmail command runtime superseded; direct API gate remains open
 
-**Status:** Superseded as implementation direction on 2026-09-06 by
-[ADR 0005](adr/0005-gmail-direct-api-and-external-oauth-bootstrap.md).
-The observed failure remains relevant to the current, still-unreplaced `gws` runtime.
+**Status:** The former `gws` runtime path was superseded on 2026-09-06 by
+[ADR 0005](adr/0005-gmail-direct-api-and-external-oauth-bootstrap.md). The
+direct API implementation is offline-verified; its authenticated live gate is
+still open, so Gmail remains experimental.
 
-**Observation:** The Gmail adapter is implemented behind the Google-maintained
-`googleworkspace/cli` `gws` executable, with an explicit read-only scope and a
-tested-version gate in code. `gws` is installed at `/usr/local/bin/gws` and
-reports `gws 0.22.5`, which matches the supported range. A real Cybort
-read-only fetch reached `gws`, but the available credential returned an
-insufficient-authentication-scopes API error; the local gws credential cache is
-not currently usable in this execution environment.
+**Observation (historical):** The Gmail adapter was implemented behind the
+Google-maintained `googleworkspace/cli` `gws` executable, with an explicit
+read-only scope and a tested-version gate in code. `gws` was installed at
+`/usr/local/bin/gws` and reported `gws 0.22.5`, which matched the supported
+range. A real Cybort read-only fetch reached `gws`, but the available
+credential returned an insufficient-authentication-scopes API error; the local
+gws credential cache was not currently usable in that execution environment.
 
-**Evidence:** `bundle exec rake test` passes with 116 runs and 408 assertions;
-`gws --version` returned `gws 0.22.5`; `gws auth status` reported no usable
-credential after an undecryptable cache was removed; a gcloud-minted token
-changed the Cybort failure from missing credentials to API exit code 1 with
-`insufficient authentication scopes`; and `gws ... --dry-run` resolved the
-expected Gmail list endpoint. The manual gate is documented in the connector
-design and README.
+**Evidence (historical):** `gws --version` returned `gws 0.22.5`; `gws auth
+status` reported no usable credential after an undecryptable cache was removed;
+a gcloud-minted token changed the Cybort failure from missing credentials to
+API exit code 1 with `insufficient authentication scopes`; and `gws ...
+--dry-run` resolved the expected Gmail list endpoint. At that time,
+`bundle exec rake test` passed with 116 runs and 408 assertions. Do not
+interpret this historical failure as proof of the cause of every later Gmail
+error.
 
-**Impact:** This evidence originally kept ADR 0002 Proposed and Gmail
-experimental. ADR 0005 now supersedes that architectural direction, with a
-separate direct-API release gate. The existing runtime remains experimental.
-The version parser accepts the installed CLI's `gws X.Y.Z` output.
+**Implementation evidence (2026-09-06):** `lib/cybort/gmail_credentials.rb`,
+`lib/cybort/gmail_client.rb`, and `lib/cybort/adapters/gmail.rb` now use an
+explicit private `authorized_user` credential file and direct Gmail REST
+token/list/get requests. The adapter has no runtime `gws` or `gcloud`
+dependency. Offline fixtures cover credential boundaries, HTTP contracts,
+normalization, cache behavior, source isolation, and safe diagnostics. The
+authorized offline suite `bundle exec rake test` completed with 285 runs,
+1,498 assertions, 0 failures, 0 errors, and 0 skips. No authorized account or
+mailbox call was available for this implementation pass.
 
-**Next action:** Implement the
-[direct Gmail API plan](superpowers/plans/2026-09-06-gmail-direct-api.md), then
-verify its dedicated OAuth bootstrap and authenticated read contract. Do not
-interpret this historical failure as proof of the cause of every later Gmail error.
+**Impact:** The generic command/preflight infrastructure remains available for
+other connectors, while Gmail's former executable/version gate is retired.
+The direct connector's setup, cache migration behavior, and static/source
+error boundaries are now documented separately from the historical `gws`
+failure.
+
+**Next action:** Run the dedicated authenticated OAuth bootstrap and one-message
+direct-API smoke test when an authorized account is available. Verify token,
+list, and metadata get behavior, granted scope, unchanged read/unread labels,
+cache behavior, and absence of executable dependencies. Record only sanitized
+results.

@@ -173,55 +173,98 @@ responses. This gate has not been run in the current development environment.
 
 ### Gmail connector (experimental)
 
-A replacement using direct Gmail API access is
-[designed](docs/superpowers/specs/2026-09-06-gmail-direct-api-design.md) and
-[planned](docs/superpowers/plans/2026-09-06-gmail-direct-api.md), but not yet
-implemented. The current connector and instructions below still use `gws`.
+Gmail uses the direct Gmail REST API through Cybort's existing HTTP client. The
+runtime has no `gws` or `gcloud` executable dependency and never performs an
+interactive login, discovers ambient credentials, or writes OAuth files. It
+fetches one bounded list page followed by metadata requests (1–500 selected
+messages) and remains experimental until the authenticated smoke-test gate
+below has passed.
 
-Gmail uses the `gws` executable from the Google-maintained
-[`googleworkspace/cli`](https://github.com/googleworkspace/cli) project. It is
-in the Google Workspace GitHub organization, but its own README says it is not
-an officially supported Google product and is under pre-1.0 development.
+#### Gmail setup
 
-`gws` relies upon the official gcloud CLI. [Install that first](https://docs.cloud.google.com/sdk/docs/install-sdk).
+Authorize Gmail outside Cybort with a user-owned Desktop OAuth client:
 
+1. Select or create a personal [Google Cloud project](https://console.cloud.google.com/),
+   then [enable the Gmail API](https://console.cloud.google.com/apis/library/gmail.googleapis.com).
+2. In [Google Auth Platform](https://console.cloud.google.com/auth/overview),
+   configure branding and audience, and add the Gmail read-only scope. If the
+   app is external and in **Testing**, add the intended Gmail account as a test
+   user.
+3. On the [OAuth Clients page](https://console.cloud.google.com/auth/clients),
+   create a **Desktop app** client and download its JSON. This downloaded
+   client JSON is setup input only: it is not the runtime credential file and
+   does not contain a user's refresh token.
+4. Install the [Google Cloud CLI](https://docs.cloud.google.com/sdk/docs/install-sdk)
+   if it is not already available. In your terminal, place the downloaded
+   client JSON at the example path below and create a private, per-mailbox
+   bootstrap directory:
 
-```bash
-curl -O https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-darwin-arm.tar.gz
-tar -xf google-cloud-cli-darwin-arm.tar.gz
-./google-cloud-sdk/install.sh
-```
+   ```sh
+   mkdir -p "$HOME/.cybort/google-auth/personal_gmail"
+   chmod 700 "$HOME/.cybort/google-auth/personal_gmail"
+   CLOUDSDK_CONFIG="$HOME/.cybort/google-auth/personal_gmail" \
+     gcloud auth application-default login \
+       --client-id-file="$HOME/Downloads/cybort-google-client.json" \
+       --scopes=https://www.googleapis.com/auth/gmail.readonly
+   chmod 600 "$HOME/.cybort/google-auth/personal_gmail/application_default_credentials.json"
+   ```
 
-Add gcloud executables and completions to your path; you probably want to add this to ~/.zshrc or ~/.zshrc.local
+   The command opens Google's browser consent flow. `CLOUDSDK_CONFIG` keeps
+   this bootstrap state separate from the normal Cloud CLI directory; a named
+   `gcloud --configuration` alone is not the credential-file isolation
+   contract. Verify the generated path and permissions yourself. These setup
+   commands are documentation for the user; Cybort does not run them.
+5. Authorize the intended account in the browser, then copy the relevant fields
+   from the [commented configuration template](.cybort.example.toml) into
+   `~/.cybort/cybort.toml`. Keep `credentials_file` pointed at the generated
+   `application_default_credentials.json`, and keep the same instance ID when
+   migrating the same account so its existing local data remains associated
+   with that account. Use a new directory and instance ID for another mailbox;
+   this prevents local items from being silently mixed.
 
-```bash
-source "/Users/booty/code/tmp/google-cloud-sdk/path.zsh.inc"
-source "/Users/booty/code/tmp/google-cloud-sdk/completion.zsh.inc"
-```
+For the `in:anywhere` query, set `include_spam_trash = true` when Spam or
+Trash should be eligible; the query syntax does not set the Gmail API's
+separate `includeSpamTrash` flag. See the [commented template](.cybort.example.toml).
 
-Install and authenticate it outside Cybort:
+The runtime scope is
+`https://www.googleapis.com/auth/gmail.readonly`. Gmail read-only is a
+restricted scope, so Google's consent, verification, and applicable Workspace
+administrator policies still apply. External apps in Testing commonly receive
+refresh tokens that expire after seven days for Gmail access; consent status,
+password changes, revoked grants, or administrator policy can also require
+reauthorization. Publishing status alone is not a universal remedy for those
+constraints, so do not treat this setup as unattended-use approval.
 
-```bash
-brew install googleworkspace-cli
-gws auth setup
-gws auth login --scopes https://www.googleapis.com/auth/gmail.readonly
-gws auth status
-```
+`credentials_file` must be an absolute path or `~/...`; static configuration
+validation does not read the file or contact the network. A missing key is
+allowed so an existing fresh cache remains readable, but the next remote fetch
+fails with a setup diagnostic (exit status `1`). A relative path, wrong type,
+or other malformed static value is a configuration error (exit status `2`). A
+remote attempt also checks that the file is a regular, user-owned private file
+with no group/other permission bits (normally mode `0600`), and accepts only a
+bounded `authorized_user` JSON shape. Diagnostics do not include the path,
+query, user ID, tokens, credential contents, or remote response bodies.
 
-`gws auth setup` can use `gcloud` to automate Google Cloud project and
-credential creation. If `gcloud` is unavailable, complete the equivalent
-manual Cloud Console setup described by `gws`, then run `gws auth login`.
-Cybort never performs an interactive login or stores OAuth credentials.
+Existing Gmail configurations without `credentials_file` are not rewritten and
+no local data is deleted. Fresh cached data continues to be served without
+opening a credential file; a stale or forced fetch reports the missing setup
+while preserving the last-known-good items and freshness. Do not read, decrypt,
+revoke, or delete any previous `gws` state automatically. Authenticate through
+the dedicated procedure above instead.
 
-Configure a read-only Gmail instance using the commented template in
-[`.cybort.example.toml`](.cybort.example.toml).
+#### Gmail authenticated release gate
 
-Before a stale or forced fetch, Cybort checks the required executable and its
-tested version range. Missing or unsupported dependencies fail only the
-affected source and include Homebrew/authentication guidance in the diagnostic
-output; fresh cached data remains available. The Gmail connector remains
-experimental until an authenticated contract smoke test verifies the
-installed `gws` version, read-only scopes, and list/detail response shapes.
+Offline fixtures verify the credential, token, list/detail, normalization,
+cache, and failure-isolation contracts but cannot establish a live grant. An
+authorized account was not available for this implementation pass, so the
+manual gate remains open and Gmail remains experimental. Before calling it
+production-ready, run a separate one-message smoke test through the Gmail
+adapter using the dedicated credential directory. Record only sanitized
+statuses, granted scope names when available, response field names, counts,
+timings, and whether the read/unread labels are unchanged before and after.
+Verify token/list/get, cache behavior, and that collection works without
+`gws` or `gcloud` in the runtime PATH. Never print credentials, access tokens,
+full mail JSON, bodies, or raw headers.
 
 ## Fetch data
 

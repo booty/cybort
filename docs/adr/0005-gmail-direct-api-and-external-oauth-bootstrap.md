@@ -1,6 +1,6 @@
 # ADR 0005: Direct Gmail API with External OAuth Bootstrap
 
-- Status: Accepted (design decision; implementation and live verification pending)
+- Status: Accepted (implementation offline-verified; authenticated live verification pending)
 - Date: 2026-09-06
 - Supersedes: [ADR 0002](0002-external-command-dependencies-and-cli-adapters.md)
 
@@ -69,9 +69,9 @@ query/content/identity handling without eliminating authentication setup.
 - Existing Gmail configurations need a credential file for the next remote
   fetch, while fresh caches remain usable. Migration preserves local identity
   when the account stays the same.
-- The old ADR's `gws` version gate is retired for the replacement. A direct-API
-  authenticated smoke test remains the release gate; until implementation
-  lands, the actual runtime still uses `gws`.
+- The old ADR's `gws` version gate is retired for the replacement. The direct
+  implementation is now present and offline-verified, but its authenticated
+  smoke test remains the release gate; Gmail therefore remains experimental.
 
 ## Implementation records
 
@@ -81,4 +81,5 @@ query/content/identity handling without eliminating authentication setup.
 - [Retention](0003-configurable-item-retention.md)
 
 Accepted records the selected architecture under the user's delegated decision
-authority. It is not a statement of implemented or authenticated behavior.
+authority. Offline implementation evidence does not establish an account's
+live grant or release readiness.

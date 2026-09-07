@@ -318,11 +318,11 @@ class OrchestratorTest < Minitest::Test
   end
 
   def test_fresh_cache_skips_dependency_preflight
-    dependency = Cybort::Dependency.new(executable: "gws", purpose: "gmail")
+    dependency = Cybort::Dependency.new(executable: "fixture-tool", purpose: "test fixture")
     registry = Cybort::AdapterRegistry.new
     modes = []
-    registry.register("gmail", ->(**kwargs) { PlanningAdapter.new(**kwargs, modes: modes) }, dependencies: [dependency], validate_configuration: ->(_instance) {})
-    configured = instance("mail", retention_ttl_minutes: 60).tap { |value| value.adapter = "gmail" }
+    registry.register("command_fixture", ->(**kwargs) { PlanningAdapter.new(**kwargs, modes: modes) }, dependencies: [dependency], validate_configuration: ->(_instance) {})
+    configured = instance("mail", retention_ttl_minutes: 60).tap { |value| value.adapter = "command_fixture" }
     configuration = Struct.new(:instances).new({ "mail" => configured })
     persistence = PersistenceSpyWithContexts.new(
       "mail" => { items: [], last_successful_fetch: Time.utc(2026, 8, 16, 12), sync_state: {} }
@@ -343,13 +343,13 @@ class OrchestratorTest < Minitest::Test
 
   def test_stale_missing_dependency_fails_only_that_instance_and_groups_guidance
     dependency = Cybort::Dependency.new(
-      executable: "gws", purpose: "gmail", install_hint: "brew install googleworkspace-cli"
+      executable: "fixture-tool", purpose: "test fixture", install_hint: "brew install fixture-tool"
     )
     registry = Cybort::AdapterRegistry.new
     modes = []
-    registry.register("gmail", ->(**kwargs) { PlanningAdapter.new(**kwargs, modes: modes) }, dependencies: [dependency], validate_configuration: ->(_instance) {})
+    registry.register("command_fixture", ->(**kwargs) { PlanningAdapter.new(**kwargs, modes: modes) }, dependencies: [dependency], validate_configuration: ->(_instance) {})
     registry.register("rss", ->(**kwargs) { PlanningAdapter.new(**kwargs, modes: modes) }, validate_configuration: ->(_instance) {})
-    mail = instance("mail").tap { |value| value.adapter = "gmail" }
+    mail = instance("mail").tap { |value| value.adapter = "command_fixture" }
     feed = instance("feed").tap { |value| value.adapter = "rss" }
     configuration = Struct.new(:instances).new({ "mail" => mail, "feed" => feed })
     persistence = PersistenceSpyWithContexts.new("mail" => empty_context, "feed" => empty_context)
@@ -362,18 +362,18 @@ class OrchestratorTest < Minitest::Test
     result = orchestrator.run
 
     assert_equal %i[failure success], result.instances.map(&:status)
-    assert_equal ["gws"], checker.calls
+    assert_equal ["fixture-tool"], checker.calls
     assert_equal ["mail"], result.unavailable_dependencies.first.fetch(:instances)
     assert_equal ["feed"], persistence.writes.map(&:instance_id)
   end
 
   def test_two_remote_instances_resolve_one_unique_executable
-    dependency = Cybort::Dependency.new(executable: "gws", purpose: "gmail")
+    dependency = Cybort::Dependency.new(executable: "fixture-tool", purpose: "test fixture")
     registry = Cybort::AdapterRegistry.new
     modes = []
-    registry.register("gmail", ->(**kwargs) { PlanningAdapter.new(**kwargs, modes: modes) }, dependencies: [dependency], validate_configuration: ->(_instance) {})
-    first = instance("one").tap { |value| value.adapter = "gmail" }
-    second = instance("two").tap { |value| value.adapter = "gmail" }
+    registry.register("command_fixture", ->(**kwargs) { PlanningAdapter.new(**kwargs, modes: modes) }, dependencies: [dependency], validate_configuration: ->(_instance) {})
+    first = instance("one").tap { |value| value.adapter = "command_fixture" }
+    second = instance("two").tap { |value| value.adapter = "command_fixture" }
     configuration = Struct.new(:instances).new({ "one" => first, "two" => second })
     persistence = PersistenceSpyWithContexts.new("one" => empty_context, "two" => empty_context)
     checker = CheckerSpy.new(unavailable_resolution(dependency))
@@ -381,12 +381,12 @@ class OrchestratorTest < Minitest::Test
 
     result = orchestrator.run
 
-    assert_equal ["gws"], checker.calls
+    assert_equal ["fixture-tool"], checker.calls
     assert_equal %w[one two], result.unavailable_dependencies.first.fetch(:instances)
   end
 
   def test_resolves_all_dependencies_for_an_instance_before_reporting_failures
-    first_dependency = Cybort::Dependency.new(executable: "gws", purpose: "gmail")
+    first_dependency = Cybort::Dependency.new(executable: "fixture-tool", purpose: "test fixture")
     second_dependency = Cybort::Dependency.new(executable: "jq", purpose: "json")
     registry = Cybort::AdapterRegistry.new
     factory_calls = 0
@@ -409,29 +409,29 @@ class OrchestratorTest < Minitest::Test
       end
       define_method(:validate_version!) { |_dependency, resolution| resolution }
     end.new(
-      "gws" => unavailable_resolution(first_dependency),
+      "fixture-tool" => unavailable_resolution(first_dependency),
       "jq" => unavailable_resolution(second_dependency)
     )
     orchestrator = Cybort::Orchestrator.new(configuration: configuration, persistence: persistence, registry: registry, http_client: nil, dependency_checker: checker)
 
     result = orchestrator.run
 
-    assert_equal %w[gws jq], checker.calls
-    assert_equal %w[gws jq], result.unavailable_dependencies.map { |value| value.fetch(:tool) }
+    assert_equal %w[fixture-tool jq], checker.calls
+    assert_equal %w[fixture-tool jq], result.unavailable_dependencies.map { |value| value.fetch(:tool) }
     assert_equal 0, factory_calls
   end
 
   def test_unavailable_dependency_does_not_construct_runtime_factory
-    dependency = Cybort::Dependency.new(executable: "gws", purpose: "gmail")
+    dependency = Cybort::Dependency.new(executable: "fixture-tool", purpose: "test fixture")
     registry = Cybort::AdapterRegistry.new
     factory_calls = 0
     registry.register(
-      "gmail",
+      "command_fixture",
       ->(**_kwargs) { factory_calls += 1; raise "runtime factory must not run" },
       dependencies: [dependency],
       validate_configuration: ->(_instance) {}
     )
-    configured = instance("mail").tap { |value| value.adapter = "gmail" }
+    configured = instance("mail").tap { |value| value.adapter = "command_fixture" }
     configuration = Struct.new(:instances).new({ "mail" => configured })
     persistence = PersistenceSpyWithContexts.new("mail" => empty_context)
     checker = CheckerSpy.new(unavailable_resolution(dependency))

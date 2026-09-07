@@ -34,6 +34,55 @@ module Cybort
     end
   end
 
+  class GmailApiError < SourceError
+    OPERATIONS = %i[credentials token list get].freeze
+    HINTS = {
+      missing: "Configure credentials_file using README Gmail setup.",
+      unreadable: "Check credential ownership and private file permissions.",
+      invalid_credentials: "Use authorized_user JSON, not downloaded OAuth client JSON.",
+      authentication: "Reauthorize Gmail credentials.",
+      token_expired: "Run collection again; reauthorize if it persists.",
+      scope: "Authorize gmail.readonly explicitly.",
+      authorization: "Check Gmail scope, API enablement, and account/admin policy.",
+      rate_limited: "Try again later.",
+      http: "Gmail request failed; retry later or inspect setup.",
+      network: "Gmail network request failed; retry later.",
+      timeout: "Gmail request timed out; try again later.",
+      response_too_large: "Gmail response was too large; try again later.",
+      invalid_json: "Unexpected Gmail response.",
+      invalid_shape: "Unexpected Gmail response.",
+      invalid_identity: "Unexpected Gmail response.",
+      deadline: "Fetch budget exhausted; try a smaller item limit."
+    }.freeze
+    CATEGORIES = HINTS.keys.freeze
+
+    attr_reader :safe_metadata
+
+    def initialize(operation:, category:, status: nil)
+      operation = operation.to_sym if operation.respond_to?(:to_sym)
+      category = category.to_sym if category.respond_to?(:to_sym)
+
+      unless OPERATIONS.include?(operation)
+        raise ArgumentError, "unsupported Gmail API operation"
+      end
+      unless CATEGORIES.include?(category)
+        raise ArgumentError, "unsupported Gmail API error category"
+      end
+      unless status.nil? || (status.is_a?(Integer) && (100..599).cover?(status))
+        raise ArgumentError, "Gmail API error status must be an integer between 100 and 599"
+      end
+
+      @safe_metadata = {
+        source: "gmail_api", operation: operation, category: category
+      }
+      @safe_metadata[:status] = status unless status.nil?
+      @safe_metadata.freeze
+
+      suffix = status ? ", HTTP #{status}" : ""
+      super("Gmail #{operation} failed (#{category}#{suffix}). #{HINTS.fetch(category)}")
+    end
+  end
+
   class RedditApiError < SourceError
     OPERATIONS = %i[token subscriptions unread_messages home_hot subreddit_hot news_hot].freeze
     CATEGORIES = %i[

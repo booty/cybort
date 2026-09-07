@@ -7,27 +7,7 @@ module Cybort
         registry.register("rss", Adapters::RSS)
         registry.register("github", Adapters::GitHub)
         registry.register("reddit", Adapters::Reddit)
-        registry.register(
-          "gmail",
-          Adapters::Gmail,
-          dependencies: [
-            Dependency.new(
-              executable: "gws",
-              purpose: "Google-maintained Google Workspace CLI",
-              install_hint: "brew install googleworkspace-cli",
-              auth_hint: "Run gws auth setup, then gws auth login --scopes https://www.googleapis.com/auth/gmail.readonly",
-              version_requirement: ">= 0.22.5, < 0.23.0",
-              environment_keys: %w[
-                GOOGLE_WORKSPACE_CLI_CONFIG_DIR
-                GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE
-                GOOGLE_WORKSPACE_CLI_TOKEN
-                GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND
-                GOOGLE_WORKSPACE_PROJECT_ID
-                HTTPS_PROXY HTTP_PROXY NO_PROXY SSL_CERT_FILE SSL_CERT_DIR
-              ]
-            )
-          ]
-        )
+        registry.register("gmail", Adapters::Gmail)
       end
     end
 

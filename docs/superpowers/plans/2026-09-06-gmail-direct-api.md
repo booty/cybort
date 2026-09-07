@@ -83,7 +83,7 @@ worktree at execution time if needed; preserve all pre-existing user changes.
 - Produces `GmailCredentials.printable?(value, maximum_bytes)` for shared
   validation. It checks String, valid encoding, nonblank, size, and no C0/DEL.
 
-- [ ] **Step 1: Add focused failing tests.** Include this test skeleton in a
+- [x] **Step 1: Add focused failing tests.** Include this test skeleton in a
   new `GmailCredentialsTest < Minitest::Test` requiring `test_helper`:
 
   ```ruby
@@ -143,10 +143,10 @@ worktree at execution time if needed; preserve all pre-existing user changes.
   root/chown. Prove bytes are read with an explicit limit and the
   descriptor is closed on failure. Do not create a blocking FIFO reader.
 
-- [ ] **Step 2: Delegate `bundle exec ruby -Itest test/gmail_credentials_test.rb`.**
+- [x] **Step 2: Delegate `bundle exec ruby -Itest test/gmail_credentials_test.rb`.**
   Expected failure: missing Gmail classes, not unrelated framework failures.
 
-- [ ] **Step 3: Add the error mapping.** In `errors.rb`, define operations
+- [x] **Step 3: Add the error mapping.** In `errors.rb`, define operations
   `%i[credentials token list get]` and a frozen category-to-hint hash containing
   every category in the spec's error table. Reject unknown operations/categories
   and non-integer/non-100..599 HTTP statuses with fixed `ArgumentError` text.
@@ -167,7 +167,7 @@ worktree at execution time if needed; preserve all pre-existing user changes.
   error message or Google's error description. Add direct tests for unknown
   enum/status rejection and exact 403 guidance within the credential test file.
 
-- [ ] **Step 4: Implement the loader.** Use private initialization and copy/freeze
+- [x] **Step 4: Implement the loader.** Use private initialization and copy/freeze
   the three strings, overriding inspection. Implement `.load` with this I/O
   structure (constants and helpers defined immediately below):
 
@@ -222,9 +222,9 @@ worktree at execution time if needed; preserve all pre-existing user changes.
   and return `"#<Cybort::GmailCredentials [REDACTED]>"` for `inspect` and `to_s`.
   Add the require after `errors.rb` in `lib/cybort.rb`.
 
-- [ ] **Step 5: Delegate the same focused test file; inspect the bounded summary.**
+- [x] **Step 5: Delegate the same focused test file; inspect the bounded summary.**
   Expected: all credential/error contracts pass without external access.
-- [ ] **Step 6: Commit only Task 1 files** with message
+- [x] **Step 6: Commit only Task 1 files** with message
   `feat: load explicit Gmail OAuth credentials safely`.
 
 ### Task 2: Implement refresh-token requests and bounded HTTP behavior
@@ -241,7 +241,7 @@ worktree at execution time if needed; preserve all pre-existing user changes.
 - Produces test helper `GmailHttpFixture.new(responses:)`, `calls`, `get`, and
   `post_form`. Responses are ordered `HttpResponse` or exception objects.
 
-- [ ] **Step 1: Add the recording fake and token tests.** Require the helper
+- [x] **Step 1: Add the recording fake and token tests.** Require the helper
   explicitly from each consumer, not automatically from production code:
 
   ```ruby
@@ -309,20 +309,20 @@ worktree at execution time if needed; preserve all pre-existing user changes.
   oversized response, and deadline exhaustion before a request. For scope use
   the literal full `https://www.googleapis.com/auth/gmail.readonly` string.
 
-- [ ] **Step 2: Delegate `bundle exec ruby -Itest test/gmail_client_test.rb`.**
+- [x] **Step 2: Delegate `bundle exec ruby -Itest test/gmail_client_test.rb`.**
   Expected: new client is missing.
 
-- [ ] **Step 3: Implement the client boundary.** Define fixed `TOKEN_URL`,
+- [x] **Step 3: Implement the client boundary.** Define fixed `TOKEN_URL`,
   `DATA_URL = "https://gmail.googleapis.com/gmail/v1"`, `READONLY_SCOPE`, and
   `REQUEST_TIMEOUT_SECONDS = 30`. Initialize client/clock/deadline references
   and nil token/expiry. Private `fail_api(operation, category, status: nil)`
   raises `GmailApiError` with `cause: nil`. Private `ensure_deadline!(operation)`
-  raises `deadline` when `@monotonic_clock.call >= @deadline_monotonic`.
+  raises `deadline` when `@monotonic_clock.call >= @deadline_monotonic` and
+  returns that validated clock reading when the deadline remains available.
 
   ```ruby
   def request_json(operation:, url:, form: nil, headers: {})
-    ensure_deadline!(operation)
-    now = @monotonic_clock.call
+    now = ensure_deadline!(operation)
     request_deadline = [@deadline_monotonic, now + REQUEST_TIMEOUT_SECONDS].min
     options = { headers: headers, timeout_seconds: request_deadline - now,
                 deadline_monotonic: request_deadline }
@@ -331,8 +331,8 @@ worktree at execution time if needed; preserve all pre-existing user changes.
     else
       @http_client.get(url, **options)
     end
-    ensure_deadline!(operation)
-    fail_api(operation, :timeout) if @monotonic_clock.call >= request_deadline
+    now = ensure_deadline!(operation)
+    fail_api(operation, :timeout) if now >= request_deadline
     payload = JSON.parse(response.body)
     fail_api(operation, :invalid_shape) unless payload.is_a?(Hash)
     payload
@@ -388,10 +388,17 @@ worktree at execution time if needed; preserve all pre-existing user changes.
   client state. Give `GmailClient#inspect`/`to_s` a redacted string as well.
   Add the require after `http_client.rb` and before the Gmail adapter.
 
-- [ ] **Step 4: Delegate the focused client test file.** Assert single requests
+- [x] **Step 4: Delegate the focused client test file.** Assert single requests
   on failure, and no output contains sentinel secrets.
-- [ ] **Step 5: Commit Task 2 files** with message
+- [x] **Step 5: Commit Task 2 files** with message
   `feat: exchange Gmail refresh tokens through bounded HTTP`.
+
+**Review evidence (2026-09-06):** Focused client tests pass with 14 runs and
+101 assertions. Root review approved the refresh-token contract, safe error
+classification, redaction, and one-reading deadline fix. The boundary
+regression drives the clock across the attempt deadline and verifies that the
+HTTP fake receives a positive 1.0-second timeout rather than zero or a
+negative value. No live OAuth or Gmail account access was used.
 
 ### Task 3: Implement the bounded Gmail list/get contract
 
@@ -406,7 +413,7 @@ worktree at execution time if needed; preserve all pre-existing user changes.
 - Private `segment(value)` percent-encodes one path segment;
   `valid_id?(value)` implements the spec's bounded opaque-ID contract.
 
-- [ ] **Step 1: Add failing contract tests.** Use the existing client helper and
+- [x] **Step 1: Add failing contract tests.** Use the existing client helper and
   a `token_response` helper returning the valid token fixture from Task 2.
 
   ```ruby
@@ -447,10 +454,10 @@ worktree at execution time if needed; preserve all pre-existing user changes.
   correct fields mask, no pagination, no calls after expired token or deadline,
   and 404 get failure (without success/partial-result semantics).
 
-- [ ] **Step 2: Delegate `bundle exec ruby -Itest test/gmail_client_test.rb`.**
+- [x] **Step 2: Delegate `bundle exec ruby -Itest test/gmail_client_test.rb`.**
   Expected: missing list/get methods.
 
-- [ ] **Step 3: Implement listing and retrieval.** Use `URI.encode_www_form`
+- [x] **Step 3: Implement listing and retrieval.** Use `URI.encode_www_form`
   for query encoding and `URI.encode_www_form_component(value).gsub("+", "%20")`
   for each path segment; never interpolate raw IDs into a path.
 
@@ -484,9 +491,9 @@ worktree at execution time if needed; preserve all pre-existing user changes.
   end
 
   def get_json(operation:, path:, params:)
-    ensure_deadline!(operation)
+    now = ensure_deadline!(operation)
     fail_api(operation, :authentication) unless @access_token
-    fail_api(operation, :token_expired) if @monotonic_clock.call >= @expires_at_monotonic
+    fail_api(operation, :token_expired) if now >= @expires_at_monotonic
     request_json(operation: operation, url: "#{DATA_URL}#{path}?#{URI.encode_www_form(params)}",
                  headers: { "Authorization" => "Bearer #{@access_token}" })
   end
@@ -519,10 +526,20 @@ worktree at execution time if needed; preserve all pre-existing user changes.
   Do not reject malformed `internalDate` here: adapter normalization tolerates
   it as nil. Add one test per wrong optional-field type and null-as-absent case.
 
-- [ ] **Step 4: Delegate the client tests.** Verify bounds and exact request
+- [x] **Step 4: Delegate the client tests.** Verify bounds and exact request
   arguments; no shared client state across instances.
-- [ ] **Step 5: Commit Task 3 changes** with message
+- [x] **Step 5: Commit Task 3 changes** with message
   `feat: fetch bounded Gmail metadata over REST`.
+
+**Review evidence (2026-09-06):** Root review approved the implementation's
+prefix-before-deduplication bound, fixed encoded endpoints, typed metadata
+parameters, safe failure behavior, and use of the validated monotonic reading
+from `ensure_deadline!` for token expiry. Focused client tests pass with 29
+runs and 206 assertions, with 0 failures, 0 errors, and 0 skips. The suite
+covers empty and malformed list shapes, inspected-prefix bounds, opaque ID
+validation, query/path encoding, repeated metadata headers, optional-field
+validation, token/deadline guards, 404 handling, and per-client token
+isolation. No live OAuth or Gmail account access was used.
 
 ### Task 4: Replace the Gmail adapter and registry entry
 
@@ -535,7 +552,7 @@ worktree at execution time if needed; preserve all pre-existing user changes.
 - Produces the same Gmail `Item` mapping and `FetchResult` semantics, with safe
   Gmail errors, no executable requirement, and the new configuration fields.
 
-- [ ] **Step 1: Port adapter fixture wiring, retaining meaningful assertions.**
+- [x] **Step 1: Port adapter fixture wiring, retaining meaningful assertions.**
   Replace `StubCommandRunner`/`dependency_resolution` helpers with the recording
   HTTP fake. Write an `authorized_user` fixture to a chmod-0600 file inside each
   test's `Dir.mktmpdir`; pass its absolute path in instance options. The adapter
@@ -566,12 +583,12 @@ worktree at execution time if needed; preserve all pre-existing user changes.
   items, and unchanged `replace_existing_items == false`. Use a path guaranteed
   not to exist for the cache/remote pair; do not use the user's real directory.
 
-- [ ] **Step 2: Delegate the adapter and registry test files individually.**
+- [x] **Step 2: Delegate the adapter and registry test files individually.**
   Commands: `bundle exec ruby -Itest test/adapters/gmail_test.rb` and
   `bundle exec ruby -Itest test/adapter_registry_test.rb`.
   Expected red cases demonstrate remaining `gws` construction/dependency.
 
-- [ ] **Step 3: Implement static validation.** Retain integer 1–500 validation.
+- [x] **Step 3: Implement static validation.** Retain integer 1–500 validation.
   Add max lengths and path rules from the spec using `GmailCredentials.printable?`.
   For query allow `""`/whitespace without making `.printable?` reject it:
 
@@ -597,7 +614,7 @@ worktree at execution time if needed; preserve all pre-existing user changes.
   fields, relative/`~other` paths, 0/501 limits, and valid UTF-8 queries. Ensure
   the missing key is accepted but a present nil/blank file path is rejected.
 
-- [ ] **Step 4: Replace fetching and preserve normalization.**
+- [x] **Step 4: Replace fetching and preserve normalization.**
 
   ```ruby
   def fetch_from_source
@@ -641,11 +658,11 @@ worktree at execution time if needed; preserve all pre-existing user changes.
   Remove the registry test that asserts `GOOGLE_WORKSPACE_CLI_*` propagation;
   generic runner environment coverage remains in `command_runner_test.rb`.
 
-- [ ] **Step 5: Delegate the focused adapter/registry tests.** Include injected
+- [x] **Step 5: Delegate the focused adapter/registry tests.** Include injected
   clock transitions proving credential time counts against the attempt budget,
   no detail request starts after expiry/deadline, and success is checked after
   the last response. Expected: no subprocess calls in any Gmail path.
-- [ ] **Step 6: Commit Task 4 files** with message
+- [x] **Step 6: Commit Task 4 files** with message
   `feat: replace Gmail gws adapter with direct API collection`.
 
 ### Task 5: Verify migration, failure isolation, and generic dependencies
@@ -659,7 +676,7 @@ extend `test/support/gmail_http_fixture.rb` only if shared routing is needed.
 - Produces offline integration evidence with temporary configuration/SQLite and
   fake HTTP responses, retaining all generic command-preflight coverage.
 
-- [ ] **Step 1: Port system-test helpers and add failing regressions.**
+- [x] **Step 1: Port system-test helpers and add failing regressions.**
   Change `write_gmail_config` to accept an explicit credential-file path and
   optional inclusion of its TOML key; keep retention and ID parameters. Create
   chmod-0600 authorized-user files in the temporary test installation. Replace
@@ -722,12 +739,12 @@ extend `test/support/gmail_http_fixture.rb` only if shared routing is needed.
   stored in items; secrecy assertions target diagnostics/metadata, not all
   successful item JSON.
 
-- [ ] **Step 2: Delegate focused system/orchestrator tests.** Commands:
+- [x] **Step 2: Delegate focused system/orchestrator tests.** Commands:
   `bundle exec ruby -Itest test/system/cli_system_test.rb` and
   `bundle exec ruby -Itest test/orchestrator_test.rb`.
   Expected: old Gmail-as-command assumptions fail until Step 3 is complete.
 
-- [ ] **Step 3: Preserve command-infrastructure tests with synthetic adapters.**
+- [x] **Step 3: Preserve command-infrastructure tests with synthetic adapters.**
   In `orchestrator_test.rb`, replace fake adapter names/tool labels `gmail/gws`
   with `command_fixture/fixture-tool` for tests already using `PlanningAdapter`
   and an explicitly registered dependency. In system tests requiring command
@@ -748,11 +765,27 @@ extend `test/support/gmail_http_fixture.rb` only if shared routing is needed.
   corresponding existing system fake); retain its constructor and returned
   `FetchResult`. Do not introduce a production synthetic connector.
 
-- [ ] **Step 4: Delegate focused tests again.** Repair only evidence-backed
+- [x] **Step 4: Delegate focused tests again.** Repair only evidence-backed
   integration issues. Any runtime defect returns to its owning task's failing
   test; avoid rewriting shared orchestration just to accommodate test fakes.
-- [ ] **Step 5: Commit Task 5 changes** with message
+- [x] **Step 5: Commit Task 5 changes** with message
   `test: cover Gmail REST migration and source isolation`.
+
+#### Task 5 review evidence
+
+Root review approved the Task 5 test diff after confirming that the privacy
+regression exercises the real `HttpClient` body-discard path and that the Gmail
+fixture derives bounded IDs directly from the parsed list. Focused verification:
+
+- `bundle exec ruby -Itest test/system/cli_system_test.rb`: 28 runs, 249
+  assertions, 0 failures, 0 errors.
+- `bundle exec ruby -Itest test/orchestrator_test.rb`: 13 runs, 52 assertions,
+  0 failures, 0 errors.
+- `git diff --check`: clean before commit.
+
+The Task 5 commit is `4e18f3c` on `gmail-direct-api`, pushed to
+`origin/gmail-direct-api`. No full suite or live Gmail smoke test was run for
+this task.
 
 ### Task 6: Publish setup, verify the implementation, and record release status
 
@@ -763,7 +796,16 @@ extend `test/support/gmail_http_fixture.rb` only if shared routing is needed.
 - Consumes tested runtime implementation and the exact setup procedure in the spec.
 - Produces user-facing migration guidance and explicit offline/live verification status.
 
-- [ ] **Step 1: Update the canonical Gmail example.** Replace the `gws` comments,
+**Execution note (2026-09-06):** The delegation/medium-effort and no-push
+constraints above record the planning-time workflow. For this implementation
+task, the user explicitly authorized the assigned executor to run the full
+offline suite with xhigh reasoning and permits a feature-branch commit/push
+after root review. No live account calls, user-configuration changes, merge to
+main, or release action is authorized. Root review has now approved the
+documentation handoff; the offline verification is complete and the
+authenticated live gate remains open.
+
+- [x] **Step 1: Update the canonical Gmail example.** Replace the `gws` comments,
   preserve the stable instance format, and use this commented configuration:
 
   ```toml
@@ -780,7 +822,7 @@ extend `test/support/gmail_http_fixture.rb` only if shared routing is needed.
   # include_spam_trash = true # optional; default false
   ```
 
-- [ ] **Step 2: Replace README Gmail setup with the spec's actual procedure.**
+- [x] **Step 2: Replace README Gmail setup with the spec's actual procedure.**
   Include Google Console links, Desktop OAuth client versus authorized-user
   file distinction, `CLOUDSDK_CONFIG` isolation, explicit Gmail scope, Testing
   token expiry, private file permissions, static errors, and per-account
@@ -790,7 +832,7 @@ extend `test/support/gmail_http_fixture.rb` only if shared routing is needed.
   the erroneous claim that runtime Gmail requires gcloud. Do not run login or
   delete previous gws state automatically.
 
-- [ ] **Step 3: Update durable records precisely.** In `AGENTS.md`, change Gmail's
+- [x] **Step 3: Update durable records precisely.** In `AGENTS.md`, change Gmail's
   actual runtime description to direct API plus externally bootstrapped
   credentials, preserving the generic command adapter invariant. In the dated
   gws learning, mark the former runtime path superseded by this implementation
@@ -799,13 +841,21 @@ extend `test/support/gmail_http_fixture.rb` only if shared routing is needed.
   ADR 0005's decision is already Accepted; implementation/live readiness is a
   separate status. Keep ADR 0002 Superseded in the index.
 
-- [ ] **Step 4: Delegate `bundle exec rake test` for final offline verification.**
+- [x] **Step 4: Delegate `bundle exec rake test` for final offline verification.**
   Also run read-only `git diff --check`, review changed documentation links,
   inspect `git diff --stat`, and check production Gmail files contain no `gws`
   invocation or dependency. `Gemfile`, `Gemfile.lock`, schema, and historical
   spitballing documents should remain unchanged. Do not claim a test count
   before the delegated result supplies it. Investigate unrelated baseline
   failures separately and report them; do not hide them.
+
+  **Verification (2026-09-06):** Under the user's explicit xhigh execution
+  authorization, `bundle exec rake test` passed with 285 runs, 1,498
+  assertions, 0 failures, 0 errors, and 0 skips. `git diff --check`, local
+  Markdown-link checks, the production Gmail/registry `gws` scan, and checks
+  for unchanged `Gemfile`, `Gemfile.lock`, schema, and historical
+  spitballing paths also passed. No tests were rerun after the final docs-only
+  review refinements.
 
 - [ ] **Step 5: Complete the authenticated gate only if an authorized account is available.**
   Use the spec's dedicated credential setup and one-message adapter smoke test.
@@ -818,11 +868,35 @@ extend `test/support/gmail_http_fixture.rb` only if shared routing is needed.
   retain the experimental designation; do not invent success or run login on
   a user's behalf without the required interactive participation.
 
-- [ ] **Step 6: Commit documentation and final fixes** with message
+  **Status (2026-09-06):** Open/skipped for this task. No authorized account or
+  credential file was available, so no login, mailbox, token, or live Gmail
+  request was run. Gmail remains experimental pending the dedicated
+  authenticated token/list/get smoke test and unchanged read/unread-label
+  check.
+
+- [x] **Step 6: Commit documentation and final fixes** with message
   `docs: document direct Gmail authentication and migration`.
-  Hand off the changes with offline results and live-gate status. No push,
-  merge, release, or change to the user's real configuration is part of this
-  plan's execution authority.
+  Hand off the changes with offline results and live-gate status. A
+  feature-branch commit/push is user-authorized after root review; merge,
+  release, and changes to the user's real configuration remain out of scope.
+
+#### Task 6 final verification evidence
+
+- Documentation review approved by root on 2026-09-06.
+- Offline suite: 285 runs, 1,498 assertions, 0 failures, 0 errors, 0 skips.
+- Read-only checks passed: `git diff --check`, local Markdown links,
+  production Gmail/registry `gws` scan, and unchanged dependency/schema/
+  historical-document checks.
+- No authenticated Gmail account was available. The live release gate remains
+  explicitly open and Gmail remains experimental.
+
+#### Final code-quality cleanup (2026-09-06)
+
+Root-approved review removed the duplicate Gmail raw transport fixture, trimmed
+an unused token-helper argument, and removed one redundant local assignment.
+The focused system suite (28 runs, 249 assertions) and full offline suite (285
+runs, 1,498 assertions) remained clean; no additional test rerun was needed
+after this unchanged-docs review.
 
 ## Design-to-task coverage
 

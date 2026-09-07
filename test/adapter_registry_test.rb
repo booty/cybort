@@ -82,13 +82,16 @@ class AdapterRegistryTest < Minitest::Test
     assert_equal "a_known: invalid options\nz_unknown: unknown adapter: missing", error.message
   end
 
-  def test_gmail_dependency_allows_documented_gws_configuration_variables
-    dependency = Cybort::AdapterRegistry.default.dependencies_for(Instance.new(adapter: "gmail")).fetch(0)
+  def test_default_gmail_has_no_executable_dependencies
+    registry = Cybort::AdapterRegistry.default
+    instance = Cybort::Configuration::Instance.new(
+      id: "jer_gmail", name: "Personal Gmail", adapter: "gmail",
+      ttl_minutes: 60, num_items_to_fetch: 200,
+      options: { user_id: "me", query: "in:anywhere" }
+    )
 
-    assert_includes dependency.environment_keys, "GOOGLE_WORKSPACE_CLI_CONFIG_DIR"
-    assert_includes dependency.environment_keys, "GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"
-    assert_includes dependency.environment_keys, "GOOGLE_WORKSPACE_CLI_TOKEN"
-    assert_includes dependency.environment_keys, "GOOGLE_WORKSPACE_PROJECT_ID"
+    registry.validate_configuration!(instance)
+    assert_empty registry.dependencies_for(instance)
   end
 
   def test_default_registry_builds_reddit_without_executable_dependencies
