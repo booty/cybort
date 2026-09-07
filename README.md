@@ -66,6 +66,14 @@ successful remote fetch may remove every item it does not return.
 
 ### Reddit connector
 
+A separate public RSS-only connector is
+[designed](docs/superpowers/specs/2026-09-06-reddit-rss-design.md) and
+[planned](docs/superpowers/plans/2026-09-06-reddit-rss.md), but not implemented.
+It would use `reddit_rss`, retain bounded rank history, and select highlights
+from an explicitly observed pool—not measure subreddit-wide vote percentiles.
+Public-feed access, ordering, and publication timestamps remain live gates.
+The current `reddit` connector below still uses OAuth.
+
 Reddit uses the documented OAuth Data API directly. Configure an approved
 confidential OAuth application and obtain its authorization-code refresh token
 outside Cybort; Cybort does not provide an interactive login flow. The token,

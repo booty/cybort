@@ -4,6 +4,32 @@ This file records dated implementation discoveries and gotchas that are not
 architectural decisions. Each entry should include evidence and a status so a
 future agent can distinguish observed behavior from an open follow-up.
 
+## 2026-09-07 — RSS rank history needs independent bounds and verified timestamps
+
+**Status:** Design constraint recorded; RSS detector implementation pending.
+
+**Observation:** Existing item retention does not prune `sync_state_json`.
+The proposed RSS detector therefore needs explicit bounded state transitions.
+Atom publication and update times have different meanings, and Atom itself
+assigns no ranking significance to entry order. Neither an updated timestamp
+nor RSS availability establishes the proposed detector's creation/rank contract.
+
+**Evidence:** `Persistence#update_instance_state` writes returned sync state
+unchanged; `prune_expired_items` targets only the items table. [ADR 0003](adr/0003-configurable-item-retention.md)
+documents this distinction. [Atom RFC 4287](https://www.rfc-editor.org/rfc/rfc4287)
+defines the timestamp/order semantics. The documentation-tool feed probe on
+September 6 returned Cache miss, not an observed Reddit status or Atom body.
+
+**Impact:** [ADR 0006](adr/0006-reddit-rss-observed-ranking.md) selects capped
+candidates/four-poll history committed with successful snapshots, requires
+publication timestamps, and labels the ranked universe observed-only. The
+original [sketch](spitballing/reddit-v2-spitballing.md) is preserved unchanged.
+
+**Next action:** Implement the [plan](superpowers/plans/2026-09-06-reddit-rss.md)
+and its state/clock/transaction regressions only when requested. Verify permitted
+access, publication meaning, ordering, and combined feeds separately before
+removing the experimental designation. No project tests ran for this planning work.
+
 ## 2026-09-05 — Reddit transport deadlines and errors need boundary normalization
 
 **Status:** Active
