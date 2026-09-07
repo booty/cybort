@@ -1,15 +1,27 @@
 # Reddit V2: Public RSS Ranking Design
 
-**Status:** Selected for implementation planning; not implemented or live-verified
+**Status:** Implemented and offline-verified; not live-verified
 **Date:** 2026-09-06
 **Planning completed:** 2026-09-07
+**Implementation completed:** 2026-09-07 (Tasks 1–5)
 **Decision:** [ADR 0006](../../adr/0006-reddit-rss-observed-ranking.md)
 **Plan:** [Implementation plan](../plans/2026-09-06-reddit-rss.md)
 **Input:** [Original sketch](../../spitballing/reddit-v2-spitballing.md), preserved unchanged
 
 The user delegated design decisions and waived intermediate human approvals.
-This is a documentation-only task. It does not authorize implementation,
-account changes, a polling service, or bypassing Reddit access controls.
+The implementation is now present as the explicit opt-in `reddit_rss`
+connector described below. This record does not authorize account changes, a
+polling service, unattended production use, or bypassing Reddit access
+controls.
+
+## Implementation status
+
+Tasks 1–5 implemented the parser, fixed public-feed transport lane, bounded
+state/history, deterministic observed-pool ranking, adapter registration, and
+snapshot integration without changing the OAuth `reddit` connector, SQLite
+schema, persistence ownership, or adapter SQL. Offline verification uses local
+fixtures and injected transports; no live Reddit request was made. The
+connector remains experimental until the live gates below are closed.
 
 ## Evaluation and decision
 
@@ -415,13 +427,16 @@ candidates may remain in bounded state to support history, not presentation.
 
 ## Verification and release gates
 
-Offline implementation tests must use local Atom fixtures/injected transports:
+Offline implementation tests use local Atom fixtures/injected transports:
 URL/headers/order/bounds, raw-rank dedupe, hostile XML and identities, timestamp
 semantics, exact math/ties/quota, cold start/new candidate/outage/config reset,
 state limits, cache no-I/O, all-or-nothing three-feed failure, retained state on
 transaction rollback, empty replacement, cross-instance isolation, rate lane
 release/spacing/throttle, and safe diagnostic/history fields. Reuse existing
-Minitest and persistence tests; no project tests run for this planning task.
+Minitest and persistence tests; Task 6 records the final offline command and
+counts. The final `bundle exec rake test` run completed with 319 runs, 1,612
+assertions, 0 failures, 0 errors, and 0 skips; no live Reddit request is part
+of this evidence.
 
 Before enabling unattended real use, separately confirm permitted public RSS
 access, then fetch the three exact routes for one group at low volume. Confirm
@@ -429,10 +444,12 @@ Atom `published` matches actual post creation, `t3_` IDs/permalinks, meaningful
 top/rising ordering, combined-group behavior, and returned limits. Capture only
 sanitized shapes/counts/timing. Stop on denial or throttle; do not evade it.
 Observe two legitimate poll cycles to validate warmup/history without claiming
-statistical calibration. Availability, ordering, or timestamp failure keeps
-the connector experimental and may require a revised design, not a hidden
-fallback. Ranking quality needs later human evaluation; tests only prove the
-chosen heuristic is implemented deterministically.
+statistical calibration. These permission, availability, identity, timestamp,
+ordering, combined-group, limit, and two-cycle checks remain open for this
+implementation. Failure keeps the connector experimental and may require a
+revised design, not a hidden fallback. Ranking quality needs later human
+evaluation; tests only prove the chosen heuristic is implemented
+deterministically.
 
 The offline persistence regression must exercise a real two-poll SQLite
 roundtrip: persist one complete poll, call `context_for`, feed its recursively

@@ -1,6 +1,6 @@
 # ADR 0006: Public Reddit RSS with Observed-Pool Ranking
 
-- Status: Accepted (design decision; implementation and live gates pending)
+- Status: Accepted; implemented and offline-verified, with live release gates open
 - Date: 2026-09-06
 - Supplements: [ADR 0004](0004-current-snapshot-item-replacement.md)
 
@@ -37,6 +37,25 @@ observed throttling. Extend safe Retry-After parsing to HTTP-date values. Do not
 add a durable retry scheduler; disclose that the external invoker must honor
 retry hints between CLI runs. Access permission, feed shape, publication-time
 meaning, and ranking order remain release gates.
+
+## Implementation and verification status
+
+The `reddit_rss` adapter is registered and implemented through the five
+implementation tasks in the linked plan. It has local Atom fixtures, injected
+HTTP/clock/sleeper tests, bounded state and ranking coverage, and an isolated
+SQLite/CLI snapshot round-trip.
+The final offline suite was `bundle exec rake test`: 319 runs, 1,612
+assertions, 0 failures, 0 errors, and 0 skips. Documentation links, diff
+whitespace, and Ruby syntax checks also passed. No live Reddit request or
+permission check was performed. The adapter therefore remains experimental.
+
+The open live gates are: permitted public RSS use and availability; the exact
+three-feed Atom response shape and stable `t3_` identity/permalink contract;
+whether `published` reflects post creation; whether `new`, `rising`, and
+`top?t=day` ordering is meaningful for the detector; combined-subreddit
+behavior and returned limits; and two legitimate low-volume poll cycles to
+confirm warmup/history behavior. A denial or throttle must be honored rather
+than bypassed.
 
 ## Alternatives and consequences
 

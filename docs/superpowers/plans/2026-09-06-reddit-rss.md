@@ -1,5 +1,8 @@
 # Reddit Public RSS Ranking Implementation Plan
 
+**Status:** Tasks 1–5 implemented; Task 6 offline review complete; live
+release gates remain open.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add an explicit public RSS adapter selecting explainable recent Reddit highlights from a bounded observed pool, without authentication or private data.
@@ -136,7 +139,7 @@ the adapter yet.
 **Consumes:** existing SourceError and RSS gem.
 **Produces:** Entry/Page and `.parse` interfaces above; `RedditRssError`.
 
-- [ ] **Step 1: Build synthetic fixture helpers and failing parser/error tests.**
+- [x] **Step 1: Build synthetic fixture helpers and failing parser/error tests.**
 
   Add a helper module, included only in new test classes, with `atom(entries)`
   and `atom_entry(id:, subreddit:, title:, published:)`. Use `CGI.escapeHTML`
@@ -187,12 +190,12 @@ the adapter yet.
   Valid empty Atom returns a zero-entry Page. Error tests reject arbitrary
   operation/category/status/delay and assert frozen safe metadata.
 
-- [ ] **Step 2: Run red tests through the delegated test worker.**
+- [x] **Step 2: Run red tests through the delegated test worker.**
   `bundle exec ruby -Itest test/reddit_rss_client_test.rb` and
   `bundle exec ruby -Itest test/errors_test.rb`; expected missing constants or
   `.parse`, not test-loader or fixture setup errors.
 
-- [ ] **Step 3: Implement error enums and the parse pipeline.**
+- [x] **Step 3: Implement error enums and the parse pipeline.**
 
   Use exactly the spec's enum sets and content-free guidance. HTTP status must
   be nil or an Integer 100–599; retry delay nil or finite nonnegative Numeric.
@@ -260,9 +263,12 @@ the adapter yet.
   require group membership. Freeze Entry and its strings. No category/author
   fallback is needed: subreddit comes from the verified permalink.
 
-- [ ] **Step 4: Run green parser/error tests and review the security boundary.**
+- [x] **Step 4: Run green parser/error tests and review the security boundary.**
   Recheck no external requests from XML and raw rank N semantics.
-- [ ] **Step 5: Commit** `feat: decode bounded public Reddit Atom posts`.
+- [x] **Step 5: Commit** `feat: decode bounded public Reddit Atom posts`.
+  Evidence: Task 1 focused parser/error tests passed with 20/182 and 7/35
+  runs/assertions; its full-suite checkpoint passed with 252/1,242 and no
+  failures, errors, or skips. No live requests were made.
 
 ### Task 2: Public-feed transport, spacing, and safe throttling
 
@@ -271,7 +277,7 @@ parser/tests; `lib/cybort.rb`; `test/http_client_test.rb` regression if needed.
 **Consumes:** Task 1 Page decoder and errors; existing HttpClient.
 **Produces:** complete client `#fetch`, process-wide lease interface.
 
-- [ ] **Step 1: Write request/coordinator/rate-date tests.**
+- [x] **Step 1: Write request/coordinator/rate-date tests.**
   Recording fake queues three synthetic HttpResponses. Assert exact routes,
   `+` group sorting supplied by adapter, parameters, headers, deadline/timeout,
   no second request after error, and no redirects. Use an injected mutable
@@ -300,11 +306,11 @@ parser/tests; `lib/cybort.rb`; `test/http_client_test.rb` regression if needed.
   the coordinator fails a second acquire immediately and does not ask the
   sleeper to wait for the server-requested delay.
 
-- [ ] **Step 2: Run the focused files red.**
+- [x] **Step 2: Run the focused files red.**
   `bundle exec ruby -Itest test/reddit_rss_coordinator_test.rb`, client tests,
   rate-limit-header tests; expected missing gate/fetch/date support.
 
-- [ ] **Step 3: Extend safe Retry-After parsing backward-compatibly.**
+- [x] **Step 3: Extend safe Retry-After parsing backward-compatibly.**
   Use `require "time"`; do not change other rate fields. Existing callers pass
   both positional hashes and inline keyword-like hashes, so preserve both:
 
@@ -344,7 +350,7 @@ parser/tests; `lib/cybort.rb`; `test/http_client_test.rb` regression if needed.
   helper is. The public method remains the module function `parse`.
   Test both original inline-hash call forms to catch Ruby keyword regressions.
 
-- [ ] **Step 4: Implement the coordinator as a bounded single-lane state machine.**
+- [x] **Step 4: Implement the coordinator as a bounded single-lane state machine.**
   Fields: mutex, active lease token or nil, next-allowed monotonic time,
   cooldown observation time plus integer delay, injected clock/sleeper. `.default` returns
   one eagerly assigned instance after class definition; no per-account keys.
@@ -367,7 +373,7 @@ parser/tests; `lib/cybort.rb`; `test/http_client_test.rb` regression if needed.
   is a no-op. Unexpected sleeper errors become safe deadline errors, not raw
   content. Waits and HTTP must never occur while the mutex is held.
 
-- [ ] **Step 5: Implement fixed request construction and lease cleanup.**
+- [x] **Step 5: Implement fixed request construction and lease cleanup.**
 
   ```ruby
   def fetch(sort:, subreddits:, user_agent:, deadline_monotonic:)
@@ -410,10 +416,14 @@ parser/tests; `lib/cybort.rb`; `test/http_client_test.rb` regression if needed.
   a URL; invalid programmer inputs yield static ArgumentError, not KeyError
   containing arbitrary values. Tests cover these guards.
 
-- [ ] **Step 6: Run green client/coordinator/header and existing HTTP/OAuth rate tests.**
+- [x] **Step 6: Run green client/coordinator/header and existing HTTP/OAuth rate tests.**
   Also run `test/reddit_rate_limit_coordinator_test.rb` and
   `test/http_client_test.rb` because safe header behavior is shared.
-- [ ] **Step 7: Commit** `feat: pace and fetch public Reddit RSS safely`.
+- [x] **Step 7: Commit** `feat: pace and fetch public Reddit RSS safely`.
+  Evidence: Task 2 focused RSS coordinator/client/header/HTTP/OAuth tests
+  passed with 5/19, 25/215, 10/22, 9/55, and 15/105 runs/assertions; the
+  exact-arithmetic follow-up passed with 9/31 OAuth coordinator assertions and
+  a full-suite checkpoint of 270/1,313. No live requests were made.
 
 ### Task 3: Bounded candidate and observation state
 
@@ -745,29 +755,36 @@ only if review evidence requires them.
 **Consumes:** implemented connector and covering tests.
 **Produces:** reviewed, offline-verified implementation with honest live status.
 
-- [ ] **Step 1: Review the complete diff.** Check no accidental OAuth/Gmail
-  replacement; only one shared production utility change (HTTP-date rate
-  parsing); no schema/persistence writes; bounds before copies; one time basis
-  for scoring; current and previous denominators not mixed; no unsafe XML
-  parsing/URL fallback; leased rate lane always released. Delegate fixes/tests
-  per execution instructions; root reviews amended code.
-- [ ] **Step 2: Run full offline verification through the test worker.**
+- [x] **Step 1: Review the complete diff.** No accidental OAuth/Gmail
+  replacement was found. Shared production changes are limited to safe
+  HTTP-date Retry-After parsing and the exact-arithmetic hardening required in
+  the OAuth rate coordinator to consume arbitrary-precision shared hints; no
+  schema/persistence writes were added. Bounds precede owned copies, scoring
+  uses one fetched-at basis, current and previous denominators stay separate,
+  XML and URL boundaries have no unsafe fallback, and the leased rate lane is
+  always released. Root review remains required for any amended code.
+- [x] **Step 2: Run full offline verification through the test worker.**
   `bundle exec rake test`; require zero failures/errors, disclose skips.
   Check `git diff --check`, local documentation links, unchanged Gemfile/lock
   and schema, no production OAuth/HTML/JSON calls from the RSS adapter. Never
   infer a live success or state a test count before the actual report.
-- [ ] **Step 3: Record durable knowledge.** AGENTS describes the new registered
+  Evidence: `bundle exec rake test` — 319 runs, 1,612 assertions, 0 failures,
+  0 errors, 0 skips; `git diff --check`; Ruby syntax checks for changed
+  production/system files; 84 local documentation links checked with 0
+  broken; no live requests.
+- [x] **Step 3: Record durable knowledge.** AGENTS describes the new registered
   adapter while retaining OAuth-specific invariants. ADR0006/index distinguish
   accepted decision, implemented status, and live verification. LEARNINGS gets
   dated observation/evidence/impact/next action only for actual findings;
   preserve all historical notes. Keep the input sketch unchanged.
-- [ ] **Step 4: Evaluate live gate separately.** Only with permitted access,
-  use the three documented public routes and an accurately identifying
-  User-Agent at low volume; verify feed identity, creation dates, ordering,
-  combined groups, limits, and two legitimate poll cycles. No changing hosts
-  or identities to defeat restrictions. If unavailable, record gate open,
-  connector experimental, and exactly which contracts remain unverified.
-- [ ] **Step 5: Commit** `docs: record Reddit RSS verification and limits`.
+- [x] **Step 4: Evaluate live gate separately.** No permitted live access was
+  used in this task, so the connector remains experimental and the exact open
+  contracts are recorded in the ADR, spec, README boundary, and LEARNINGS.
+  The required future check is to use the three documented public routes and
+  an accurately identifying User-Agent at low volume; verify feed identity,
+  creation dates, ordering, combined groups, limits, and two legitimate poll
+  cycles. No changing hosts or identities to defeat restrictions.
+- [x] **Step 5: Commit** `docs: record Reddit RSS verification and limits`.
   Hand off counts, branch, setup link, and open live gates; do not install a
   scheduler, activate user configuration, or start implementation of another
   feature without its own authorization.

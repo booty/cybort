@@ -86,10 +86,12 @@ and state; the process-local request lane's backoff is not durable across CLI
 invocations. Invoke externally at the configured TTL (for example every 15
 minutes) and honor any server retry hint.
 
-Public-feed permission, availability, feed ordering, combined-group behavior,
-and whether `published` reflects post creation remain live release gates. Keep
-the connector experimental until those checks are confirmed for the intended
-use; unauthenticated RSS is not an exemption from Reddit policies. The current
+Public-feed permission, availability, exact Atom shape and `t3_` permalink
+identity, feed ordering, combined-group behavior, returned limits, and whether
+`published` reflects post creation remain live release gates. Two legitimate
+low-volume polls are also required to confirm warmup/history behavior. Keep the
+connector experimental until those checks are confirmed for the intended use;
+unauthenticated RSS is not an exemption from Reddit policies. The current
 `reddit` connector below still uses OAuth.
 
 Reddit uses the documented OAuth Data API directly. Configure an approved

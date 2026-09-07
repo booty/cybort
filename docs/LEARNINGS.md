@@ -4,9 +4,40 @@ This file records dated implementation discoveries and gotchas that are not
 architectural decisions. Each entry should include evidence and a status so a
 future agent can distinguish observed behavior from an open follow-up.
 
+## 2026-09-07 — Public Reddit RSS is offline-verified but remains experimental
+
+**Status:** Implemented and offline-verified; live release gates remain open.
+
+**Observation:** The selected `reddit_rss` design is now implemented as a
+separate registered adapter. It uses local Atom fixtures and injected
+HTTP/clock/sleeper dependencies for bounded parsing, three-feed composition,
+observed-pool ranking, cache/failure behavior, and SQLite snapshot round-trips.
+The OAuth `reddit` connector and generic RSS connector remain separate.
+
+**Evidence:** Tasks 1–5 implementation commits and their focused/system tests;
+the final `bundle exec rake test` run completed with 319 runs, 1,612
+assertions, 0 failures, 0 errors, and 0 skips. Diff whitespace, Ruby syntax,
+and local documentation-link checks also passed. The [implementation plan](superpowers/plans/2026-09-06-reddit-rss.md)
+records the release boundary. No live Reddit request or permission check was
+performed.
+
+**Impact:** `reddit_rss` is available only as an explicitly configured,
+experimental public-feed connector. Its denominator is an observed local
+candidate pool, and its bounded state and selected snapshot are committed only
+after a complete three-feed success. Offline evidence does not establish public
+permission, feed availability, or ranking/timestamp semantics.
+
+**Next action:** Before unattended use, verify permitted access and the exact
+three public routes, Atom identity/permalinks, `published` creation-time
+meaning, `new`/`rising`/`top` ordering, combined-group behavior and limits, and
+two legitimate low-volume poll cycles. Stop on denial or throttle; do not use
+alternate hosts, identities, HTML, or JSON fallback.
+
 ## 2026-09-07 — RSS rank history needs independent bounds and verified timestamps
 
-**Status:** Design constraint recorded; RSS detector implementation pending.
+**Status:** Superseded as an implementation-pending note on 2026-09-07 by the
+offline-verified implementation note above; the design constraints remain
+active.
 
 **Observation:** Existing item retention does not prune `sync_state_json`.
 The proposed RSS detector therefore needs explicit bounded state transitions.
@@ -25,10 +56,11 @@ candidates/four-poll history committed with successful snapshots, requires
 publication timestamps, and labels the ranked universe observed-only. The
 original [sketch](spitballing/reddit-v2-spitballing.md) is preserved unchanged.
 
-**Next action:** Implement the [plan](superpowers/plans/2026-09-06-reddit-rss.md)
-and its state/clock/transaction regressions only when requested. Verify permitted
-access, publication meaning, ordering, and combined feeds separately before
-removing the experimental designation. No project tests ran for this planning work.
+**Next action:** The plan and its state/clock/transaction regressions were
+implemented after this design-phase note. Verify permitted access, publication
+meaning, ordering, and combined feeds separately before removing the
+experimental designation; see the implementation note above for current
+evidence. The original planning work did not run project tests.
 
 ## 2026-09-05 — Reddit transport deadlines and errors need boundary normalization
 

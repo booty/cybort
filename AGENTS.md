@@ -40,13 +40,25 @@ invariants and workflow rules here, not session-by-session narration.
   transaction spanning all adapter instances.
 - A failed source must not discard successful results from other sources.
 - Item identity is scoped by `(adapter_instance_id, canonical_id)`.
-- RSS and GitHub adapters use direct HTTP APIs. Gmail has an experimental
-  command-backed adapter for Google's `gws` CLI; it remains gated on a real
-  authenticated smoke test because `gws` is not installed in every environment.
-  Reddit uses documented OAuth Data API endpoints only: subscriptions plus a
-  bounded personalized `/hot` sample, explicit single-subreddit `/r/<name>/hot`
-  calls, and the legacy unread-message listing. Reddit Chat is unsupported by
-  the documented read surface. Reddit complete remote successes opt into the
+- RSS and GitHub adapters use direct HTTP APIs. `reddit_rss` is a separate,
+  registered experimental public Atom-feed adapter: it fetches only the fixed
+  `new`, `rising`, and `top?t=day` feeds for its configured public subreddit
+  group, uses no OAuth/cookies/private-feed keys/HTML scraping/JSON fallback,
+  and retains only bounded observed-pool rank state plus body-free selected
+  items. Complete three-feed successes atomically replace that instance's
+  selected snapshot and advance bounded state; cache hits and failures leave
+  the prior selected set and state intact. Its denominator is the observed
+  local candidate pool, not a population-wide percentile, and a real public
+  RSS smoke test remains required for permission, availability, feed shape,
+  publication-time meaning, returned ordering, combined-group behavior, and
+  limits before unattended use.
+- Gmail has an experimental command-backed adapter for Google's `gws` CLI; it
+  remains gated on a real authenticated smoke test because `gws` is not
+  installed in every environment. The separate `reddit` adapter uses
+  documented OAuth Data API endpoints only: subscriptions plus a bounded
+  personalized `/hot` sample, explicit single-subreddit `/r/<name>/hot` calls,
+  and the legacy unread-message listing. Reddit Chat is unsupported by the
+  documented read surface. Reddit complete remote successes opt into the
   generic current-snapshot replacement contract; cache hits and failures leave
   the prior selected set intact. Reddit storage is body-free and author-free,
   retaining only titles/subjects, canonical URLs, timestamps, visible scores,
