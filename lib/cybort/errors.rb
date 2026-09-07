@@ -68,6 +68,61 @@ module Cybort
     end
   end
 
+  class RedditRssError < SourceError
+    OPERATIONS = %i[state new rising top selection].freeze
+    CATEGORIES = %i[
+      access_denied rate_limited http network timeout deadline response_too_large
+      invalid_feed invalid_entry invalid_state state_too_large
+    ].freeze
+
+    attr_reader :safe_metadata
+
+    def initialize(operation:, category:, status: nil, retry_after_seconds: nil, **_ignored)
+      operation = normalize_symbol(operation, "operation")
+      category = normalize_symbol(category, "category")
+      raise ArgumentError, "unsupported Reddit RSS operation" unless OPERATIONS.include?(operation)
+      raise ArgumentError, "unsupported Reddit RSS error category" unless CATEGORIES.include?(category)
+
+      normalized_status = normalize_status(status)
+      normalized_retry_after_seconds = normalize_retry_after_seconds(retry_after_seconds)
+      @safe_metadata = {
+        source: :reddit_rss,
+        operation: operation,
+        category: category
+      }
+      @safe_metadata[:status] = normalized_status unless normalized_status.nil?
+      @safe_metadata[:retry_after_seconds] = normalized_retry_after_seconds unless normalized_retry_after_seconds.nil?
+      @safe_metadata.freeze
+
+      message = "Reddit RSS #{operation} failed (#{category})"
+      super(message)
+    end
+
+    private
+
+    def normalize_symbol(value, label)
+      raise ArgumentError, "Reddit RSS #{label} must be a symbol" unless value.is_a?(String) || value.is_a?(Symbol)
+
+      value.to_sym
+    end
+
+    def normalize_status(status)
+      return nil if status.nil?
+      raise ArgumentError, "Reddit RSS status must be an integer" unless status.is_a?(Integer) && status.between?(100, 599)
+
+      status
+    end
+
+    def normalize_retry_after_seconds(value)
+      return nil if value.nil?
+      unless value.is_a?(Numeric) && value.finite? && value >= 0
+        raise ArgumentError, "Reddit RSS retry delay must be finite and nonnegative"
+      end
+
+      value
+    end
+  end
+
   class CommandError < SourceError
     ALLOWED_METADATA = %i[
       tool operation command_index exit_category exit_code tool_version category auth_hint

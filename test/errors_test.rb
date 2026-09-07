@@ -60,4 +60,46 @@ class ErrorsTest < Minitest::Test
     assert_equal({ category: :response_too_large }, error.safe_metadata)
     refute_includes error.message, "https://"
   end
+
+  def test_reddit_rss_error_exposes_only_allowlisted_frozen_metadata
+    error = Cybort::RedditRssError.new(
+      operation: :new,
+      category: :http,
+      status: 429,
+      retry_after_seconds: 2.5,
+      body: "secret",
+      url: "https://private.example.test/feed"
+    )
+
+    assert_equal(
+      { source: :reddit_rss, operation: :new, category: :http,
+        status: 429, retry_after_seconds: 2.5 },
+      error.safe_metadata
+    )
+    assert error.safe_metadata.frozen?
+    assert error.cause.nil?
+    refute_includes error.message, "secret"
+    refute_includes error.message, "private.example.test"
+  end
+
+  def test_reddit_rss_error_rejects_unknown_values_and_unsafe_numeric_metadata
+    assert_raises(ArgumentError) do
+      Cybort::RedditRssError.new(operation: :token, category: :http)
+    end
+    assert_raises(ArgumentError) do
+      Cybort::RedditRssError.new(operation: :new, category: :secret)
+    end
+    assert_raises(ArgumentError) do
+      Cybort::RedditRssError.new(operation: :new, category: :http, status: 99)
+    end
+    assert_raises(ArgumentError) do
+      Cybort::RedditRssError.new(operation: :new, category: :http, status: "429")
+    end
+    assert_raises(ArgumentError) do
+      Cybort::RedditRssError.new(operation: :new, category: :http, retry_after_seconds: -1)
+    end
+    assert_raises(ArgumentError) do
+      Cybort::RedditRssError.new(operation: :new, category: :http, retry_after_seconds: Float::NAN)
+    end
+  end
 end
