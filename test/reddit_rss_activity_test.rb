@@ -36,6 +36,27 @@ class RedditRssActivityTest < Minitest::Test
     )
   end
 
+  def test_new_candidates_have_no_momentum_but_known_candidates_do
+    known = Cybort::RedditRssActivity.components(
+      top: 900_000, rising: 0, previous: 100_000,
+      known: true, appearances: 1, poll_count: 2
+    )
+    new_candidate = Cybort::RedditRssActivity.components(
+      top: 900_000, rising: 0, previous: 100_000,
+      known: false, appearances: 1, poll_count: 2
+    )
+
+    assert_equal 1_000_000, known.fetch("momentum")
+    assert_equal 0, new_candidate.fetch("momentum")
+  end
+
+  def test_persistence_uses_one_presence_per_poll_for_each_history_window
+    assert_equal 1_000_000, persistence(1, 1)
+    assert_equal 500_000, persistence(1, 2)
+    assert_equal 666_666, persistence(2, 3)
+    assert_equal 750_000, persistence(3, 4)
+  end
+
   def test_selection_uses_observed_denominator_and_reports_cap_separately
     now = Time.utc(2026, 9, 7, 12)
     ids = (1..20).map { |number| "t3_#{number.to_s(36)}" }
@@ -77,6 +98,42 @@ class RedditRssActivityTest < Minitest::Test
     refute result.fetch(:metadata).fetch(:confidence).fetch(:selection_capped)
   end
 
+  def test_nine_observed_candidates_are_low_sample_but_ten_are_not
+    now = Time.utc(2026, 9, 7, 12)
+    nine = observed_selection(now, 9)
+    ten = observed_selection(now, 10)
+
+    assert_equal 1, nine.fetch(:selected).length
+    assert nine.fetch(:metadata).fetch(:confidence).fetch(:low_sample_confidence)
+    assert_equal 1, ten.fetch(:selected).length
+    refute ten.fetch(:metadata).fetch(:confidence).fetch(:low_sample_confidence)
+  end
+
+  def test_old_and_over_skew_future_candidates_are_not_observed_but_boundary_future_is
+    now = Time.utc(2026, 9, 7, 12)
+    ids = %w[t3_old t3_future t3_boundary t3_current]
+    candidates = {
+      "t3_old" => candidate_state("t3_old", now - 86_401),
+      "t3_future" => candidate_state("t3_future", now + 301),
+      "t3_boundary" => candidate_state("t3_boundary", now + 300),
+      "t3_current" => candidate_state("t3_current", now)
+    }
+    pages = pages(
+      new_entries: ids.map { |id| entry(id: id, published_at: now, rank: 1) },
+      top_entries: ids.each_with_index.map { |id, index| entry(id: id, published_at: candidates.fetch(id).fetch("published_at").then { |value| Time.iso8601(value) }, rank: index + 1) },
+      top_count: ids.length
+    )
+    transition = transition(
+      state: state(candidates: candidates, polls: [poll(now, ids, [])]),
+      previous_poll: nil, previous_candidate_ids: []
+    )
+
+    result = select(transition: transition, pages: pages, now: now, limit: 100)
+
+    assert_equal 2, result.fetch(:metadata).fetch(:observed_candidate_count)
+    assert_equal %w[t3_boundary], result.fetch(:selected).map { |row| row.fetch(:id) }
+  end
+
   def test_cold_history_renormalizes_weights_and_hides_history_components
     now = Time.utc(2026, 9, 7, 12)
     id = "t3_abc"
@@ -92,6 +149,28 @@ class RedditRssActivityTest < Minitest::Test
     row = select(transition: transition, pages: pages, now: now, limit: 1).fetch(:selected).fetch(0)
 
     assert_equal 823_529, row.fetch(:info).fetch(:activity_score_millionths)
+    assert_equal 0, row.fetch(:info).fetch(:momentum_millionths)
+    assert_equal 0, row.fetch(:info).fetch(:persistence_millionths)
+  end
+
+  def test_gap_reset_disables_history_components_and_sets_confidence_flag
+    now = Time.utc(2026, 9, 7, 12)
+    id = "t3_gap"
+    pages = pages(
+      new_entries: [entry(id: id, published_at: now, rank: 1)],
+      top_entries: [entry(id: id, published_at: now, rank: 1)], top_count: 1
+    )
+    transition = transition(
+      state: state(candidates: {id => candidate_state(id, now)}, polls: [poll(now, [id], [])]),
+      previous_poll: nil, previous_candidate_ids: [id],
+      flags: {"history_gap" => true}
+    )
+
+    result = select(transition: transition, pages: pages, now: now, limit: 1)
+    row = result.fetch(:selected).fetch(0)
+
+    assert result.fetch(:metadata).fetch(:confidence).fetch(:history_gap)
+    assert row.fetch(:info).fetch(:confidence).fetch(:history_gap)
     assert_equal 0, row.fetch(:info).fetch(:momentum_millionths)
     assert_equal 0, row.fetch(:info).fetch(:persistence_millionths)
   end
@@ -153,6 +232,55 @@ class RedditRssActivityTest < Minitest::Test
     assert_equal 100, row.fetch(:priority)
   end
 
+  def test_equal_scores_use_published_time_then_canonical_id
+    now = Time.utc(2026, 9, 7, 12)
+    older = now - 60
+    candidates = {
+      "t3_a" => candidate_state("t3_a", older),
+      "t3_b" => candidate_state("t3_b", now)
+    }
+    pages = pages(
+      new_entries: [entry(id: "t3_a", published_at: older, rank: 1), entry(id: "t3_b", published_at: now, rank: 1)],
+      top_entries: [entry(id: "t3_a", published_at: older, rank: 1), entry(id: "t3_b", published_at: now, rank: 1)],
+      top_count: 2
+    )
+    transition = transition(state: state(candidates: candidates, polls: [poll(now, %w[t3_a t3_b], [])]),
+                            previous_poll: nil, previous_candidate_ids: [])
+
+    newest = select(transition: transition, pages: pages, now: now, limit: 100)
+    assert_equal ["t3_b"], newest.fetch(:selected).map { |row| row.fetch(:id) }
+
+    same_time = now
+    candidates["t3_a"]["published_at"] = same_time.iso8601(6)
+    pages = pages(
+      new_entries: [entry(id: "t3_b", published_at: same_time, rank: 1), entry(id: "t3_a", published_at: same_time, rank: 1)],
+      top_entries: [entry(id: "t3_b", published_at: same_time, rank: 1), entry(id: "t3_a", published_at: same_time, rank: 1)],
+      top_count: 2
+    )
+    transition = transition(state: state(candidates: candidates, polls: [poll(now, %w[t3_a t3_b], [])]),
+                            previous_poll: nil, previous_candidate_ids: [])
+
+    assert_equal ["t3_a"], select(transition: transition, pages: pages, now: now, limit: 100).fetch(:selected).map { |row| row.fetch(:id) }
+  end
+
+  def test_custom_weights_change_the_cold_selection_order
+    now = Time.utc(2026, 9, 7, 12)
+    ids = %w[t3_top t3_rising]
+    candidates = ids.to_h { |id| [id, candidate_state(id, now)] }
+    pages = pages(
+      new_entries: ids.map { |id| entry(id: id, published_at: now, rank: 1) },
+      top_entries: [entry(id: "t3_top", published_at: now, rank: 1), entry(id: "t3_rising", published_at: now, rank: 2)],
+      rising_entries: [entry(id: "t3_rising", published_at: now, rank: 1), entry(id: "t3_top", published_at: now, rank: 2)],
+      top_count: 2, rising_count: 2
+    )
+    transition = transition(state: state(candidates: candidates, polls: [poll(now, ids, ids, top_count: 2, rising_count: 2)]),
+                            previous_poll: nil, previous_candidate_ids: [])
+
+    assert_equal ["t3_top"], select(transition: transition, pages: pages, now: now, limit: 100).fetch(:selected).map { |row| row.fetch(:id) }
+    rising_first = {"top" => 100, "rising" => 900, "momentum" => 0, "persistence" => 0}
+    assert_equal ["t3_rising"], select(weights: rising_first, transition: transition, pages: pages, now: now, limit: 100).fetch(:selected).map { |row| row.fetch(:id) }
+  end
+
   def test_no_signals_returns_no_rows_without_mutating_inputs
     now = Time.utc(2026, 9, 7, 12)
     id = "t3_abc"
@@ -172,8 +300,28 @@ class RedditRssActivityTest < Minitest::Test
 
   private
 
-  def select(**options)
-    Cybort::RedditRssActivity.select(weights: WEIGHTS, **options)
+  def select(weights: WEIGHTS, **options)
+    Cybort::RedditRssActivity.select(weights: weights, **options)
+  end
+
+  def persistence(appearances, poll_count)
+    Cybort::RedditRssActivity.components(
+      top: 0, rising: 0, previous: 0, known: false,
+      appearances: appearances, poll_count: poll_count
+    ).fetch("persistence")
+  end
+
+  def observed_selection(now, count)
+    ids = (1..count).map { |number| "t3_#{number.to_s(36)}" }
+    candidates = ids.to_h { |id| [id, candidate_state(id, now)] }
+    pages = pages(
+      new_entries: ids.map { |id| entry(id: id, published_at: now, rank: 1) },
+      top_entries: ids.map.with_index { |id, index| entry(id: id, published_at: now, rank: index + 1) },
+      top_count: count
+    )
+    transition = transition(state: state(candidates: candidates, polls: [poll(now, ids, [], top_count: count)]),
+                            previous_poll: nil, previous_candidate_ids: [])
+    select(transition: transition, pages: pages, now: now, limit: 100)
   end
 
   def entry(id:, published_at:, rank:, subreddit: "ruby", title: "Title")

@@ -1,3 +1,5 @@
+require "time"
+
 module Cybort
   # Pure, fixed-point scoring for the observed public Reddit RSS universe.
   # State, pages, and their entries are read-only inputs; all result hashes are

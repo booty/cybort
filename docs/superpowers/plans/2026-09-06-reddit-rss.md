@@ -590,8 +590,11 @@ parser/tests; `lib/cybort.rb`; `test/http_client_test.rb` regression if needed.
 
 - [x] **Step 4: Run scoring tests green.** Test integer results exactly, not
   broad float tolerances or ordering-only assertions.
-- Evidence: focused activity tests pass with 8 runs and 31 assertions; the
-  full offline suite passes with 295 runs and 1,404 assertions.
+- Evidence: focused activity tests pass with 15 runs and 51 assertions; the
+  full offline suite passes with 302 runs and 1,424 assertions. Review
+  follow-up covers known/new momentum, persistence windows, gap reset,
+  low-sample boundaries, eligibility boundaries, tie-breakers, and custom
+  weights.
 - [x] **Step 5: Commit** `feat: rank Reddit RSS observed candidates deterministically`.
 
 ### Task 5: Adapter composition, configuration, and snapshot integration
