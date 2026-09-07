@@ -4,6 +4,46 @@ require_relative "support/reddit_rss_fixture"
 class RedditRssClientTest < Minitest::Test
   include RedditRssFixture
 
+  Response = Struct.new(:status, :headers, :body, keyword_init: true)
+
+  class FakeHttpClient
+    attr_reader :calls
+
+    def initialize(response: nil, error: nil)
+      @response = response
+      @error = error
+      @calls = []
+    end
+
+    def get(url, headers:, timeout_seconds:, deadline_monotonic:)
+      @calls << {
+        url: url,
+        headers: headers,
+        timeout_seconds: timeout_seconds,
+        deadline_monotonic: deadline_monotonic
+      }
+      raise @error if @error
+
+      @response
+    end
+  end
+
+  class FakeClock
+    attr_reader :now
+
+    def initialize(now = 100.0)
+      @now = now
+    end
+
+    def call
+      @now
+    end
+
+    def advance(seconds)
+      @now += seconds
+    end
+  end
+
   def parse(xml, subreddits: ["ruby"], operation: :new)
     Cybort::RedditRssClient.parse(body: xml, subreddits: subreddits, operation: operation)
   end
@@ -17,6 +57,134 @@ class RedditRssClientTest < Minitest::Test
     refute_match(/sentinel|secret|private|file:/i, error.message)
     refute error.safe_metadata.values.any? { |value| value.to_s.match?(/sentinel|secret|private|file:/i) }
     error
+  end
+
+  def test_fetch_constructs_fixed_public_request_and_decodes_page
+    http = FakeHttpClient.new(
+      response: Response.new(status: 200, headers: {}, body: atom([atom_entry]))
+    )
+    clock = FakeClock.new
+    coordinator = Cybort::RedditRssCoordinator.new(clock: clock.method(:call), sleeper: ->(_) {})
+    client = Cybort::RedditRssClient.new(
+      http_client: http, coordinator: coordinator, monotonic_clock: clock.method(:call)
+    )
+
+    page = client.fetch(
+      sort: "top", subreddits: %w[rails ruby], user_agent: "cybort:test:1 (by /u/test)",
+      deadline_monotonic: 120.0
+    )
+
+    call = http.calls.fetch(0)
+    assert_equal "https://www.reddit.com/r/rails+ruby/top/.rss?t=day&limit=100", call.fetch(:url)
+    assert_equal(
+      { "User-Agent" => "cybort:test:1 (by /u/test)",
+        "Accept" => "application/atom+xml, application/xml" },
+      call.fetch(:headers)
+    )
+    assert_equal 20.0, call.fetch(:timeout_seconds)
+    assert_equal 120.0, call.fetch(:deadline_monotonic)
+    assert_equal ["t3_abc"], page.entries.map(&:id)
+  end
+
+  def test_fetch_supports_new_and_rising_query_shapes
+    %w[new rising].each do |sort|
+      http = FakeHttpClient.new(
+        response: Response.new(status: 200, headers: {}, body: atom([]))
+      )
+      clock = FakeClock.new
+      coordinator = Cybort::RedditRssCoordinator.new(clock: clock.method(:call), sleeper: ->(_) {})
+      client = Cybort::RedditRssClient.new(
+        http_client: http, coordinator: coordinator, monotonic_clock: clock.method(:call)
+      )
+
+      client.fetch(
+        sort: sort, subreddits: ["ruby"], user_agent: "cybort:test:1 (by /u/test)",
+        deadline_monotonic: 120.0
+      )
+
+      assert_equal "https://www.reddit.com/r/ruby/#{sort}/.rss?limit=100", http.calls.fetch(0).fetch(:url)
+    end
+  end
+
+  def test_fetch_rejects_invalid_programmer_inputs_with_static_argument_errors
+    http = FakeHttpClient.new(response: Response.new(status: 200, headers: {}, body: atom([])))
+    clock = FakeClock.new
+    coordinator = Cybort::RedditRssCoordinator.new(clock: clock.method(:call), sleeper: ->(_) {})
+    client = Cybort::RedditRssClient.new(
+      http_client: http, coordinator: coordinator, monotonic_clock: clock.method(:call)
+    )
+    cases = [
+      { sort: :secret, subreddits: ["ruby"], user_agent: "ua", deadline_monotonic: 1.0 },
+      { sort: "new", subreddits: ["ruby", "rails"], user_agent: "ua", deadline_monotonic: 1.0 },
+      { sort: "new", subreddits: ["ruby"], user_agent: "bad\nua", deadline_monotonic: 1.0 }
+    ]
+
+    cases.each do |arguments|
+      error = assert_raises(ArgumentError) { client.fetch(**arguments) }
+      assert_equal "invalid Reddit RSS fetch arguments", error.message
+      refute_includes error.message, "secret"
+    end
+    assert_empty http.calls
+  end
+
+  def test_fetch_maps_http_error_without_exposing_body_or_headers
+    http = FakeHttpClient.new(
+      error: Cybort::HttpError.new(
+        status: 429,
+        headers: { "Retry-After" => "9", "X-Secret" => "private-header" }
+      )
+    )
+    clock = FakeClock.new
+    coordinator = Cybort::RedditRssCoordinator.new(clock: clock.method(:call), sleeper: ->(_) {})
+    client = Cybort::RedditRssClient.new(
+      http_client: http, coordinator: coordinator, monotonic_clock: clock.method(:call)
+    )
+
+    error = assert_raises(Cybort::RedditRssError) do
+      client.fetch(
+        sort: "new", subreddits: ["ruby"], user_agent: "cybort:test:1 (by /u/test)",
+        deadline_monotonic: 120.0
+      )
+    end
+
+    assert_equal :rate_limited, error.safe_metadata.fetch(:category)
+    assert_equal 429, error.safe_metadata.fetch(:status)
+    assert_equal 60, error.safe_metadata.fetch(:retry_after_seconds)
+    refute_includes error.message, "private-header"
+    refute_includes error.message, "body"
+  end
+
+  def test_fetch_releases_lease_when_parser_raises
+    responses = [
+      Response.new(status: 200, headers: {}, body: "not atom"),
+      Response.new(status: 200, headers: {}, body: atom([]))
+    ]
+    http = Object.new
+    calls = []
+    http.define_singleton_method(:get) do |url, **kwargs|
+      calls << [url, kwargs]
+      responses.shift
+    end
+    clock = FakeClock.new
+    coordinator = Cybort::RedditRssCoordinator.new(
+      clock: clock.method(:call), sleeper: ->(seconds) { clock.advance(seconds) }
+    )
+    client = Cybort::RedditRssClient.new(
+      http_client: http, coordinator: coordinator, monotonic_clock: clock.method(:call)
+    )
+
+    assert_raises(Cybort::RedditRssError) do
+      client.fetch(
+        sort: "new", subreddits: ["ruby"], user_agent: "cybort:test:1 (by /u/test)",
+        deadline_monotonic: 120.0
+      )
+    end
+    page = client.fetch(
+      sort: "new", subreddits: ["ruby"], user_agent: "cybort:test:1 (by /u/test)",
+      deadline_monotonic: 120.0
+    )
+    assert_empty page.entries
+    assert_equal 2, calls.length
   end
 
   def test_published_and_raw_rank_are_preserved

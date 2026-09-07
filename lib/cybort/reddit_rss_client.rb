@@ -22,6 +22,60 @@ module Cybort
 
     Entry = Struct.new(:id, :subreddit, :title, :published_at, :rank, keyword_init: true)
     Page = Struct.new(:entries, :raw_entry_count, keyword_init: true)
+    DEFAULT_CLOCK = -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }
+    ACCEPT_HEADER = "application/atom+xml, application/xml"
+    USER_AGENT_MAX_BYTES = 256
+    INVALID_ARGUMENTS_MESSAGE = "invalid Reddit RSS fetch arguments"
+    SORT_OPERATIONS = { "new" => :new, "rising" => :rising, "top" => :top }.freeze
+
+    def initialize(http_client:, coordinator: RedditRssCoordinator.default, monotonic_clock: DEFAULT_CLOCK)
+      @http_client = http_client
+      @coordinator = coordinator
+      @monotonic_clock = callable(monotonic_clock, :monotonic_clock)
+    end
+
+    def fetch(sort:, subreddits:, user_agent:, deadline_monotonic:)
+      operation, deadline = validate_fetch_arguments(
+        sort: sort,
+        subreddits: subreddits,
+        user_agent: user_agent,
+        deadline_monotonic: deadline_monotonic
+      )
+      group = subreddits.join("+")
+      params = sort == "top" ? { "t" => "day", "limit" => 100 } : { "limit" => 100 }
+      url = "https://www.reddit.com/r/#{group}/#{sort}/.rss?#{URI.encode_www_form(params)}"
+      lease = @coordinator.acquire(operation: operation, deadline_monotonic: deadline)
+      begin
+        now = monotonic_now
+        request_deadline = [deadline, now + 30].min
+        ensure_before!(now, request_deadline, operation)
+        response = @http_client.get(
+          url,
+          headers: { "User-Agent" => user_agent, "Accept" => ACCEPT_HEADER },
+          timeout_seconds: request_deadline - now,
+          deadline_monotonic: request_deadline
+        )
+        status = response.status.to_i
+        metadata = RateLimitHeaders.parse(response.headers)
+        lease.observe(metadata: metadata, status: status)
+        raise_http_error(status, metadata, operation) unless status.between?(200, 299)
+
+        ensure_before!(monotonic_now, request_deadline, operation)
+        page = self.class.parse(body: response.body, subreddits: subreddits, operation: operation)
+        ensure_before!(monotonic_now, deadline, operation)
+        page
+      rescue HttpError => error
+        metadata = error.safe_metadata
+        lease.observe(metadata: metadata, status: metadata[:status])
+        raise_http_error(metadata[:status], metadata, operation)
+      rescue HttpTransportError => error
+        category = error.safe_metadata.fetch(:category)
+        category = :network unless %i[network timeout response_too_large].include?(category)
+        raise RedditRssError.new(operation: operation, category: category), cause: nil
+      ensure
+        lease.release
+      end
+    end
 
     class InvalidFeed < StandardError; end
     class InvalidEntry < StandardError; end
@@ -224,6 +278,78 @@ module Cybort
       def unsafe_controls?(value)
         value.each_codepoint.any? { |codepoint| codepoint < 0x20 || codepoint == 0x7F }
       end
+    end
+
+    private
+
+    def validate_fetch_arguments(sort:, subreddits:, user_agent:, deadline_monotonic:)
+      operation = SORT_OPERATIONS.fetch(sort) { raise ArgumentError, INVALID_ARGUMENTS_MESSAGE }
+      unless subreddits.is_a?(Array) && !subreddits.empty? &&
+             subreddits.all? { |name| name.is_a?(String) && name.valid_encoding? && SUBREDDIT_PATTERN.match?(name) } &&
+             subreddits.uniq.length == subreddits.length && subreddits == subreddits.sort
+        raise ArgumentError, INVALID_ARGUMENTS_MESSAGE
+      end
+      unless user_agent.is_a?(String) && user_agent.valid_encoding? && !user_agent.strip.empty? &&
+             user_agent.bytesize <= USER_AGENT_MAX_BYTES && !unsafe_controls?(user_agent)
+        raise ArgumentError, INVALID_ARGUMENTS_MESSAGE
+      end
+
+      deadline = Float(deadline_monotonic)
+      raise ArgumentError, INVALID_ARGUMENTS_MESSAGE unless deadline.finite?
+
+      [operation, deadline]
+    rescue ArgumentError, RangeError, TypeError
+      raise ArgumentError, INVALID_ARGUMENTS_MESSAGE
+    end
+
+    def raise_http_error(status, metadata, operation)
+      category = case status.to_i
+                 when 401, 403 then :access_denied
+                 when 429 then :rate_limited
+                 else :http
+                 end
+      retry_after_seconds = category == :rate_limited ? maximum_retry_delay(metadata) : nil
+      raise RedditRssError.new(
+        operation: operation,
+        category: category,
+        status: status,
+        retry_after_seconds: retry_after_seconds
+      ), cause: nil
+    end
+
+    def maximum_retry_delay(metadata)
+      hints = %i[retry_after_seconds ratelimit_reset_seconds].filter_map do |key|
+        value = metadata[key]
+        next unless value.is_a?(Numeric) && value.finite? && value >= 0
+
+        value.is_a?(Integer) ? value : value.ceil
+      end
+      [60, hints.max || 0].max
+    end
+
+    def ensure_before!(now, deadline, operation)
+      return if now < deadline
+
+      raise RedditRssError.new(operation: operation, category: :deadline), cause: nil
+    end
+
+    def monotonic_now
+      value = Float(@monotonic_clock.call)
+      raise ArgumentError, "monotonic clock must return a finite number" unless value.finite?
+
+      value
+    rescue ArgumentError, TypeError
+      raise ArgumentError, "monotonic clock must return a finite number"
+    end
+
+    def callable(value, name)
+      raise ArgumentError, "#{name} must be callable" unless value.respond_to?(:call)
+
+      value
+    end
+
+    def unsafe_controls?(value)
+      value.each_codepoint.any? { |codepoint| codepoint < 0x20 || codepoint == 0x7F }
     end
   end
 end

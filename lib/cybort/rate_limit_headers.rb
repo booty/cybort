@@ -1,3 +1,5 @@
+require "time"
+
 module Cybort
   module RateLimitHeaders
     RATE_HEADER_NAMES = {
@@ -12,9 +14,10 @@ module Cybort
 
     module_function
 
-    def parse(headers)
+    def parse(headers = nil, now: Time.now.utc, **inline_headers)
+      source = headers.nil? ? inline_headers : headers
       normalized = {}
-      source = headers.respond_to?(:to_h) ? headers.to_h : {}
+      source = source.respond_to?(:to_h) ? source.to_h : {}
       source.each { |key, value| normalized[key.to_s.downcase.tr("_", "-")] = value }
       parsed = {}
 
@@ -27,13 +30,21 @@ module Cybort
       end
 
       retry_after = normalized[RETRY_AFTER_HEADER] || normalized["retry-after-seconds"]
-      if retry_after.is_a?(Integer) && retry_after >= 0
-        parsed[:retry_after_seconds] = retry_after
-      elsif retry_after.is_a?(String) && retry_after.match?(INTEGER_PATTERN)
-        parsed[:retry_after_seconds] = retry_after.to_i
-      end
+      delay = retry_delay(retry_after, now: now)
+      parsed[:retry_after_seconds] = delay unless delay.nil?
 
       parsed.freeze
+    end
+
+    def retry_delay(value, now:)
+      return value if value.is_a?(Integer) && value >= 0
+      return unless value.is_a?(String) && value.valid_encoding? && value.bytesize <= 128
+      return if value.match?(/[\x00-\x1F\x7F]/)
+      return Integer(value, 10) if value.match?(INTEGER_PATTERN)
+
+      [(Time.httpdate(value).to_r - now.to_r).ceil, 0].max
+    rescue ArgumentError, RangeError, TypeError, NoMethodError
+      nil
     end
 
     def parse_nonnegative_float(value)
@@ -51,5 +62,6 @@ module Cybort
       nil
     end
     private_class_method :parse_nonnegative_float
+    private_class_method :retry_delay
   end
 end
