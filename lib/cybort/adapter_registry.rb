@@ -7,6 +7,7 @@ module Cybort
         registry.register("rss", Adapters::RSS)
         registry.register("github", Adapters::GitHub)
         registry.register("reddit", Adapters::Reddit)
+        registry.register("reddit_rss", Adapters::RedditRSS)
         registry.register("gmail", Adapters::Gmail)
       end
     end

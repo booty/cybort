@@ -66,6 +66,34 @@ successful remote fetch may remove every item it does not return.
 
 ### Reddit connector
 
+A separate public RSS-only connector is available as the experimental
+`reddit_rss` adapter. It retains bounded rank history and selects highlights
+from an explicitly observed pool—not a subreddit-wide vote percentile. See the
+[design](docs/superpowers/specs/2026-09-06-reddit-rss-design.md) and
+[plan](docs/superpowers/plans/2026-09-06-reddit-rss.md), and copy its commented
+shape from [.cybort.example.toml](.cybort.example.toml).
+
+`reddit_rss` requires only a normalized list of 1–10 public subreddit names, a
+printable identifying User-Agent, and optional four-part integer weights. It
+fetches one bounded Atom page each for `new`, `rising`, and `top`, with no OAuth,
+cookies, private messages, subscription discovery, HTML scraping, JSON
+fallback, or alternate host. A configured group is one pooled ranking universe;
+use a new instance ID when changing membership. The denominator is the
+observed local candidate pool, so results are not population-wide measurements.
+Only a complete three-feed remote success advances history and replaces the
+selected snapshot. Cache hits and failures preserve the last-known-good items
+and state; the process-local request lane's backoff is not durable across CLI
+invocations. Invoke externally at the configured TTL (for example every 15
+minutes) and honor any server retry hint.
+
+Public-feed permission, availability, exact Atom shape and `t3_` permalink
+identity, feed ordering, combined-group behavior, returned limits, and whether
+`published` reflects post creation remain live release gates. Two legitimate
+low-volume polls are also required to confirm warmup/history behavior. Keep the
+connector experimental until those checks are confirmed for the intended use;
+unauthenticated RSS is not an exemption from Reddit policies. The current
+`reddit` connector below still uses OAuth.
+
 Reddit uses the documented OAuth Data API directly. Configure an approved
 confidential OAuth application and obtain its authorization-code refresh token
 outside Cybort; Cybort does not provide an interactive login flow. The token,

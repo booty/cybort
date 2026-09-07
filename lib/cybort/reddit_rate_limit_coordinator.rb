@@ -8,7 +8,10 @@ module Cybort
     UNKNOWN_RESET_COOLDOWN_SECONDS = 60.0
     ERROR_OPERATION = :home_hot
 
-    State = Struct.new(:remaining, :reset_at, :lease_token, keyword_init: true)
+    State = Struct.new(
+      :remaining, :reset_at, :reset_observed_at, :reset_delay_seconds, :lease_token,
+      keyword_init: true
+    )
 
     class Lease
       def initialize(coordinator, key, lease_token)
@@ -79,14 +82,17 @@ module Cybort
           if state.lease_token
             wait_seconds = [deadline - now, IN_FLIGHT_WAIT_SLICE_SECONDS].min
           elsif state.remaining && state.remaining <= 0
-            state.reset_at ||= now + UNKNOWN_RESET_COOLDOWN_SECONDS
-            reset_at = state.reset_at
-            if reset_at <= now
+            state.reset_observed_at ||= now
+            state.reset_delay_seconds ||= UNKNOWN_RESET_COOLDOWN_SECONDS.to_r
+            remaining_reset = reset_remaining_seconds(state, now)
+            if remaining_reset.nil?
               state.remaining = nil
               state.reset_at = nil
+              state.reset_observed_at = nil
+              state.reset_delay_seconds = nil
               wait_seconds = nil
             else
-              wait_seconds = [deadline - now, reset_at - now].min
+              wait_seconds = [deadline - now, remaining_reset].min
             end
           end
 
@@ -120,15 +126,11 @@ module Cybort
         delays = [parsed[:ratelimit_reset_seconds], parsed[:retry_after_seconds]].compact
         if status.to_i == 429
           state.remaining = 0.0
-          state.reset_at = if delays.empty?
-                             now + UNKNOWN_RESET_COOLDOWN_SECONDS
-                           else
-                             now + delays.max
-                           end
+          set_reset_observation(state, now, delays.empty? ? UNKNOWN_RESET_COOLDOWN_SECONDS : delays.max)
         elsif !delays.empty?
-          state.reset_at = now + delays.max
+          set_reset_observation(state, now, delays.max)
         elsif state.remaining && state.remaining <= 0
-          state.reset_at = now + UNKNOWN_RESET_COOLDOWN_SECONDS
+          set_reset_observation(state, now, UNKNOWN_RESET_COOLDOWN_SECONDS)
         end
       end
     end
@@ -147,10 +149,27 @@ module Cybort
     end
 
     def reset_expired_state(state, now)
-      return unless state.reset_at && state.reset_at <= now
+      return unless state.reset_observed_at && reset_remaining_seconds(state, now).nil?
 
       state.remaining = nil
       state.reset_at = nil
+      state.reset_observed_at = nil
+      state.reset_delay_seconds = nil
+    end
+
+    def set_reset_observation(state, observed_at, delay)
+      state.reset_at = nil
+      state.reset_observed_at = observed_at
+      state.reset_delay_seconds = delay.to_r
+    end
+
+    def reset_remaining_seconds(state, now)
+      return unless state.reset_observed_at && state.reset_delay_seconds
+
+      elapsed = now.to_r - state.reset_observed_at.to_r
+      return if elapsed >= state.reset_delay_seconds
+
+      state.reset_delay_seconds - elapsed
     end
 
     def parse_metadata(metadata)
@@ -189,11 +208,11 @@ module Cybort
     end
 
     def normalize_deadline(value)
-      deadline = Float(value)
-      raise ArgumentError, "deadline_monotonic must be finite" unless deadline.finite?
+      deadline = value.is_a?(Numeric) ? value : Float(value)
+      raise ArgumentError, "deadline_monotonic must be finite" unless deadline.respond_to?(:finite?) && deadline.finite?
 
       deadline
-    rescue ArgumentError, TypeError
+    rescue ArgumentError, RangeError, TypeError
       raise ArgumentError, "deadline_monotonic must be finite"
     end
 
@@ -207,11 +226,12 @@ module Cybort
     end
 
     def monotonic_now
-      value = Float(@clock.call)
-      raise ArgumentError, "clock must return a finite number" unless value.finite?
+      value = @clock.call
+      value = Float(value) unless value.is_a?(Numeric)
+      raise ArgumentError, "clock must return a finite number" unless value.respond_to?(:finite?) && value.finite?
 
       value
-    rescue ArgumentError, TypeError
+    rescue ArgumentError, RangeError, TypeError
       raise ArgumentError, "clock must return a finite number"
     end
 

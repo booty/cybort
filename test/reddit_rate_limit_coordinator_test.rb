@@ -15,6 +15,10 @@ class RedditRateLimitCoordinatorTest < Minitest::Test
     def advance(seconds)
       @now += seconds
     end
+
+    def now=(value)
+      @now = value
+    end
   end
 
   class FakeSleeper
@@ -87,6 +91,20 @@ class RedditRateLimitCoordinatorTest < Minitest::Test
     released = @coordinator.acquire(key: key, deadline_monotonic: 20.0)
     assert_equal 7.0, @clock.now
     released.release
+  end
+
+  def test_arbitrary_precision_retry_after_expires_without_float_overflow
+    key = @coordinator.key_for("same")
+    huge_delay = 10**400
+    lease = @coordinator.acquire(key: key, deadline_monotonic: 20.0)
+    lease.observe(metadata: { retry_after_seconds: huge_delay }, status: 429)
+    lease.release
+
+    @clock.now = huge_delay
+    recovered = @coordinator.acquire(key: key, deadline_monotonic: huge_delay + 1)
+
+    assert recovered
+    recovered.release
   end
 
   def test_unknown_429_uses_a_bounded_fallback_and_recovers

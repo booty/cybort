@@ -46,7 +46,18 @@ invariants and workflow rules here, not session-by-session narration.
   execute or depend on `gws` or `gcloud`. Gmail remains experimental until a
   real authenticated smoke test verifies the token/list/get contract, granted
   scope, metadata shape, cache behavior, and unchanged read/unread labels.
-  Reddit uses documented OAuth Data API endpoints only: subscriptions plus a
+  `reddit_rss` is a separate, registered experimental public Atom-feed adapter:
+  it fetches only fixed `new`, `rising`, and `top?t=day` feeds for a configured
+  public subreddit group, uses no OAuth/cookies/private-feed keys/HTML
+  scraping/JSON fallback, and retains bounded observed-pool rank state plus
+  body-free selected items. Complete three-feed successes atomically replace
+  that instance's selected snapshot and advance bounded state; cache hits and
+  failures leave the prior selected set and state intact. Its denominator is
+  the observed local candidate pool, not a population-wide percentile, and a
+  real public RSS smoke test remains required for permission, availability,
+  feed shape, publication-time meaning, returned ordering, combined-group
+  behavior, and limits before unattended use. The separate `reddit` adapter
+  uses documented OAuth Data API endpoints only: subscriptions plus a
   bounded personalized `/hot` sample, explicit single-subreddit `/r/<name>/hot`
   calls, and the legacy unread-message listing. Reddit Chat is unsupported by
   the documented read surface. Reddit complete remote successes opt into the

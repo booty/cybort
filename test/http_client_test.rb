@@ -129,6 +129,25 @@ class HttpClientTest < Minitest::Test
     assert_includes error.message, "503"
   end
 
+  def test_429_safe_metadata_contains_numeric_retry_hint_but_not_response_body
+    transport = ExtendedTransport.new(
+      Response.new(
+        status: 429,
+        headers: { "Retry-After" => "17", "X-Secret" => "private-header" },
+        body: "private body"
+      )
+    )
+    client = Cybort::HttpClient.new(transport: transport)
+
+    error = assert_raises(Cybort::HttpError) do
+      client.get("https://example.test/feed")
+    end
+
+    assert_equal 17, error.safe_metadata.fetch(:retry_after_seconds)
+    refute_includes error.message, "private body"
+    refute_includes error.safe_metadata.to_s, "private-header"
+  end
+
   def test_posts_form_with_a_per_call_timeout_without_putting_form_values_in_url
     transport = ExtendedTransport.new(Response.new(status: 200, headers: {}, body: "token"))
     client = Cybort::HttpClient.new(transport: transport)

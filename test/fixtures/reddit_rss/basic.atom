@@ -1,0 +1,19 @@
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <id>https://www.reddit.com/r/ruby/</id>
+  <title>Fixture</title>
+  <updated>2026-09-06T12:00:00Z</updated>
+  <entry>
+    <id>t3_abc</id>
+    <title>Release notes</title>
+    <published>2026-09-06T11:00:00Z</published>
+    <updated>2026-09-06T12:00:00Z</updated>
+    <link rel="alternate" href="https://www.reddit.com/r/ruby/comments/abc/release-notes/"/>
+  </entry>
+  <entry>
+    <id>t3_def</id>
+    <title>Another release</title>
+    <published>2026-09-06T10:00:00Z</published>
+    <updated>2026-09-06T12:00:00Z</updated>
+    <link rel="alternate" href="https://www.reddit.com/r/ruby/comments/def/another-release/"/>
+  </entry>
+</feed>
