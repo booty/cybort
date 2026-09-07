@@ -240,7 +240,7 @@ module Cybort
       normalized.freeze
     end
 
-    def bounded_walk!(value, depth = 0, seen = {})
+    def bounded_walk!(value, depth = 0, seen = {}, path = [])
       raise InvalidState if depth > MAX_DEPTH
       case value
       when Hash
@@ -251,7 +251,7 @@ module Cybort
         logical_keys = {}
         value.each_pair do |key, child|
           count += 1
-          raise InvalidState if count > MAX_COLLECTION_LENGTH
+          raise InvalidState if count > collection_limit(path, :hash)
           unless key.is_a?(String) || key.is_a?(Symbol)
             raise InvalidState
           end
@@ -260,15 +260,19 @@ module Cybort
 
           logical_keys[key_string] = true
           bounded_scalar!(key_string)
-          bounded_walk!(child, depth + 1, seen)
+          path << key_string
+          bounded_walk!(child, depth + 1, seen, path)
+          path.pop
         end
         seen.delete(value.object_id)
       when Array
         raise InvalidState if seen[value.object_id]
 
         seen[value.object_id] = true
-        raise InvalidState if value.length > MAX_COLLECTION_LENGTH
-        value.each { |child| bounded_walk!(child, depth + 1, seen) }
+        raise InvalidState if value.length > collection_limit(path, :array)
+        value.each do |child|
+          bounded_walk!(child, depth + 1, seen, path)
+        end
         seen.delete(value.object_id)
       when String
         bounded_scalar!(value)
@@ -278,6 +282,19 @@ module Cybort
         raise InvalidState
       end
       true
+    end
+
+    def collection_limit(path, kind)
+      return MAX_POLLS if kind == :array && path.last == "polls"
+
+      case path.last
+      when "candidates"
+        MAX_CANDIDATES
+      when "top_ranks", "rising_ranks"
+        MAX_RANKS
+      else
+        MAX_COLLECTION_LENGTH
+      end
     end
 
     def bounded_scalar!(value)

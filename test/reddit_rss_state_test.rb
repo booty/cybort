@@ -224,4 +224,29 @@ class RedditRssStateTest < Minitest::Test
       Cybort::RedditRssState.new(raw: huge, subreddits: @subreddits, weights: WEIGHTS)
     end
   end
+
+  def test_state_rejects_oversized_poll_and_rank_collections
+    now = Time.utc(2026, 9, 6, 12)
+    first = state.advance(pages: pages, now: now)
+    too_many_polls = JSON.parse(JSON.generate(first.state))
+    too_many_polls["polls"] = 5.times.map do |index|
+      {
+        "at" => (now + index + 1).iso8601(6), "top_count" => 0, "rising_count" => 0,
+        "top_ranks" => {}, "rising_ranks" => {}
+      }
+    end
+    assert_raises(Cybort::RedditRssError) do
+      state(raw: too_many_polls)
+    end
+
+    too_many_ranks = JSON.parse(JSON.generate(first.state))
+    too_many_ranks["polls"] = [{
+      "at" => (now + 1).iso8601(6), "top_count" => 100, "rising_count" => 0,
+      "top_ranks" => 101.times.to_h { |index| ["t3_#{(index + 1).to_s(36)}", index + 1] },
+      "rising_ranks" => {}
+    }]
+    assert_raises(Cybort::RedditRssError) do
+      state(raw: too_many_ranks)
+    end
+  end
 end
