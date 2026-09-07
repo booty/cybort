@@ -229,6 +229,30 @@ class RedditRssAdapterTest < Minitest::Test
     assert gate.leases.all? { |_, _, lease| lease.released }
   end
 
+  def test_deadline_expiry_during_item_materialization_fails_without_replacement
+    http = RecordingHttp.new(bodies: valid_bodies)
+    gate = RecordingGate.new
+    original_item_new = Cybort::Item.method(:new)
+    advance_monotonic = -> { @monotonic = 281.0 }
+    Cybort::Item.define_singleton_method(:new) do |**attributes|
+      item = original_item_new.call(**attributes)
+      advance_monotonic.call
+      item
+    end
+
+    result = adapter(http_client: http, coordinator: gate).fetch(
+      fetch_mode: :remote, planned_at: @now
+    )
+
+    refute result.success?
+    assert_equal :deadline, result.metadata.fetch(:category)
+    refute result.replace_existing_items
+    assert_empty result.items
+    assert_nil result.sync_state
+  ensure
+    Cybort::Item.singleton_class.send(:remove_method, :new)
+  end
+
   def test_failure_in_third_feed_returns_no_partial_items_or_state
     bodies = valid_bodies
     http = RecordingHttp.new(bodies: [bodies.first, bodies[1], "<html>feed failed sentinel</html>"])

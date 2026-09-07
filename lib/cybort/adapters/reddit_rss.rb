@@ -74,10 +74,11 @@ module Cybort
           now: fetched_at,
           limit: instance.num_items_to_fetch
         )
+        items = selection.fetch(:selected).map { |row| item_from(row, fetched_at) }
         ensure_attempt!(deadline, :selection)
 
         {
-          items: selection.fetch(:selected).map { |row| item_from(row, fetched_at) },
+          items: items,
           sync_state: transition.state,
           metadata: selection.fetch(:metadata),
           replace_existing_items: true
