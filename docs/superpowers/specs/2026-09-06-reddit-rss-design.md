@@ -70,7 +70,10 @@ assigns no ranking meaning to entry order. Therefore both treating `published`
 as Reddit creation time and treating returned order as Reddit ranking require
 a Reddit-specific live check. `updated` is never substituted for `published`.
 [Ruby RSS][ruby-rss] already supports Atom; use its object model, not a custom
-XML parser. Context7 `/ruby/rss` was consulted for parser/entry interfaces.
+XML parser. Its existing REXML dependency is also used for a small namespace
+and structural preflight because `RSS::Parser.parse(StringIO, false)` can
+force-bind foreign XML namespaces while extracting entries. Context7
+`/ruby/rss` was consulted for parser/entry interfaces.
 
 ## Scope and configuration
 
@@ -102,6 +105,11 @@ user_agent = "macos:com.example.cybort:v0.1.0 (by /u/your_username)"
 - `activity_weights`: optional exact four-key table above, integers 0–1000,
   sum exactly 1000, and `top + rising > 0`. String-key/symbol-key normalization
   is explicit. Unknown or mixed duplicate keys fail static validation.
+- The only three allowed source-option keys are `subreddits`, `user_agent`, and
+  `activity_weights`. Reject unknown keys and reject a duplicate logical key
+  supplied once as a String and once as a Symbol, even when the values match.
+  Apply the same duplicate-key rule inside `activity_weights` before any
+  normalization or copying.
 - Reject credential, token, cookie, arbitrary `url`, and unknown source-specific
   options. No automatic subscription discovery or private RSS token feeds.
 - Fixed V2 constants: feed limit 100; target fraction 1/10; eligibility window
@@ -162,16 +170,29 @@ Always release a lease in `ensure`. Do not hold the mutex during HTTP.
 On HTTP 429, stop this attempt immediately. Honor valid `Retry-After` (seconds
 or HTTP date) and `X-Ratelimit-Reset` as delay hints; use their maximum with a
 60-second fallback minimum, and share the resulting monotonic cooldown with
-other RSS instances. An exhausted `X-Ratelimit-Remaining` also closes the lane
-until reset or the fallback. Other attempts encountering an active cooldown
-fail safely without waiting out or retrying the throttle. Fixed-host 401/403
-are access-denied failures, not prompts to try another access method.
+other RSS instances. Do not cap a valid server delay downwards: an earlier
+request would violate the server's explicit hint. Retry-After text is limited
+to 128 bytes; decimal values remain nonnegative arbitrary-precision integers,
+and HTTP-date subtraction uses exact `Time#to_r`/Rational arithmetic without
+converting a huge hint through a float. The coordinator stores an observation
+time plus the integer delay and compares exact rational elapsed time to the
+delay, rather than adding a far-future delay to a monotonic clock. An active
+cooldown fails immediately and does not allocate or sleep for the requested
+delay. This honors large finite hints while keeping arithmetic safe. An
+exhausted `X-Ratelimit-Remaining` also closes the
+lane until reset or the fallback. Other attempts encountering an active
+cooldown fail safely without waiting out or retrying the throttle. Fixed-host
+401/403 are access-denied failures, not prompts to try another access method.
 
 The shared `RateLimitHeaders` currently supports only numeric Retry-After.
 Extend it with optional `now: Time.now.utc` and bounded HTTP-date parsing,
-returning only a nonnegative integer delay. This preserves the safe HttpError
-boundary without retaining raw headers; update its old date-rejection test.
-Other HTTP exception contracts and OAuth coordination behavior remain intact.
+returning only a nonnegative integer delay. A 128-byte raw-text bound and
+checked `Integer`/`Time.httpdate` parsing (with `Time#to_r` for exact date
+subtraction) rejects malformed or non-finite input;
+they are not a downward cap on a valid server delay. This preserves the safe
+HttpError boundary without retaining raw headers; update its old date-rejection
+test and add huge numeric and far-future date cases. Other HTTP exception
+contracts and OAuth coordination behavior remain intact.
 
 The gate is process-local, **not durable across CLI invocations or shared with
 other programs on the IP**. Emit a safe remaining `retry_after_seconds` hint;
@@ -198,10 +219,29 @@ clear selected items; HTML error pages and missing feeds are not empty success.
 Parse an in-memory `StringIO` containing validated UTF-8 XML; never pass a URL
 or potentially path-like raw string to the RSS parser. Reject DTD/entity
 declarations before parsing; accept built-in XML entity escapes. Require an
-`RSS::Atom::Feed`, not generic RSS/RDF or a standalone entry. Ignore HTML
-content, author, media, and all remote resource references; never dereference
-anything discovered in XML. Require plain-text Atom titles (`text` or omitted
-type), nonblank and at most 2,048 UTF-8 bytes, with C0/DEL rejected.
+`RSS::Atom::Feed`, not generic RSS/RDF or a standalone entry. Before that RSS
+extraction, parse the same bounded XML with existing `REXML::Document` and
+inspect `REXML::Element#name`, `#namespace`, and child `#elements`: the root
+must be `feed` in the exact Atom namespace URI
+`http://www.w3.org/2005/Atom`; direct feed structural children `entry`, `id`,
+`title`, and `updated`, when present, must use that URI; and each of the first
+100 Atom `entry` children must have Atom-namespace `id`, `title`, and
+`published` children, with optional `updated` and `link` children also required
+to be Atom-namespace. The required entry children and optional singleton
+`updated` child must be unique when present; present root metadata is also
+singleton, while root metadata itself is optional and is not required solely
+for preflight. A foreign-namespace
+element with one of those structural local names is an invalid feed, not an
+extension to ignore. Default and prefixed bindings are both accepted only when
+`REXML::Element#namespace` resolves them to the exact URI; unbound or foreign
+root/child/prefix bindings fail. Extension elements and content descendants are
+ignored after this structural check. Only the first 100 entries then proceed to
+RSS normalization, preserving the raw-prefix semantics below. No manual regex
+namespace parser is used.
+
+Ignore HTML content, author, media, and all remote resource references; never
+dereference anything discovered in XML. Require plain-text Atom titles (`text`
+or omitted type), nonblank and at most 2,048 UTF-8 bytes, with C0/DEL rejected.
 
 Inspect only the first 100 entries in returned document order. `N` is this raw
 prefix length, including duplicates and age-ineligible entries. Each retained
@@ -232,7 +272,7 @@ assumption; otherwise the advertised 24-hour creation rule is unsupported.
 
 ## Bounded state and continuity
 
-Sync state is a string-keyed JSON Hash with this exact envelope:
+Sync state is stored as a string-keyed JSON Hash with this exact envelope:
 
 ```text
 version: 1
@@ -243,6 +283,23 @@ last_truncated_at: UTC ISO8601(6) or null
 candidates: { "t3_id": {subreddit, title, published_at, first_seen_at, last_seen_at} }
 polls: [{at, top_count, rising_count, top_ranks: {id: rank}, rising_ranks: {id: rank}}]
 ```
+
+Storage continues to emit string-key JSON through `JSON.generate`, while the
+existing `Persistence#parse_json` boundary returns symbolized keys recursively.
+`RedditRssState.new` therefore accepts either String or Symbol keys at every
+state level. Before creating an owned copy, it walks the input structure with
+the schema's collection, depth, scalar-byte, timestamp, and rank bounds; an
+unknown type, oversized collection/scalar, or duplicate logical key (one String
+and one Symbol spelling the same key) fails with `invalid_state`. It then
+canonicalizes keys recursively to Strings and validates the canonical copy.
+This is a state-boundary change only: persistence schema and persistence writes
+do not change, and no unbounded input is copied merely to discover that it is
+too large.
+
+`RedditRssState::Transition` is nested in `RedditRssState` and is the only
+Transition constant. It carries the owned state and prior-observation signals;
+there is no top-level `Cybort::Transition`. Tests exercise transition behavior
+and immutability rather than asserting a constant exists in isolation.
 
 Canonical URLs derive from keys/subreddits. No author/body/raw XML/response is
 stored. Candidates include the union of valid entries from all feeds, plus
@@ -376,6 +433,17 @@ statistical calibration. Availability, ordering, or timestamp failure keeps
 the connector experimental and may require a revised design, not a hidden
 fallback. Ranking quality needs later human evaluation; tests only prove the
 chosen heuristic is implemented deterministically.
+
+The offline persistence regression must exercise a real two-poll SQLite
+roundtrip: persist one complete poll, call `context_for`, feed its recursively
+symbolized state into the second poll, persist that result, and call
+`context_for` again. It must prove that state history advances to two polls and
+that storage remains string-key JSON without a persistence-code change.
+
+The parser fixture matrix explicitly includes a foreign-namespace root, a
+foreign structural child, valid default-namespace and prefixed-namespace Atom,
+and malformed `published` values. DTD/entity rejection occurs before either
+REXML or RSS extraction.
 
 [reddit-rss]: https://www.reddit.com/r/reddit.com/wiki/rss/
 [policy]: https://support.reddithelp.com/hc/en-us/articles/42728983564564-Responsible-Builder-Policy

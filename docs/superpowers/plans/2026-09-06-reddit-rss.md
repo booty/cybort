@@ -23,6 +23,7 @@
 - Require Atom publication time and canonical post identity. Never store bodies, authors, raw XML, User-Agent, or raw error data.
 - State and selected snapshot commit together only after complete success. Cache/failure paths neither advance history nor prune/replace anything. No schema changes or adapter SQL.
 - No polling service or durable backoff scheduler. External invocation must respect the documented retry hint; process-local pacing is not cross-process rate compliance.
+- Valid server Retry-After hints are honored without a downward cap. Raw hint text is at most 128 bytes; parsing and elapsed-delay comparisons use finite safe arithmetic, active cooldowns fail immediately without allocating or sleeping the requested delay, and no durable backoff is claimed.
 - Live feed access, permission, rank order, and creation-time semantics are unverified release gates. Never bypass denial. Keep the connector experimental until verified.
 
 ## Execution boundary and branch context
@@ -33,11 +34,39 @@ reimplement or revert it when integrating branches. README, ADR index, registry,
 requires, and system tests may need ordinary merge conflict resolution.
 
 The user waived design approval checkpoints, not the distinction between a
-plan and implemented code. Do not execute this plan until implementation is
-requested. During this planning task inspect tests but do not run tests,
-linters, builds, or dependency installation. During implementation follow the
-then-current AGENTS delegation rules, with explicit user overrides taking
-precedence. Use Minitest commands below, not RSpec. Root performs plan self-review.
+plan and implemented code. This documentation revision does not execute the
+plan. For the subsequent implementation, the user authorizes Luna at xhigh to
+perform all implementation work and tests, with an independent review and a
+commit plus push for every task. Sol at high performs the final whole-branch
+review. Do not merge to `main` or change live accounts/configuration. During
+this planning task inspect tests but do not run tests, linters, builds, or
+dependency installation. Use Minitest commands below, not RSpec.
+
+## Independent review decision record (2026-09-07)
+
+- **Ruling — namespace preflight:** Use REXML's parsed element names and
+  namespace URIs before RSS extraction; accept valid default/prefixed Atom and
+  reject foreign structural root/children while retaining the first-100 RSS
+  normalization boundary. **Cost if wrong:** foreign XML could be interpreted
+  as Atom entries, or valid prefixed feeds could be rejected in production.
+- **Ruling — state JSON boundary:** Keep string-key JSON storage and existing
+  recursive symbolizing `Persistence#parse_json`; canonicalize String/Symbol
+  state keys recursively with duplicate-collision rejection and validate bounds
+  before taking owned copies. **Cost if wrong:** a two-poll cache roundtrip could
+  lose history, accept ambiguous state, or copy an attacker-sized structure.
+- **Ruling — transition interface:** Keep `RedditRssState::Transition` nested;
+  tests must prove transition behavior and immutability, not a constant-only
+  assertion. **Cost if wrong:** callers could bind to an accidental top-level
+  API that later collides with another adapter.
+- **Ruling — option key count:** Task 5 names exactly three source-option keys;
+  the four names belong only to the nested activity-weight table. Reject
+  String/Symbol duplicates in both maps. **Cost if wrong:** configuration could
+  silently drop an option or weight during normalization.
+- **Ruling — server delay hints:** Do not cap valid Retry-After downward; bound
+  raw text at 128 bytes, use finite safe arithmetic, and fail active cooldowns
+  immediately without sleeping or allocating the requested delay. **Cost if
+  wrong:** a cap could permit a request before Reddit's explicit server hint,
+  while unsafe arithmetic could overflow or stall the process.
 
 Each implementation task ends with covering tests, spec/code review, then a
 scoped commit. Push only when authorized for that execution task. Do not commit
@@ -80,11 +109,11 @@ RedditRssCoordinator.new(clock:, sleeper:)
 # #acquire(operation:, deadline_monotonic:) => Lease
 # Lease#observe(metadata:, status:), Lease#release (idempotent)
 
-RedditRssState.new(raw:, subreddits:, weights:) # validates, copies or initializes
+RedditRssState.new(raw:, subreddits:, weights:) # validates, canonicalizes, copies or initializes
 # #advance(pages:, now:) => Transition
 # pages is {"new" => Page, "rising" => Page, "top" => Page}
-Transition = Struct.new(:state, :previous_poll, :previous_candidate_ids,
-                        :flags, :future_exclusion_count, keyword_init: true)
+# RedditRssState::Transition = Struct.new(:state, :previous_poll,
+#   :previous_candidate_ids, :flags, :future_exclusion_count, keyword_init: true)
 # previous_poll is nil on cold/reset; previous_candidate_ids is a frozen Array.
 
 RedditRssActivity.select(transition:, pages:, weights:, now:, limit:)
@@ -92,8 +121,9 @@ RedditRssActivity.select(transition:, pages:, weights:, now:, limit:)
 # row = {id:, subreddit:, title:, published_at: Time, priority:, info: Hash}
 ```
 
-`Transition` is nested in `RedditRssState`; do not create a second top-level
-constant. `weights` is a normalized string-keyed Hash in the fixed order
+`RedditRssState::Transition` is nested in `RedditRssState`; do not create a
+second top-level constant or a constant-only test. `weights` is a normalized
+string-keyed Hash in the fixed order
 `top`, `rising`, `momentum`, `persistence`. Returned state contains only JSON
 scalars/collections; no Time, Struct, Symbol, Set, or client object is serialized.
 
@@ -144,10 +174,12 @@ the adapter yet.
   end
   ```
 
-  Adversarial fixture table: no `published` but recent `updated`; invalid date;
-  missing/foreign Atom namespace; HTML error document; malformed XML; DTD and
-  internal/external entity declarations; `content src` and author sentinels
-  ignored without any request; wrong `t3_` identity; comment instead of post
+  Adversarial fixture table: no `published` but recent `updated`; malformed
+  `published` date; missing/foreign Atom namespace; foreign structural root or
+  child namespace; valid prefixed Atom root/children; HTML error document;
+  malformed XML; DTD and internal/external entity declarations; `content src`
+  and author sentinels ignored without any request; wrong `t3_` identity;
+  comment instead of post
   path; query/fragment/userinfo/port/protocol-relative URL; encoded separators,
   bad percent escape, `..`; foreign subreddit; empty/control/oversized title;
   typed HTML/XHTML title; conflicting duplicate ID/date/subreddit; entry 101
@@ -172,9 +204,11 @@ the adapter yet.
       raise RedditRssError.new(operation: operation, category: :response_too_large), cause: nil
     end
     xml = body.dup.force_encoding(Encoding::UTF_8)
+    # Reject DTD/entity declarations before either XML parser sees the body.
     unless xml.valid_encoding? && !xml.match?(/<!DOCTYPE|<!ENTITY/i)
       raise RedditRssError.new(operation: operation, category: :invalid_feed), cause: nil
     end
+    validate_atom_structure!(StringIO.new(xml), operation: operation)
     feed = ::RSS::Parser.parse(StringIO.new(xml), false)
     unless feed.is_a?(::RSS::Atom::Feed)
       raise RedditRssError.new(operation: operation, category: :invalid_feed), cause: nil
@@ -192,10 +226,27 @@ the adapter yet.
       records[record.id] ||= record
     end
     Page.new(entries: records.values.freeze, raw_entry_count: prefix.length).freeze
-  rescue ::RSS::Error, ArgumentError, EncodingError
+  rescue ::RSS::Error, REXML::ParseException, REXML::UndefinedNamespaceException,
+         ArgumentError, EncodingError
     raise RedditRssError.new(operation: operation, category: :invalid_feed), cause: nil
   end
   ```
+
+  Require the existing `rexml/document` and implement
+  `validate_atom_structure!` with the `REXML::Document` API,
+  not a namespace regex. Parse the bounded `StringIO` once, require
+  `root.name == "feed" && root.namespace == ATOM_NAMESPACE`, then inspect
+  direct children through `root.elements.to_a`. When present, feed structural
+  `id`, `title`, and `updated` children must be unique and Atom-namespace, and
+  all `entry` children must be Atom-namespace; root metadata is optional and
+  is not required solely for preflight. For only the first 100 entries, require
+  unique Atom-namespace `id`, `title`, and `published`, an optional unique
+  Atom-namespace `updated`, and Atom-namespace `link` children. A child with a
+  structural local name in a foreign namespace is an invalid feed. Accept
+  default or prefixed bindings only when
+  `element.namespace` resolves to the exact Atom URI; ignore extension/content
+  descendants after the structural check. Rescue REXML parse/namespace errors
+  into the same content-free `invalid_feed` result before calling RSS.
 
   Define private `.normalize_entry(entry, rank:, subreddits:, operation:)`:
   unwrap `.content` for id/title/published; require plain-text title and spec
@@ -239,11 +290,15 @@ parser/tests; `lib/cybort.rb`; `test/http_client_test.rb` regression if needed.
   end
   ```
 
-  Add HTTP-date past => zero, malformed/control/over-128-byte => omitted;
-  existing numeric/canonical metadata/casing tests unchanged. Replace the old
-  test specifically expecting all HTTP dates to be omitted. Exercise a real
-  HttpClient with injected 429 response/body to verify numeric safe metadata
-  reaches the coordinator and raw data never reaches the error.
+  Add HTTP-date past => zero, malformed/control/over-128-byte => omitted,
+  one 128-byte huge numeric value retained without downward capping, and a
+  far-future HTTP-date retained as a finite delay. Existing numeric/canonical
+  metadata/casing tests remain unchanged. Replace the old test specifically
+  expecting all HTTP dates to be omitted. Exercise a real HttpClient with
+  injected 429 response/body to verify numeric safe metadata reaches the
+  coordinator and raw data never reaches the error. With a huge hint, assert
+  the coordinator fails a second acquire immediately and does not ask the
+  sleeper to wait for the server-requested delay.
 
 - [ ] **Step 2: Run the focused files red.**
   `bundle exec ruby -Itest test/reddit_rss_coordinator_test.rb`, client tests,
@@ -277,8 +332,8 @@ parser/tests; `lib/cybort.rb`; `test/http_client_test.rb` regression if needed.
     return value if value.is_a?(Integer) && value >= 0
     return unless value.is_a?(String) && value.valid_encoding? && value.bytesize <= 128
     return if value.match?(/[\x00-\x1F\x7F]/)
-    return value.to_i if value.match?(/\A\d+\z/)
-    [(Time.httpdate(value) - now).ceil, 0].max
+    return Integer(value, 10) if value.match?(/\A\d+\z/)
+    [(Time.httpdate(value).to_r - now.to_r).ceil, 0].max
   rescue ArgumentError, RangeError
     nil
   end
@@ -291,17 +346,23 @@ parser/tests; `lib/cybort.rb`; `test/http_client_test.rb` regression if needed.
 
 - [ ] **Step 4: Implement the coordinator as a bounded single-lane state machine.**
   Fields: mutex, active lease token or nil, next-allowed monotonic time,
-  cooldown-until monotonic time, injected clock/sleeper. `.default` returns
+  cooldown observation time plus integer delay, injected clock/sleeper. `.default` returns
   one eagerly assigned instance after class definition; no per-account keys.
   `acquire` loops: under mutex read time once; deadline reached => deadline
-  error; cooldown active => rate_limited with remaining seconds; if lane free
-  and spacing satisfied, assign unique Object token and return Lease. Otherwise
-  compute `min(remaining_deadline, active ? 0.05 : next_allowed-now)`, unlock,
-  sleep positive duration, repeat. Observe/reset/release require matching token.
+  error; cooldown active => rate_limited with remaining seconds immediately (no
+  sleep/allocation of the requested server delay); if lane free and spacing
+  satisfied, assign unique Object token and return Lease. Otherwise compute
+  `min(remaining_deadline, active ? 0.05 : next_allowed-now)`, unlock, sleep
+  positive duration, repeat. For cooldown checks compute
+  `(now.to_r - observed_at.to_r)` and compare the Rational directly with the
+  integer delay; compute remaining as `(delay - elapsed).ceil`. Never convert a
+  huge delay through Float or add it to a monotonic clock. Observe/reset/release
+  require matching token.
 
   `Lease#observe` accepts safe numeric metadata and status. For 429 or remaining
-  <=0, set cooldown to `now + max(60, retry_after_seconds, reset_seconds)` using
-  finite nonnegative hints only. No sleeping or retrying in observe. On release,
+  <=0, record the maximum of the finite nonnegative server hints and 60 seconds
+  as the cooldown delay without capping a valid hint downward. No sleeping or
+  retrying occurs in observe. On release,
   clear token and set next-allowed to current monotonic time +2; repeat release
   is a no-op. Unexpected sleeper errors become safe deadline errors, not raw
   content. Waits and HTTP must never occur while the mutex is held.
@@ -340,7 +401,10 @@ parser/tests; `lib/cybort.rb`; `test/http_client_test.rb` regression if needed.
 
   Define `ensure_before!(now, deadline, operation)` as strict `<` else safe
   deadline error. Define `raise_http_error`: 401/403 => access_denied; 429 =>
-  rate_limited with safe maximum delay/fallback60; other statuses => http.
+  rate_limited with the finite nonnegative maximum server delay or fallback60
+  (never a downward cap); other statuses => http. Keep huge integer hints as
+  integers in safe metadata and let the coordinator's elapsed-delay comparison
+  handle them without adding them to a monotonic Float.
   Never include HttpError inspection or raw headers. The public `#fetch` also
   validates sort, sorted group names, and printable User-Agent before building
   a URL; invalid programmer inputs yield static ArgumentError, not KeyError
@@ -362,8 +426,9 @@ parser/tests; `lib/cybort.rb`; `test/http_client_test.rb` regression if needed.
   conflicts, first/last seen, four-snapshot rolling cap, cold state, fingerprint
   change, outage >3600 versus exactly3600, non-increasing clock, future skew,
   age boundaries, deterministic 2001-to-2000 eviction, serialized-size bounds,
-  corrupt/unknown-version state and immutable input. Build entries with Task1
-  structs, not HTTP or RSS parser coupling.
+  corrupt/unknown-version state, recursively symbolized state, mixed
+  String/Symbol duplicate-key rejection, and immutable input. Build entries
+  with Task1 structs, not HTTP or RSS parser coupling.
 
   ```ruby
   def test_state_keeps_non_selected_discovery_candidates
@@ -391,8 +456,13 @@ parser/tests; `lib/cybort.rb`; `test/http_client_test.rb` regression if needed.
   ISO8601(6), parsed using Time.iso8601 and checked by roundtrip; record strings
   follow the same identity/title syntax as parsed Entries. Check current group
   membership only after matching the fingerprint, so valid old-group state can
-  reset rather than failing before reset. Allow only
-  string keys. Publication may precede observation; require first_seen<=last_seen
+  reset rather than failing before reset. Accept String or Symbol keys at every
+  level because Persistence#parse_json recursively symbolises stored JSON, but
+  reject a duplicate logical key when both spellings occur. Walk the original
+  structure first, validating scalar byte limits, collection lengths, nesting,
+  timestamp syntax, and rank/count bounds before creating any owned copy.
+  Canonicalize keys recursively to Strings only after that bounded pass.
+  Publication may precede observation; require first_seen<=last_seen
   and increasing snapshot times. Rank map IDs need canonical syntax but need
   not remain in candidates; each rank Integer1..count, each count Integer0..100,
   map length<=count, no duplicate ranks. Fingerprint is lowercase64hex.
@@ -400,11 +470,13 @@ parser/tests; `lib/cybort.rb`; `test/http_client_test.rb` regression if needed.
   old scoring version/fingerprint triggers reset after validation, not partial
   reuse. Unknown schema versions fail rather than guessing a migration.
 
-  Use a single JSON serialize/parse copy boundary after structural validation,
-  catching generator/parser/encoding failures as safe `invalid_state`.
-  Oversize maps/arrays are rejected before serialization. Bound every text
-  field before serializing; do not build arbitrarily large copies to test size.
-  No state dumping in errors. All mutation thereafter is on owned copies.
+  Serialize only the bounded canonical copy to confirm JSON-safe output and
+  final byte size, catching generator/parser/encoding failures as safe
+  `invalid_state`. Oversize maps/arrays are rejected before serialization and
+  before the owned copy. No state dumping in errors. All mutation thereafter is
+  on owned copies. The constructor returns the nested
+  `RedditRssState::Transition` from `advance`; do not define or test a separate
+  top-level Transition constant.
 
 - [ ] **Step 4: Implement the transition in this exact order.**
 
@@ -531,7 +603,9 @@ section. Keep historical OAuth section intact.
 - [ ] **Step 1: Write configuration, cache, and adapter failures red.**
   Validate name counts/types/control/path injection, User-Agent max256/format,
   integer limits1/100 valid0/101 invalid, weights exact keys/types/sum,
-  unknown/credential source options rejected. No I/O in static validation.
+  unknown/credential source options rejected, and String/Symbol duplicate keys
+  rejected in both the source-option map and nested weight map. No I/O in static
+  validation.
   Fresh cache must work with an HTTP/gate object that raises if touched.
   Missing state initializes only on remote fetch; cache does not manufacture
   observations. Full parser/client path uses recording fake + injected gate.
@@ -541,7 +615,7 @@ section. Keep historical OAuth section intact.
 
 - [ ] **Step 3: Implement adapter configuration and composition.**
   Normalize only source options (common fields already live on Instance),
-  accepting the four allowed keys `subreddits`, `user_agent`,
+  accepting exactly the three allowed keys `subreddits`, `user_agent`, and
   `activity_weights`, plus no others. Validate with static messages that do not
   echo inputs. Normalize group sorted/downcased/unique after validating all
   original entries (raw array length1..10); normalize weight keys without
@@ -609,6 +683,14 @@ section. Keep historical OAuth section intact.
   Seed nontrivial state, write replacement with changed state, inject failure,
   then compare both `context_for[:sync_state]` and item IDs to prior values.
   This extends tests, not persistence code.
+
+  Add a real two-poll persistence roundtrip: write the first complete poll to
+  SQLite, read `context_for(instance_id:)` (whose `sync_state` keys are
+  recursively symbolized), pass that state into the second adapter poll, write
+  it, and read `context_for` again. Assert the second stored state has two poll
+  snapshots and that the JSON persisted in `adapter_instances.sync_state_json`
+  still uses string keys. This is an end-to-end history test, not a
+  `Transition`-constant existence test, and requires no persistence change.
 
   Use explicit `--json` when parsing CLI output and `output_mode: :diagnostic`
   for human message assertions. Common persistence metadata adds counts such
