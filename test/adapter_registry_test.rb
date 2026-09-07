@@ -54,6 +54,14 @@ class AdapterRegistryTest < Minitest::Test
     assert_equal "github: github instance requires token\nrss: rss instance requires an HTTP(S) url", error.message
   end
 
+  def test_default_registry_registers_reddit_rss_without_dependencies
+    registry = Cybort::AdapterRegistry.default
+    instance = Instance.new(adapter: "reddit_rss")
+
+    assert_empty registry.dependencies_for(instance)
+    assert registry.respond_to?(:validate_configuration!)
+  end
+
   def test_legacy_callable_factory_receives_only_legacy_keywords
     registry = Cybort::AdapterRegistry.new
     factory = lambda do |instance:, context:, http_client:, clock:|

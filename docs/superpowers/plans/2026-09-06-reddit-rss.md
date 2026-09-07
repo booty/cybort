@@ -605,7 +605,7 @@ section. Keep historical OAuth section intact.
 **Consumes:** all four component contracts; Base/FetchResult/Persistence.
 **Produces:** working opt-in `reddit_rss` and offline transaction evidence.
 
-- [ ] **Step 1: Write configuration, cache, and adapter failures red.**
+- [x] **Step 1: Write configuration, cache, and adapter failures red.**
   Validate name counts/types/control/path injection, User-Agent max256/format,
   integer limits1/100 valid0/101 invalid, weights exact keys/types/sum,
   unknown/credential source options rejected, and String/Symbol duplicate keys
@@ -616,9 +616,9 @@ section. Keep historical OAuth section intact.
   observations. Full parser/client path uses recording fake + injected gate.
   A malformed third feed after two successes must return no Items or state.
 
-- [ ] **Step 2: Run** new adapter tests and registry tests red.
+- [x] **Step 2: Run** new adapter tests and registry tests red.
 
-- [ ] **Step 3: Implement adapter configuration and composition.**
+- [x] **Step 3: Implement adapter configuration and composition.**
   Normalize only source options (common fields already live on Instance),
   accepting exactly the three allowed keys `subreddits`, `user_agent`, and
   `activity_weights`, plus no others. Validate with static messages that do not
@@ -666,7 +666,7 @@ section. Keep historical OAuth section intact.
   files in errors/coordinator/client/state/activity/adapter order; register
   `registry.register("reddit_rss", Adapters::RedditRSS)` and leave other entries.
 
-- [ ] **Step 4: Add isolated CLI/SQLite integration tests.**
+- [x] **Step 4: Add isolated CLI/SQLite integration tests.**
   New `test/system/reddit_rss_system_test.rb` avoids enlarging the existing
   Gmail-heavy system file. Use local installation/config/SQLite, fake HTTP and
   private injected clocks; no real user config. Core scenarios:
@@ -718,7 +718,7 @@ section. Keep historical OAuth section intact.
   across instance threads. Pass `registry:` to `CLI.start`. No runtime registry
   injection changes are needed.
 
-- [ ] **Step 5: Publish the commented example and README capability boundary.**
+- [x] **Step 5: Publish the commented example and README capability boundary.**
   Copy the spec example as commented TOML into `.cybort.example.toml`, keeping
   existing OAuth/Gmail examples. README links there and explains new IDs,
   pooled vs separate ranking, observed-only denominator, cache/stale behavior,
@@ -726,10 +726,17 @@ section. Keep historical OAuth section intact.
   publication/order/access release gates. Label experimental; do not claim
   unauthenticated means exempt from Reddit policies.
 
-- [ ] **Step 6: Run focused adapter/registry/system/persistence tests green.**
+- [x] **Step 6: Run focused adapter/registry/system/persistence tests green.**
   `bundle exec ruby -Itest test/system/reddit_rss_system_test.rb` and the three
   other named files. Repair only demonstrated implementation defects.
-- [ ] **Step 7: Commit** `feat: integrate public Reddit RSS snapshots`.
+- Evidence: focused adapter, registry, system, and persistence tests pass with
+  7/87, 9/25, 9/98, and 27/86 runs/assertions respectively. The system
+  coverage includes two-poll string-key JSON round-trip, warm cache, forced
+  remote fetch, each independent feed failure, empty replacement, mixed RSS
+  partial failure, isolated groups sharing one gate, replacement rollback,
+  safe diagnostics/history, and an explicit CLI registry factory. No schema,
+  persistence, or adapter SQL production code changed.
+- [x] **Step 7: Commit** `feat: integrate public Reddit RSS snapshots`.
 
 ### Task 6: Whole-branch review, records, and release status
 

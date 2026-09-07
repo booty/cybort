@@ -61,6 +61,21 @@
 # include_subreddits = ["news", "programming"] # optional additions
 # exclude_subreddits = ["memes"] # optional; exclusions win
 
+# Reddit RSS (experimental): public Atom feeds only; no OAuth, subscriptions,
+# inbox/private messages, cookies, or credentials. This ranks a bounded,
+# observed pool and replaces the selected snapshot only after all three feeds
+# succeed. Confirm permitted access, ordering, and publication semantics before
+# live use; use a new instance ID when changing the subreddit group.
+# [instances.reddit_ruby_rails]
+# name = "Ruby and Rails highlights"
+# adapter = "reddit_rss"
+# ttl_minutes = 15
+# retention_ttl_minutes = 2880 # optional; 48 hours is a practical bound
+# num_items_to_fetch = 20
+# subreddits = ["ruby", "rails"] # pooled universe; use another ID for another group
+# user_agent = "macos:com.example.cybort:v0.1.0 (by /u/your_username)"
+# activity_weights = { top = 550, rising = 300, momentum = 100, persistence = 50 }
+
 # Gmail (experimental): fetch message metadata through Google's gws CLI.
 # Install/authenticate gws separately and grant only the read-only scope.
 # The connector remains behind its authenticated smoke-test release gate.
