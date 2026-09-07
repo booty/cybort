@@ -70,7 +70,11 @@ module Cybort
         end
       end
 
+      future_candidate_ids = candidates.each_with_object([]) do |(id, candidate), ids|
+        ids << id if parse_time(candidate.fetch("published_at")) > current_time + FUTURE_SKEW_SECONDS
+      end
       history_reset = !!config_reset
+      history_reset ||= !future_candidate_ids.empty?
       clock_reset = false
       if saved_last_poll_at
         clock_reset = saved_last_poll_at >= current_time
@@ -85,6 +89,7 @@ module Cybort
         candidates = clamp_observation_times(candidates, current_time) if clock_reset || stored_observation_in_future?(current_time)
         old_last_truncated_at = clamp_time_string(old_last_truncated_at, current_time)
       end
+      future_candidate_ids.each { |id| candidates.delete(id) }
 
       previous_poll = history_reset || polls.empty? ? nil : deep_freeze(deep_dup(polls.last))
       previous_candidate_ids = candidates.keys.sort.freeze
@@ -183,6 +188,7 @@ module Cybort
       end
 
       bounded_walk!(raw)
+      validate_raw_state!(raw)
       canonical = canonicalize(raw)
       validate_canonical_state!(canonical)
       ensure_serialized_size!(canonical)
@@ -307,12 +313,118 @@ module Cybort
     def canonicalize(value)
       case value
       when Hash
-        value.each_with_object({}) { |(key, child), copy| copy[key.to_s] = canonicalize(child) }
+        value.each_with_object({}) { |(key, child), copy| copy[key.to_s.dup] = canonicalize(child) }
       when Array
         value.map { |child| canonicalize(child) }
+      when String
+        value.dup
       else
         value
       end
+    end
+
+    # Validate semantic state constraints while the caller still owns the
+    # object graph.  This pass intentionally scans in place and only retains
+    # bounded scalar/rank locals; canonicalize/deep_freeze runs afterward.
+    def validate_raw_state!(state)
+      assert_raw_keys!(state, ENVELOPE_KEYS)
+      raise InvalidState unless raw_value(state, "version") == VERSION
+
+      scoring_version = raw_value(state, "scoring_version")
+      raise InvalidState unless scoring_version.is_a?(String) && printable?(scoring_version) && scoring_version.bytesize <= 128
+
+      fingerprint = raw_value(state, "fingerprint")
+      raise InvalidState unless fingerprint.is_a?(String) && FINGERPRINT_PATTERN.match?(fingerprint)
+      parse_canonical_time!(raw_value(state, "started_at"))
+      truncated = raw_value(state, "last_truncated_at")
+      parse_canonical_time!(truncated) unless truncated.nil?
+      validate_raw_candidates!(raw_value(state, "candidates"))
+      validate_raw_polls!(raw_value(state, "polls"))
+      true
+    end
+
+    def validate_raw_candidates!(candidates)
+      raise InvalidState unless candidates.is_a?(Hash) && candidates.length <= MAX_CANDIDATES
+      candidates.each_pair do |id, candidate|
+        validate_id!(id.to_s)
+        assert_raw_keys!(candidate, CANDIDATE_KEYS)
+        subreddit = raw_value(candidate, "subreddit")
+        title = raw_value(candidate, "title")
+        unless subreddit.is_a?(String) && subreddit.valid_encoding? && SUBREDDIT_PATTERN.match?(subreddit) &&
+               subreddit == subreddit.downcase
+          raise InvalidState
+        end
+        unless title.is_a?(String) && title.valid_encoding? && !title.empty? && title.strip != "" &&
+               title.bytesize <= MAX_SCALAR_BYTES && printable?(title)
+          raise InvalidState
+        end
+        publication = parse_canonical_time!(raw_value(candidate, "published_at"))
+        first_seen = parse_canonical_time!(raw_value(candidate, "first_seen_at"))
+        last_seen = parse_canonical_time!(raw_value(candidate, "last_seen_at"))
+        raise InvalidState if first_seen > last_seen
+        raise InvalidState if publication.nil?
+      end
+    end
+
+    def validate_raw_polls!(polls)
+      raise InvalidState unless polls.is_a?(Array) && polls.length <= MAX_POLLS
+      previous = nil
+      polls.each do |poll|
+        assert_raw_keys!(poll, POLL_KEYS)
+        at = parse_canonical_time!(raw_value(poll, "at"))
+        raise InvalidState if previous && at <= previous
+        previous = at
+        top_count = raw_value(poll, "top_count")
+        rising_count = raw_value(poll, "rising_count")
+        unless top_count.is_a?(Integer) && top_count.between?(0, MAX_RANKS) &&
+               rising_count.is_a?(Integer) && rising_count.between?(0, MAX_RANKS)
+          raise InvalidState
+        end
+        validate_raw_ranks!(raw_value(poll, "top_ranks"), top_count)
+        validate_raw_ranks!(raw_value(poll, "rising_ranks"), rising_count)
+      end
+    end
+
+    def validate_raw_ranks!(ranks, count)
+      raise InvalidState unless ranks.is_a?(Hash) && ranks.length <= count
+      seen = {}
+      ranks.each_pair do |id, rank|
+        validate_id!(id.to_s)
+        raise InvalidState unless rank.is_a?(Integer) && rank.between?(1, count)
+        raise InvalidState if seen.key?(rank)
+
+        seen[rank] = true
+      end
+    end
+
+    def assert_raw_keys!(hash, expected)
+      raise InvalidState unless hash.is_a?(Hash)
+      count = 0
+      expected_set = expected
+      hash.each_key do |key|
+        logical = key.to_s
+        raise InvalidState unless expected_set.include?(logical)
+
+        count += 1
+      end
+      raise InvalidState unless count == expected.length
+      true
+    end
+
+    def raw_value(hash, expected)
+      found = false
+      value = nil
+      hash.each_pair do |key, child|
+        next unless key.to_s == expected
+
+        raise InvalidState if found
+
+        found = true
+        value = child
+      end
+      raise InvalidState unless found
+
+      value
     end
 
     def validate_canonical_state!(state)

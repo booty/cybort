@@ -202,12 +202,24 @@ class RedditRssStateTest < Minitest::Test
 
   def test_state_and_input_are_immutable_after_advance
     now = Time.utc(2026, 9, 6, 12)
-    input_pages = pages(new_entries: [entry(id: "t3_abc", published_at: now - 60)])
+    title = String.new("Post")
+    input_entry = entry(id: "t3_abc", title: title, published_at: now - 60)
+    input_pages = pages(new_entries: [input_entry])
     result = state.advance(pages: input_pages, now: now)
     result.state.fetch("candidates").fetch("t3_abc").fetch("title")
     assert_raises(FrozenError) { result.state.fetch("candidates")["t3_abc"]["title"] << "!" }
     refute input_pages.fetch("new").frozen?
+    refute title.frozen?
+    refute input_entry.frozen?
     assert_equal "Post", input_pages.fetch("new").entries.first.title
+
+    raw = JSON.parse(JSON.generate(result.state))
+    candidate_key = String.new("t3_abc")
+    candidate_value = raw.fetch("candidates").delete("t3_abc")
+    raw.fetch("candidates")[candidate_key] = candidate_value
+    Cybort::RedditRssState.new(raw: raw, subreddits: @subreddits, weights: WEIGHTS)
+    refute raw.fetch("candidates").fetch("t3_abc").fetch("title").frozen?
+    refute candidate_key.frozen?
   end
 
   def test_state_rejects_noncanonical_or_oversized_serialized_state
@@ -248,5 +260,28 @@ class RedditRssStateTest < Minitest::Test
     assert_raises(Cybort::RedditRssError) do
       state(raw: too_many_ranks)
     end
+  end
+
+  def test_invalid_rank_and_timestamp_state_is_rejected_at_the_boundary
+    now = Time.utc(2026, 9, 6, 12)
+    first = state.advance(pages: pages, now: now)
+    raw = JSON.parse(JSON.generate(first.state))
+    raw.fetch("polls").first.fetch("top_ranks")["t3_abc"] = 101
+    assert_raises(Cybort::RedditRssError) { state(raw: raw) }
+
+    raw = JSON.parse(JSON.generate(first.state))
+    raw["started_at"] = "2026-09-06T12:00:00Z"
+    assert_raises(Cybort::RedditRssError) { state(raw: raw) }
+  end
+
+  def test_persisted_candidate_beyond_future_skew_is_filtered_on_transition
+    now = Time.utc(2026, 9, 6, 12)
+    first = state.advance(
+      pages: pages(new_entries: [entry(id: "t3_abc", published_at: now - 60)]), now: now
+    )
+    raw = JSON.parse(JSON.generate(first.state))
+    raw.fetch("candidates").fetch("t3_abc")["published_at"] = (now + 301).iso8601(6)
+    result = state(raw: raw).advance(pages: pages, now: now)
+    refute result.state.fetch("candidates").key?("t3_abc")
   end
 end
