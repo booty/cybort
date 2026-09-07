@@ -421,7 +421,7 @@ parser/tests; `lib/cybort.rb`; `test/http_client_test.rb` regression if needed.
 **Consumes:** Page/Entry values and validated names/weights.
 **Produces:** JSON-safe state and Transition, never SQL or mutation of context.
 
-- [ ] **Step 1: Write failing state-transition tests using direct Pages.**
+- [x] **Step 1: Write failing state-transition tests using direct Pages.**
   Test all three feed unions, preferred title order, same-ID date/subreddit
   conflicts, first/last seen, four-snapshot rolling cap, cold state, fingerprint
   change, outage >3600 versus exactly3600, non-increasing clock, future skew,
@@ -447,9 +447,9 @@ parser/tests; `lib/cybort.rb`; `test/http_client_test.rb` regression if needed.
   end
   ```
 
-- [ ] **Step 2: Run** `bundle exec ruby -Itest test/reddit_rss_state_test.rb` red.
+- [x] **Step 2: Run** `bundle exec ruby -Itest test/reddit_rss_state_test.rb` red.
 
-- [ ] **Step 3: Implement exact state schema validation and copy boundary.**
+- [x] **Step 3: Implement exact state schema validation and copy boundary.**
   Constructor accepts nil/{} as initialization. Otherwise require exact envelope
   keys/types from spec, recognized schema version1, <=2000 records and <=4
   snapshots, serialized bytes <=8,388,608. Timestamps are canonical UTC
@@ -478,7 +478,7 @@ parser/tests; `lib/cybort.rb`; `test/http_client_test.rb` regression if needed.
   `RedditRssState::Transition` from `advance`; do not define or test a separate
   top-level Transition constant.
 
-- [ ] **Step 4: Implement the transition in this exact order.**
+- [x] **Step 4: Implement the transition in this exact order.**
 
   ```text
   Take owned copy of prior candidates and polls.
@@ -505,10 +505,10 @@ parser/tests; `lib/cybort.rb`; `test/http_client_test.rb` regression if needed.
   context; a second call is independent. Do not use a candidate's newly merged
   presence to decide whether it was known in the preceding observation.
 
-- [ ] **Step 5: Run state tests green and review bounds.** Ensure a 48-hour
+- [x] **Step 5: Run state tests green and review bounds.** Ensure a 48-hour
   eviction is not accidentally implemented with last successful fetch time or
   item `retention_ttl_minutes`.
-- [ ] **Step 6: Commit** `feat: retain bounded Reddit RSS observation state`.
+- [x] **Step 6: Commit** `feat: retain bounded Reddit RSS observation state`.
 
 ### Task 4: Deterministic prominence and observed-decile selection
 
