@@ -516,7 +516,7 @@ parser/tests; `lib/cybort.rb`; `test/http_client_test.rb` regression if needed.
 **Consumes:** Transition, pages, normalized weights, now, final limit.
 **Produces:** selected rows and allowlisted metadata; state is read-only input.
 
-- [ ] **Step 1: Write exact arithmetic/selection tests.** Cover absent/singleton/
+- [x] **Step 1: Write exact arithmetic/selection tests.** Cover absent/singleton/
   first/last/interior ranks; cold renormalization; known/new candidate momentum;
   persistence1/2/3/4 windows; gap reset; all tie breakers; no signals; old/future
   candidates; caps; separate/pooled groups; configuration weight changes.
@@ -537,9 +537,9 @@ parser/tests; `lib/cybort.rb`; `test/http_client_test.rb` regression if needed.
   rising2/3, previous prominence0.5, known candidate, persistence2/4 =>
   `550000 + 150000 + 100000 + 25000 = 825000`. Cold counterpart is823529.
 
-- [ ] **Step 2: Run** `bundle exec ruby -Itest test/reddit_rss_activity_test.rb` red.
+- [x] **Step 2: Run** `bundle exec ruby -Itest test/reddit_rss_activity_test.rb` red.
 
-- [ ] **Step 3: Implement fixed-point helpers and selection.**
+- [x] **Step 3: Implement fixed-point helpers and selection.**
 
   ```ruby
   SCALE = 1_000_000
@@ -588,9 +588,11 @@ parser/tests; `lib/cybort.rb`; `test/http_client_test.rb` regression if needed.
   into diagnostics. `window_partial` uses the oldest current new publication
   (or true if none). `selection_capped = limit < min((M+9)/10, S.length)`.
 
-- [ ] **Step 4: Run scoring tests green.** Test integer results exactly, not
+- [x] **Step 4: Run scoring tests green.** Test integer results exactly, not
   broad float tolerances or ordering-only assertions.
-- [ ] **Step 5: Commit** `feat: rank Reddit RSS observed candidates deterministically`.
+- Evidence: focused activity tests pass with 8 runs and 31 assertions; the
+  full offline suite passes with 295 runs and 1,404 assertions.
+- [x] **Step 5: Commit** `feat: rank Reddit RSS observed candidates deterministically`.
 
 ### Task 5: Adapter composition, configuration, and snapshot integration
 
