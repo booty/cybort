@@ -37,10 +37,12 @@ invariants and workflow rules here, not session-by-session narration.
 - Adapter threads fetch, validate, and normalize source data. They do not own
   SQLite schema details, SQL, transactions, or persistence writes.
 - The orchestrator snapshots each validated instance's retention policy before
-  adapter planning, starts one adapter thread per configured instance, waits
-  for every thread, then persists results sequentially. The configured instance
-  ID is authoritative: mismatched adapter result IDs become failures recorded
-  only for the configured ID.
+  adapter planning, starts one adapter thread per eligible configured instance,
+  waits for terminal completion events, and persists each completed result
+  sequentially on the orchestrator caller thread without waiting for slower
+  adapters. Final run aggregation still waits for every configured instance.
+  The configured instance ID is authoritative: mismatched adapter result IDs
+  become failures recorded only for the configured ID.
 - Persistence owns SQLite access, upserts, synchronization state, and fetch
   history. Each successful adapter result has its own transaction; there is no
   transaction spanning all adapter instances.

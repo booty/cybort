@@ -364,10 +364,12 @@ are collection interfaces over the same normalized store.
 ## Architecture
 
 Adapter threads fetch and normalize source data but do not write to SQLite. The
-orchestrator waits for every adapter thread, then persists each successful
-adapter result sequentially through the shared `Persistence` service. Each
-adapter result has its own transaction; there is no transaction spanning all
-sources.
+orchestrator persists each result sequentially through the shared `Persistence`
+service as its adapter finishes, so a faster connector can commit and report
+completion without waiting for a slower connector. SQLite writes remain on the
+orchestrator caller thread, and each adapter result has its own transaction.
+Final run aggregation waits for every configured instance; there is no
+transaction spanning all sources.
 
 ## Tests
 
@@ -383,7 +385,9 @@ external services or invoke `gws`.
 ## Design records
 
 - [Core design](docs/superpowers/specs/2026-08-16-cybort-core-design.md)
-- [Persistence ADR](docs/adr/0001-persistence-storage-and-write-ownership.md)
+- [Current persistence ADR](docs/adr/0008-independent-connector-completion.md)
+- [Independent connector completion design](docs/superpowers/specs/2026-09-08-independent-connector-completion-design.md)
+- [Independent connector completion implementation plan](docs/superpowers/plans/2026-09-08-independent-connector-completion.md)
 - [External command connector ADR](docs/adr/0002-external-command-dependencies-and-cli-adapters.md)
 - [External command connector design](docs/superpowers/specs/2026-09-04-external-command-connectors-design.md)
 - [External command connector implementation plan](docs/superpowers/plans/2026-09-04-external-command-connectors.md)

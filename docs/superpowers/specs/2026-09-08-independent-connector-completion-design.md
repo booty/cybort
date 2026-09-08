@@ -1,6 +1,6 @@
 # Independent Connector Completion Design
 
-**Status:** Approved design; implementation pending
+**Status:** Implemented and offline-verified
 
 **Date:** 2026-09-08
 

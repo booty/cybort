@@ -3,6 +3,11 @@
 **Status:** Approved for implementation planning  
 **Date:** 2026-08-16
 
+> **Execution-policy supersession (2026-09-08):** The wait-for-all barrier
+> described below is superseded by [ADR 0008](../../adr/0008-independent-connector-completion.md)
+> and the [independent connector completion design](2026-09-08-independent-connector-completion-design.md).
+> The original text remains as historical context.
+
 ## Summary
 
 Cybort is a local, single-user personal information collector. It retrieves

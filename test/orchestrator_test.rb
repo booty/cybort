@@ -1,6 +1,9 @@
 require "test_helper"
+require "timeout"
 
 class OrchestratorTest < Minitest::Test
+  WAIT_SECONDS = 2
+
   class GateAdapter
     def initialize(instance:, started:, release:, **)
       @instance = instance
@@ -58,10 +61,62 @@ class OrchestratorTest < Minitest::Test
     def write_fetch_result(result, retention_ttl_minutes: nil)
       @writes << result
       @retention_writes << [result.instance_id, retention_ttl_minutes]
+      0
     end
 
     def record_fetch_failure(result)
       @failures << result
+    end
+  end
+
+  class ProgressSpy
+    attr_reader :events
+
+    def initialize
+      @events = Queue.new
+    end
+
+    def puts(message)
+      @events << message
+    end
+  end
+
+  class SignalingPersistenceSpy < PersistenceSpy
+    attr_reader :events
+
+    def initialize
+      super
+      @events = Queue.new
+    end
+
+    def write_fetch_result(result, retention_ttl_minutes: nil)
+      pruned_count = super
+      @events << [:successful, result.instance_id, Thread.current]
+      pruned_count
+    end
+
+    def record_fetch_failure(result)
+      super
+      @events << [:failed, result.instance_id, Thread.current]
+      nil
+    end
+  end
+
+  class EscapingPersistenceSpy < PersistenceSpy
+    attr_reader :attempts
+
+    def initialize
+      super
+      @attempts = Queue.new
+    end
+
+    def write_fetch_result(result, retention_ttl_minutes: nil)
+      @attempts << [result.instance_id, Thread.current]
+      raise "write failed"
+    end
+
+    def record_fetch_failure(_result)
+      raise "failure history failed"
     end
   end
 
@@ -108,6 +163,64 @@ class OrchestratorTest < Minitest::Test
 
     def fetch(force_fetch: false, fetch_mode: nil, planned_at: nil)
       @result
+    end
+  end
+
+  class BrokenSafeMetadataError < StandardError
+    def safe_metadata
+      raise "safe metadata failed"
+    end
+  end
+
+  class WorkerLaunchError < RuntimeError; end
+
+  class SecondWorkerLaunchFailsOrchestrator < Cybort::Orchestrator
+    private
+
+    def start_worker(&block)
+      @worker_starts = @worker_starts.to_i + 1
+      raise WorkerLaunchError, "worker launch failed" if @worker_starts == 2
+
+      super
+    end
+  end
+
+  class RaisingAdapter
+    def initialize(error:, **)
+      @error = error
+    end
+
+    def fetch(force_fetch: false, fetch_mode: nil, planned_at: nil)
+      raise @error
+    end
+  end
+
+  class ThreadReportingGateAdapter < GateAdapter
+    def initialize(worker_threads:, **kwargs)
+      super(**kwargs)
+      @worker_threads = worker_threads
+    end
+
+    def fetch(**options)
+      @worker_threads << [@instance.id, Thread.current]
+      super
+    end
+  end
+
+  class GatedRaisingAdapter
+    def initialize(instance:, started:, release:, worker_threads:, error:, **)
+      @instance = instance
+      @started = started
+      @release = release
+      @worker_threads = worker_threads
+      @error = error
+    end
+
+    def fetch(force_fetch: false, fetch_mode: nil, planned_at: nil)
+      @started << @instance.id
+      @worker_threads << [@instance.id, Thread.current]
+      @release.pop
+      raise @error
     end
   end
 
@@ -193,26 +306,178 @@ class OrchestratorTest < Minitest::Test
     assert_raises(Cybort::ConfigurationError) { orchestrator.run }
   end
 
-  def test_fetches_adapter_instances_concurrently_then_persists_sequentially
+  def test_persists_each_adapter_when_it_finishes_and_preserves_result_order
+    started = Queue.new
+    releases = { "one" => Queue.new, "two" => Queue.new }
+    registry = Cybort::AdapterRegistry.new
+    registry.register("gate", lambda { |**kwargs|
+      GateAdapter.new(
+        **kwargs,
+        started: started,
+        release: releases.fetch(kwargs.fetch(:instance).id)
+      )
+    })
+    configuration = Struct.new(:instances).new({ "one" => instance("one"), "two" => instance("two") })
+    persistence = SignalingPersistenceSpy.new
+    progress = ProgressSpy.new
+    orchestrator = Cybort::Orchestrator.new(
+      configuration: configuration, persistence: persistence, registry: registry,
+      http_client: nil, progress: progress
+    )
+
+    run_thread = start_run { orchestrator.run }
+    assert_equal %w[one two], [await(started), await(started)].sort
+    2.times { await(progress.events) }
+
+    releases.fetch("two") << true
+    assert_equal [:successful, "two", run_thread], await(persistence.events)
+    await(progress.events)
+    assert_equal ["two"], persistence.writes.map(&:instance_id)
+    assert run_thread.alive?
+
+    releases.fetch("one") << true
+    assert_equal [:successful, "one", run_thread], await(persistence.events)
+    await(progress.events)
+    result = await_value(run_thread)
+
+    assert_equal :success, result.overall_status
+    assert_equal %w[one two], result.instances.map(&:instance_id)
+    assert_equal %w[two one], persistence.writes.map(&:instance_id)
+    assert_empty persistence.failures
+  ensure
+    release_and_stop(run_thread, releases)
+  end
+
+  def test_records_preflight_failure_while_another_adapter_is_blocked
+    dependency = Cybort::Dependency.new(executable: "fixture-tool", purpose: "test fixture")
     started = Queue.new
     release = Queue.new
     registry = Cybort::AdapterRegistry.new
-    registry.register("gate", ->(**kwargs) { GateAdapter.new(**kwargs, started: started, release: release) })
+    registry.register(
+      "blocked", ->(**kwargs) { PlanningAdapter.new(**kwargs, modes: []) },
+      dependencies: [dependency], validate_configuration: ->(_instance) {}
+    )
+    registry.register(
+      "gate", ->(**kwargs) { GateAdapter.new(**kwargs, started: started, release: release) }
+    )
+    blocked = instance("blocked").tap { |value| value.adapter = "blocked" }
+    gate = instance("gate")
+    configuration = Struct.new(:instances).new({ "blocked" => blocked, "gate" => gate })
+    persistence = SignalingPersistenceSpy.new
+    orchestrator = Cybort::Orchestrator.new(
+      configuration: configuration, persistence: persistence, registry: registry,
+      http_client: nil, dependency_checker: CheckerSpy.new(unavailable_resolution(dependency))
+    )
+
+    run_thread = start_run { orchestrator.run }
+    assert_equal "gate", await(started)
+    assert_equal [:failed, "blocked", run_thread], await(persistence.events)
+    assert run_thread.alive?
+
+    release << true
+    assert_equal [:successful, "gate", run_thread], await(persistence.events)
+    result = await_value(run_thread)
+    assert_equal %i[failure success], result.instances.map(&:status)
+  ensure
+    release_and_stop(run_thread, { "gate" => release })
+  end
+
+  def test_propagates_failure_during_adapter_error_conversion_without_hanging
+    registry = Cybort::AdapterRegistry.new
+    error = BrokenSafeMetadataError.new("adapter failed")
+    registry.register("raising", ->(**kwargs) { RaisingAdapter.new(**kwargs, error: error) })
+    configured = instance("raising").tap { |value| value.adapter = "raising" }
+    configuration = Struct.new(:instances).new({ "raising" => configured })
+    orchestrator = Cybort::Orchestrator.new(
+      configuration: configuration, persistence: PersistenceSpy.new,
+      registry: registry, http_client: nil
+    )
+
+    run_thread = start_run { orchestrator.run }
+    raised = assert_raises(RuntimeError) { await_value(run_thread) }
+    assert_equal "safe metadata failed", raised.message
+  ensure
+    release_and_stop(run_thread, {})
+  end
+
+  def test_preserves_persistence_error_while_observing_every_worker
+    started = Queue.new
+    worker_threads = Queue.new
+    releases = { "one" => Queue.new, "two" => Queue.new }
+    registry = Cybort::AdapterRegistry.new
+    registry.register("gate", lambda { |**kwargs|
+      id = kwargs.fetch(:instance).id
+      if id == "one"
+        GatedRaisingAdapter.new(
+          **kwargs, started: started, release: releases.fetch(id),
+          worker_threads: worker_threads,
+          error: BrokenSafeMetadataError.new("secondary worker failed")
+        )
+      else
+        ThreadReportingGateAdapter.new(
+          **kwargs, started: started, release: releases.fetch(id),
+          worker_threads: worker_threads
+        )
+      end
+    })
     configuration = Struct.new(:instances).new({ "one" => instance("one"), "two" => instance("two") })
-    persistence = PersistenceSpy.new
-    orchestrator = Cybort::Orchestrator.new(configuration: configuration, persistence: persistence, registry: registry, http_client: nil)
+    persistence = EscapingPersistenceSpy.new
+    orchestrator = Cybort::Orchestrator.new(
+      configuration: configuration, persistence: persistence,
+      registry: registry, http_client: nil
+    )
 
-    run_thread = Thread.new { orchestrator.run }
-    assert_equal %w[one two], [started.pop, started.pop].sort
-    assert_empty persistence.writes
+    run_thread = start_run { orchestrator.run }
+    assert_equal %w[one two], [await(started), await(started)].sort
+    workers = 2.times.to_h { await(worker_threads) }
 
-    release << true
-    release << true
-    result = run_thread.value
+    releases.fetch("two") << true
+    assert_equal ["two", run_thread], await(persistence.attempts)
+    assert run_thread.alive?
 
-    assert_equal :success, result.overall_status
-    assert_equal %w[one two], persistence.writes.map(&:instance_id).sort
-    assert_empty persistence.failures
+    releases.fetch("one") << true
+    raised = assert_raises(RuntimeError) { await_value(run_thread) }
+    assert_equal "failure history failed", raised.message
+    refute workers.fetch("one").alive?
+    refute workers.fetch("two").alive?
+  ensure
+    release_and_stop(run_thread, releases)
+  end
+
+  def test_preserves_launch_error_while_observing_an_earlier_failed_worker
+    started = Queue.new
+    worker_threads = Queue.new
+    releases = { "one" => Queue.new, "two" => Queue.new }
+    registry = Cybort::AdapterRegistry.new
+    registry.register("gate", lambda { |**kwargs|
+      id = kwargs.fetch(:instance).id
+      if id == "one"
+        GatedRaisingAdapter.new(
+          **kwargs, started: started, release: releases.fetch(id),
+          worker_threads: worker_threads,
+          error: BrokenSafeMetadataError.new("secondary worker failed")
+        )
+      else
+        GateAdapter.new(**kwargs, started: started, release: releases.fetch(id))
+      end
+    })
+    configuration = Struct.new(:instances).new({ "one" => instance("one"), "two" => instance("two") })
+    orchestrator = SecondWorkerLaunchFailsOrchestrator.new(
+      configuration: configuration, persistence: PersistenceSpy.new,
+      registry: registry, http_client: nil
+    )
+
+    run_thread = start_run { orchestrator.run }
+    assert_equal "one", await(started)
+    _instance_id, worker = await(worker_threads)
+    assert run_thread.alive?
+
+    releases.fetch("one") << true
+    raised = assert_raises(WorkerLaunchError) { await_value(run_thread) }
+    assert_equal "worker launch failed", raised.message
+    refute worker.alive?
+  ensure
+    release_and_stop(run_thread, releases)
   end
 
   def test_force_fetch_is_passed_to_every_adapter
@@ -252,10 +517,8 @@ class OrchestratorTest < Minitest::Test
 
     orchestrator.run(force_fetch: true)
 
-    assert_equal [
-      ["retained", 120],
-      ["forever", nil]
-    ], persistence.retention_writes
+    assert_equal({ "retained" => 120, "forever" => nil },
+                 persistence.retention_writes.to_h)
   end
 
   def test_expires_hard_bound_items_before_planning
@@ -504,6 +767,40 @@ class OrchestratorTest < Minitest::Test
   end
 
   private
+
+  def start_run(&block)
+    Thread.new do
+      Thread.current.report_on_exception = false
+      block.call
+    end
+  end
+
+  def await(queue)
+    Timeout.timeout(WAIT_SECONDS) { queue.pop }
+  end
+
+  def await_value(thread)
+    Timeout.timeout(WAIT_SECONDS) { thread.value }
+  end
+
+  def release_and_stop(run_thread, releases)
+    releases&.each_value { |release| release << true }
+    return unless run_thread
+
+    begin
+      run_thread.join(WAIT_SECONDS)
+    rescue Exception # rubocop:disable Lint/RescueException -- expected failures are asserted before cleanup
+      nil
+    end
+    return unless run_thread.alive?
+
+    run_thread.kill
+    begin
+      run_thread.join(WAIT_SECONDS)
+    rescue Exception # rubocop:disable Lint/RescueException -- cleanup must not mask the test assertion
+      nil
+    end
+  end
 
   def with_database
     Tempfile.create(["cybort", ".sqlite3"]) do |file|

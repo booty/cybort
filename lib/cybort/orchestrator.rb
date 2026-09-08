@@ -156,40 +156,79 @@ module Cybort
       end
 
       instances.each_value { |instance| @persistence.register_instance(instance) }
-      threads = plans.each_with_object({}) do |(instance_id, entry), running|
-        next if results.key?(instance_id)
+      completions = Queue.new
+      results.each do |instance_id, result|
+        completions << [:result, instance_id, result]
+      end
 
-        plan = entry.fetch(:plan)
-        adapter = entry.fetch(:adapter)
-        progress_puts(fetch_start_message(plan)) if @progress && plan.fetch_mode == :remote
-        running[instance_id] = Thread.new do
-          adapter.fetch(force_fetch: force_fetch, fetch_mode: plan.fetch_mode, planned_at: plan.planned_at)
-        rescue StandardError => error
-          FetchResult.failure(
-            instance_id: instance_id,
-            error: error,
-            started_at: @clock.call,
-            finished_at: @clock.call,
-            metadata: error.respond_to?(:safe_metadata) ? error.safe_metadata : {}
+      threads = {}
+      statuses_by_instance_id = {}
+      cleanup_error = nil
+      begin
+        plans.each do |instance_id, entry|
+          next if results.key?(instance_id)
+
+          plan = entry.fetch(:plan)
+          adapter = entry.fetch(:adapter)
+          progress_puts(fetch_start_message(plan)) if @progress && plan.fetch_mode == :remote
+          threads[instance_id] = start_worker do
+            Thread.current.report_on_exception = false
+            begin
+              adapter.fetch(
+                force_fetch: force_fetch,
+                fetch_mode: plan.fetch_mode,
+                planned_at: plan.planned_at
+              )
+            rescue StandardError => error
+              FetchResult.failure(
+                instance_id: instance_id,
+                error: error,
+                started_at: @clock.call,
+                finished_at: @clock.call,
+                metadata: error.respond_to?(:safe_metadata) ? error.safe_metadata : {}
+              )
+            ensure
+              completions << [:thread, instance_id, Thread.current]
+            end
+          end
+        end
+
+        instances.length.times do
+          kind, instance_id, payload = completions.pop
+          result = kind == :thread ? payload.value : payload
+          instance = instances.fetch(instance_id)
+          statuses_by_instance_id[instance_id] = persist_result(
+            instance: instance,
+            result: result,
+            retention_ttl_minutes: retention_ttl_minutes_by_instance_id.fetch(instance_id),
+            context: contexts.fetch(instance_id),
+            hard_expired_items: hard_expired_items_by_instance_id.fetch(instance_id)
           )
         end
+      ensure
+        active_error = $!
+        threads.each_value do |thread|
+          begin
+            thread.join
+          rescue Exception => error # rubocop:disable Lint/RescueException -- observe every worker before propagating
+            cleanup_error ||= error
+          end
+        end
+        raise cleanup_error if active_error.nil? && cleanup_error
       end
-      threads.each { |instance_id, thread| results[instance_id] = thread.value }
 
       statuses = instances.values.map do |instance|
-        persist_result(
-          instance: instance,
-          result: results.fetch(instance.id),
-          retention_ttl_minutes: retention_ttl_minutes_by_instance_id.fetch(instance.id),
-          context: contexts.fetch(instance.id),
-          hard_expired_items: hard_expired_items_by_instance_id.fetch(instance.id)
-        )
+        statuses_by_instance_id.fetch(instance.id)
       end
       guidance = unavailable.values.map { |value| value.merge(instances: value.fetch(:instances).sort) }
       RunResult.new(statuses, unavailable_dependencies: guidance.sort_by { |value| [value.fetch(:tool), value.fetch(:instances)] })
     end
 
     private
+
+    def start_worker(&block)
+      Thread.new(&block)
+    end
 
     def persist_result(instance:, result:, retention_ttl_minutes:, context:, hard_expired_items:)
       unless result.instance_id == instance.id

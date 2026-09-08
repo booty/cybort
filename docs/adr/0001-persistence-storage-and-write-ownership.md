@@ -1,7 +1,12 @@
 # ADR 0001: Persistence Storage and Write Ownership
 
-- Status: Accepted
+- Status: Superseded by [ADR 0008](0008-independent-connector-completion.md) on 2026-09-08
 - Date: 2026-08-16
+
+The original decision below is retained as history. ADR 0008 keeps the single
+SQLite database, orchestrator-owned persistence, per-instance transactions,
+and serialized-write decisions while replacing the global wait-for-all fetch
+barrier with completion-ordered persistence.
 
 ## Context
 
@@ -180,4 +185,3 @@ The initial flow is:
 The persistence API should prefer a batch operation such as
 `write_fetch_result(instance_id:, items:, sync_state:, metadata:)` over opening a
 transaction for every individual item.
-

@@ -10,6 +10,10 @@
 
 **Spec:** [Independent connector completion design](../specs/2026-09-08-independent-connector-completion-design.md)
 
+**Status:** Implemented and offline-verified on 2026-09-08. After the final
+independent review and its follow-ups, the full suite completed with 390 runs,
+2,150 assertions, 0 failures, and 0 errors.
+
 ## Global Constraints
 
 - Change no adapter public interface and no persistence public interface.
@@ -53,7 +57,7 @@ No adapter, persistence, schema, configuration, or connector-specific test file 
 - Consumes: `GateAdapter`, `PersistenceSpy`, `CheckerSpy`, and existing orchestrator dependency fixtures.
 - Produces: bounded behavioral regressions for completion order, caller-thread persistence, preflight results, terminal worker events, and cleanup.
 
-- [ ] **Step 1: Add bounded synchronization and signaling test helpers.**
+- [x] **Step 1: Add bounded synchronization and signaling test helpers.**
 
   Add `require "timeout"` after `require "test_helper"`, then add these helpers near the existing spies:
 
@@ -172,7 +176,7 @@ No adapter, persistence, schema, configuration, or connector-specific test file 
   end
   ```
 
-- [ ] **Step 2: Replace the barrier test with an early-commit regression.**
+- [x] **Step 2: Replace the barrier test with an early-commit regression.**
 
   Replace `test_fetches_adapter_instances_concurrently_then_persists_sequentially`
   with a test that constructs two `GateAdapter` instances using per-instance
@@ -212,7 +216,7 @@ No adapter, persistence, schema, configuration, or connector-specific test file 
 
   Always call `release_and_stop(run_thread, releases)` from `ensure`.
 
-- [ ] **Step 3: Add a preflight-failure independence regression.**
+- [x] **Step 3: Add a preflight-failure independence regression.**
 
   Reuse `unavailable_resolution` and a synthetic dependency for instance
   `blocked`; configure a second `gate` instance whose adapter remains gated.
@@ -228,7 +232,7 @@ No adapter, persistence, schema, configuration, or connector-specific test file 
   in configuration order with `blocked` failed and `gate` successful. Do not
   assert the diagnostic sentence.
 
-- [ ] **Step 4: Add an abnormal worker-conversion regression.**
+- [x] **Step 4: Add an abnormal worker-conversion regression.**
 
   Register `RaisingAdapter` with `BrokenSafeMetadataError.new("adapter failed")`.
   Assert that `await_value(run_thread)` raises `RuntimeError` with message
@@ -236,7 +240,7 @@ No adapter, persistence, schema, configuration, or connector-specific test file 
   publication happens even when the ordinary source-failure conversion itself
   raises. Clean up with `release_and_stop(run_thread, {})`.
 
-- [ ] **Step 5: Add escaped-persistence cleanup and error-precedence coverage.**
+- [x] **Step 5: Add escaped-persistence cleanup and error-precedence coverage.**
 
   Add a test spy whose `write_fetch_result` records an attempt then raises
   `"write failed"`, and whose `record_fetch_failure` raises
@@ -255,7 +259,7 @@ No adapter, persistence, schema, configuration, or connector-specific test file 
   This proves cleanup observes a second failed worker, continues through every
   started worker, and preserves the original persistence exception.
 
-- [ ] **Step 6: Remove the obsolete persistence-order assumption.**
+- [x] **Step 6: Remove the obsolete persistence-order assumption.**
 
   In `test_passes_each_instances_retention_to_persistence`, replace the ordered
   array assertion with:
@@ -265,7 +269,7 @@ No adapter, persistence, schema, configuration, or connector-specific test file 
                persistence.retention_writes.to_h)
   ```
 
-- [ ] **Step 7: Delegate the focused red tests.**
+- [x] **Step 7: Delegate the focused red tests.**
 
   Run:
 
@@ -290,7 +294,7 @@ No adapter, persistence, schema, configuration, or connector-specific test file 
 - Consumes: one preflight `FetchResult` or one completed worker `Thread` per configured instance.
 - Produces: sequential `persist_result` calls in completion order and configuration-ordered final statuses.
 
-- [ ] **Step 1: Seed preflight results and protect launch plus consumption.**
+- [x] **Step 1: Seed preflight results and protect launch plus consumption.**
 
   Replace the existing thread launch, `thread.value` barrier, and persistence
   loop in `Orchestrator#run`. Use event shapes
@@ -313,7 +317,8 @@ No adapter, persistence, schema, configuration, or connector-specific test file 
       plan = entry.fetch(:plan)
       adapter = entry.fetch(:adapter)
       progress_puts(fetch_start_message(plan)) if @progress && plan.fetch_mode == :remote
-      threads[instance_id] = Thread.new do
+      threads[instance_id] = start_worker do
+        Thread.current.report_on_exception = false
         begin
           adapter.fetch(
             force_fetch: force_fetch,
@@ -363,16 +368,25 @@ No adapter, persistence, schema, configuration, or connector-specific test file 
   end
   ```
 
+  Add this private seam so launch failure can be tested without changing the
+  public initializer:
+
+  ```ruby
+  def start_worker(&block)
+    Thread.new(&block)
+  end
+  ```
+
   Keep the existing configuration contract that the instances hash is keyed by
   `instance.id`; do not add speculative alternate-key normalization. Retain
   configured-result identity validation inside `persist_result`.
 
-- [ ] **Step 2: Delegate focused green verification.**
+- [x] **Step 2: Delegate focused green verification.**
 
   Run `bundle exec ruby -Itest test/orchestrator_test.rb`. Expected: every
   bounded concurrency/failure test and all existing orchestrator tests pass.
 
-- [ ] **Step 3: Delegate full implementation verification.**
+- [x] **Step 3: Delegate full implementation verification.**
 
   Run:
 
@@ -400,7 +414,7 @@ No adapter, persistence, schema, configuration, or connector-specific test file 
 - Consumes: the implemented and verified queue behavior from Task 2.
 - Produces: authoritative documentation distinguishing concurrent fetches, completion-ordered commits, serialized SQLite writes, and configuration-ordered final results.
 
-- [ ] **Step 1: Create ADR 0008.**
+- [x] **Step 1: Create ADR 0008.**
 
   Record status `Accepted` and date `2026-09-08`. State explicitly that one
   SQLite database remains canonical; adapters have no persistence access;
@@ -411,7 +425,7 @@ No adapter, persistence, schema, configuration, or connector-specific test file 
   and single-writer decisions. Include the alternatives and consequences from
   the design spec. Link the design and this implementation plan.
 
-- [ ] **Step 2: Supersede ADR 0001 in both authoritative locations.**
+- [x] **Step 2: Supersede ADR 0001 in both authoritative locations.**
 
   Change ADR 0001's own status line to:
 
@@ -425,7 +439,7 @@ No adapter, persistence, schema, configuration, or connector-specific test file 
   replacement link, then add ADR 0008 as `Accepted` with decision text
   “Completion-ordered, orchestrator-owned sequential persistence.”
 
-- [ ] **Step 3: Update current architecture documentation.**
+- [x] **Step 3: Update current architecture documentation.**
 
   In `AGENTS.md`, replace the invariant saying the orchestrator waits for every
   thread before persistence with one saying workers publish terminal events and
@@ -443,7 +457,7 @@ No adapter, persistence, schema, configuration, or connector-specific test file 
   policy is superseded by ADR 0008 and the 2026-09-08 design. Preserve the
   original body as historical context.
 
-- [ ] **Step 4: Validate documentation and repository consistency.**
+- [x] **Step 4: Validate documentation and repository consistency.**
 
   Run these read-only checks directly; do not rerun the project suite for the
   documentation-only edits after Task 2 is green:
@@ -458,7 +472,7 @@ No adapter, persistence, schema, configuration, or connector-specific test file 
   historical barrier text remains only beneath explicit supersession notices;
   ADR links resolve; `git diff --check` emits nothing.
 
-- [ ] **Step 5: Commit and push the implementation and records together.**
+- [x] **Step 5: Commit and push the implementation and records together.**
 
   ```sh
   git add lib/cybort/orchestrator.rb test/orchestrator_test.rb \
@@ -469,6 +483,43 @@ No adapter, persistence, schema, configuration, or connector-specific test file 
   git commit -m "Persist connectors as they complete"
   git push origin main
   ```
+
+---
+
+### Task 4: Apply final Sol review feedback
+
+**Files:**
+- Modify: `lib/cybort/orchestrator.rb`
+- Modify: `test/orchestrator_test.rb`
+- Modify: `AGENTS.md`
+
+- [x] **Step 1: Add a red regression for launch-error precedence.**
+
+  Override the private `start_worker` seam in a test subclass so the second
+  launch raises `WorkerLaunchError`. Gate the first worker, make its
+  `safe_metadata` conversion fail during cleanup, and assert with bounded waits
+  that the launch error remains primary and the first worker terminates.
+
+- [x] **Step 2: Suppress duplicate automatic thread reports.**
+
+  Set `Thread.current.report_on_exception = false` as the first worker-block
+  statement. Continue observing results through `Thread#value` and every
+  started worker through cleanup joins. Suppress reports on test-owned run
+  threads with a `start_run` helper; continue asserting their exceptions via
+  `Thread#value`.
+
+- [x] **Step 3: Correct the durable worker-count invariant.**
+
+  Change `AGENTS.md` from one worker per configured instance to one worker per
+  eligible configured instance because dependency-preflight failures do not
+  start workers.
+
+- [x] **Step 4: Delegate final verification.**
+
+  The focused orchestrator suite completed with 19 runs and 79 assertions. The
+  full suite completed with 390 runs and 2,150 assertions. Both had zero
+  failures, errors, or skips, and no thread exception traces. The quality task
+  inspected five files with no offenses.
 
 ## Plan self-review
 
