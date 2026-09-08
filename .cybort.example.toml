@@ -50,6 +50,24 @@
 # api_url = "https://api.github.com/notifications" # optional; this is the default
 # token = "replace-with-a-github-token"
 
+# Gmail: direct read-only Gmail API; authorize once via README Gmail setup.
+# The connector remains experimental until its authenticated smoke gate passes.
+# Runtime does not execute gws or gcloud. Keep credentials outside the repo.
+# Reddit RSS (experimental): public Atom feeds only; no OAuth, subscriptions,
+# inbox/private messages, cookies, or credentials. This ranks a bounded,
+# observed pool and replaces the selected snapshot only after all three feeds
+# succeed. Confirm permitted access, ordering, and publication semantics before
+# live use; use a new instance ID when changing the subreddit group.
+# [instances.personal_gmail]
+# name = "Personal Gmail"
+# adapter = "gmail"
+# ttl_minutes = 60
+# num_items_to_fetch = 200 # integer 1..500; one bounded list page
+# credentials_file = "~/.cybort/google-auth/personal_gmail/application_default_credentials.json"
+# user_id = "me"
+# query = "in:anywhere"
+# include_spam_trash = true # optional; default false
+
 # Reddit: fetch unread legacy inbox messages and activity-ranked threads.
 # Obtain an approved OAuth refresh token outside Cybort. Chat is not included
 # in V1. The user-agent must identify your application and Reddit user.
@@ -67,14 +85,6 @@
 # include_subreddits = ["news", "programming"] # optional additions
 # exclude_subreddits = ["memes"] # optional; exclusions win
 
-# Gmail: direct read-only Gmail API; authorize once via README Gmail setup.
-# The connector remains experimental until its authenticated smoke gate passes.
-# Runtime does not execute gws or gcloud. Keep credentials outside the repo.
-# Reddit RSS (experimental): public Atom feeds only; no OAuth, subscriptions,
-# inbox/private messages, cookies, or credentials. This ranks a bounded,
-# observed pool and replaces the selected snapshot only after all three feeds
-# succeed. Confirm permitted access, ordering, and publication semantics before
-# live use; use a new instance ID when changing the subreddit group.
 # [instances.reddit_ruby_rails]
 # name = "Ruby and Rails highlights"
 # adapter = "reddit_rss"
@@ -85,15 +95,6 @@
 # subreddits = ["ruby", "rails"] # pooled universe; use another ID for another group
 # user_agent = "macos:com.example.cybort:v0.1.0 (by /u/your_username)"
 # activity_weights = { top = 550, rising = 300, momentum = 100, persistence = 50 }
-# [instances.personal_gmail]
-# name = "Personal Gmail"
-# adapter = "gmail"
-# ttl_minutes = 60
-# num_items_to_fetch = 200 # integer 1..500; one bounded list page
-# credentials_file = "~/.cybort/google-auth/personal_gmail/application_default_credentials.json"
-# user_id = "me"
-# query = "in:anywhere"
-# include_spam_trash = true # optional; default false
 
 # When adding a connector, update this template in the same change: add its
 # commented instance shape, required fields, safe placeholder guidance, and any

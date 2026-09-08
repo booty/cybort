@@ -261,7 +261,7 @@ Authorize Gmail outside Cybort with a user-owned Desktop OAuth client:
    CLOUDSDK_CONFIG="$HOME/.cybort/google-auth/personal_gmail" \
      gcloud auth application-default login \
        --client-id-file="$HOME/Downloads/cybort-google-client.json" \
-       --scopes=https://www.googleapis.com/auth/gmail.readonly
+       --scopes="https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/gmail.readonly"
    chmod 600 "$HOME/.cybort/google-auth/personal_gmail/application_default_credentials.json"
    ```
 
