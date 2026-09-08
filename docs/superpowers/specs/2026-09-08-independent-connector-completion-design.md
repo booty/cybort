@@ -24,9 +24,12 @@ Persist each adapter result as soon as that adapter finishes. Keep adapter
 fetches concurrent and keep persistence calls sequential on the orchestrator's
 calling thread.
 
-Worker threads place exactly one `[instance_id, FetchResult]` pair on a Ruby
-`Queue`. The orchestrator consumes one pair per configured instance and calls
-the existing `persist_result` method immediately. This makes the queue a
+Worker threads publish exactly one terminal event from an `ensure` block to a
+Ruby `Queue`. The event identifies the instance and completed `Thread`; the
+orchestrator obtains the thread's value and calls the existing `persist_result`
+method immediately. Calling `Thread#value` preserves abnormal worker failures
+instead of silently converting or losing them. Dependency-preflight failures
+enter the queue as already-materialized results. This makes the queue a
 completion channel, not a database writer: adapters remain unaware of SQLite,
 and only the orchestrator calls `Persistence`.
 
@@ -44,12 +47,15 @@ The revised run flow is:
 4. Add dependency-preflight failures to the queue because those instances are
    already complete.
 5. Start one worker thread for every remaining instance. Each worker converts
-   an adapter exception to the existing failure `FetchResult`, then pushes its
-   single result to the queue.
-6. On the orchestrator thread, pop one result per configured instance and call
-   `persist_result` immediately. These calls remain strictly sequential.
-7. Join worker threads in an `ensure` block so an unexpected persistence error
-   cannot leave unobserved threads behind.
+   an ordinary adapter `StandardError` to the existing failure `FetchResult`
+   and publishes its terminal thread event from `ensure`, even when conversion
+   itself fails.
+6. On the orchestrator thread, pop one event per configured instance. For a
+   worker event, read `Thread#value` so abnormal termination is re-raised; then
+   call `persist_result` immediately. Persistence remains strictly sequential.
+7. Enclose both worker launch and completion consumption in cleanup logic that
+   joins every started thread. Preserve the original launch, worker, or
+   persistence exception if cleanup also observes a failed worker.
 8. Assemble `RunResult.instances` in configuration order, independent of
    completion order, preserving the public JSON result contract.
 
@@ -75,14 +81,18 @@ success/partial-failure status; it is not a pre-commit barrier.
 
 ## Failure and shutdown behavior
 
-- Adapter exceptions keep their current per-instance conversion to a failure
-  `FetchResult` and are queued exactly once.
+- Ordinary adapter `StandardError` exceptions keep their current per-instance
+  conversion to a failure `FetchResult`. The worker's terminal event is
+  published from `ensure`, so a failure while constructing that result cannot
+  leave the orchestrator blocked on an event that will never arrive.
 - Dependency failures enter the same completion path as adapter results and are
   recorded without waiting for remote workers.
 - `persist_result` retains its current isolation behavior: a failure for one
   source does not discard successful results from another source.
-- Worker threads are joined in `ensure`. Existing connector deadlines remain
-  the bound on a thread that has not completed.
+- Worker launch and completion consumption share one protected region. Cleanup
+  observes every started worker, retains the first cleanup failure, and never
+  masks an already-active caller-thread exception. Existing connector deadlines
+  remain the production bound on a worker that has not completed.
 - An unexpected failure that escapes `persist_result` continues to abort the
   overall run after worker cleanup; broadening persistence recovery is outside
   this change.
@@ -118,19 +128,25 @@ Production and behavioral test changes are limited to:
 - `lib/cybort/orchestrator.rb`
 - `test/orchestrator_test.rb`
 
-Architecture documentation must also change because ADR 0001, `AGENTS.md`, and
-the README explicitly describe the global barrier. Implementation will add a
-replacement ADR that restates the retained one-database, orchestrator-owned,
-sequential-write decisions while superseding only the wait-for-all policy.
+Architecture documentation must also change because ADR 0001, `AGENTS.md`, the
+README, and the original core design explicitly describe the global barrier.
+Implementation will add a replacement ADR that restates the retained
+one-database, orchestrator-owned, sequential-write decisions; mark ADR 0001
+superseded in its file and index; and annotate the core design rather than
+silently rewriting its historical body.
 
 ## Verification
 
-The regression test will use independently releasable adapters and a signaling
-persistence spy. It will release the second connector first and require its
-write to occur while the first connector remains blocked. It will then release
-the first connector and verify both results are returned in configuration
-order. Existing partial-failure, retention, hard-expiry, and result-identity
-tests continue to cover their contracts.
+Regression tests will use independently releasable adapters, bounded watchdogs,
+and a signaling persistence spy. They will release the second connector first,
+require its write on the orchestrator caller thread while the first connector
+remains blocked, and then verify final configuration order. Additional bounded
+cases cover a preflight failure completing beside a gated worker, a failure
+during ordinary adapter-error conversion, and cleanup after an escaped
+persistence-recording failure. Diagnostic timing is asserted only through
+event counts/framing, never exact prose. Existing retention assertions will
+compare instance-to-policy mappings because write order is intentionally no
+longer deterministic.
 
 All test execution remains offline and is delegated to a read-only Luna agent
 at medium reasoning effort under `AGENTS.md`.
