@@ -259,11 +259,12 @@ module Cybort
 
     def fetch_start_message(plan)
       instance = plan.instance
+      source = @registry.display_name_for(instance)
       source = if instance.adapter == "rss"
         url = instance.options.fetch(:url, nil)
-        url ? "RSS from #{url}" : "RSS"
+        url ? "#{source} from #{url}" : source
       else
-        { "github" => "GitHub", "gmail" => "Gmail", "reddit" => "Reddit" }.fetch(instance.adapter, instance.adapter)
+        source
       end
       "#{instance.name}: Fetching #{source}..."
     end
@@ -274,7 +275,7 @@ module Cybort
         return "#{instance.name}: Error: #{single_line(status.error)}"
       end
 
-      noun = { "rss" => "articles", "github" => "notifications", "gmail" => "messages", "reddit" => "items" }.fetch(instance.adapter, "items")
+      noun = @registry.item_noun_for(instance)
       metadata = status.metadata
       "#{instance.name}: #{metadata.fetch(:items_found, result.items.length)} #{noun} found, " \
         "#{metadata.fetch(:new_items, 0)} new, #{metadata.fetch(:cached_items, 0)} already cached, " \

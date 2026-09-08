@@ -34,5 +34,36 @@ class ItemTest < Minitest::Test
     assert_raises(Cybort::ValidationError) { Cybort::Item.new(**valid_attributes, priority: -1) }
     assert_raises(Cybort::ValidationError) { Cybort::Item.new(**valid_attributes, priority: 101) }
   end
-end
 
+  def test_requires_action_item_to_be_boolean_or_nil
+    [0, 1, "false", Object.new].each do |value|
+      assert_raises(Cybort::ValidationError) do
+        Cybort::Item.new(**valid_attributes, action_item: value)
+      end
+    end
+
+    assert_equal false, Cybort::Item.new(**valid_attributes, action_item: false).action_item
+    assert_equal true, Cybort::Item.new(**valid_attributes, action_item: true).action_item
+    assert_nil Cybort::Item.new(**valid_attributes).action_item
+  end
+
+  def test_defensively_freezes_collections_and_copies_serialized_values
+    item = Cybort::Item.new(
+      **valid_attributes,
+      urls: ["https://example.test"],
+      info: { source: { tags: ["rss"] } }
+    )
+
+    assert item.urls.frozen?
+    assert item.info.frozen?
+    assert_raises(FrozenError) { item.urls << "https://other.test" }
+    assert_raises(FrozenError) { item.info.fetch(:source).fetch(:tags) << "new" }
+
+    serialized = item.to_h
+    serialized.fetch(:urls) << "https://other.test"
+    serialized.fetch(:info).fetch(:source).fetch(:tags) << "new"
+
+    assert_equal ["https://example.test"], item.urls
+    assert_equal ["rss"], item.info.fetch(:source).fetch(:tags)
+  end
+end

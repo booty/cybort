@@ -110,7 +110,7 @@ module Cybort
         sql << " WHERE instance_id = ?"
         binds << instance_id
       end
-      sql << " ORDER BY COALESCE(remote_created_at, fetched_at) DESC"
+      sql << " ORDER BY COALESCE(remote_created_at, fetched_at) DESC, instance_id ASC, canonical_id ASC"
       if limit
         sql << " LIMIT ?"
         binds << Integer(limit)
@@ -142,6 +142,10 @@ module Cybort
 
       @database.transaction do
         result.items.each { |item| validate_item!(item, result.instance_id) }
+        duplicate_ids = result.items.group_by(&:canonical_id).select { |_id, items| items.length > 1 }.keys
+        unless duplicate_ids.empty?
+          raise ValidationError, "duplicate item canonical_id: #{duplicate_ids.sort.join(", ")}"
+        end
         @database.execute(
           "DELETE FROM items WHERE instance_id = ?",
           [result.instance_id]

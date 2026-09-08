@@ -19,7 +19,7 @@ module Cybort
       end
 
       options = parse_options(args, out, output_mode: output_mode)
-      root = File.join(home, ".cybort")
+      root = options.fetch(:root) || File.join(home, ".cybort")
       configuration_path = File.join(root, "cybort.toml")
       unless File.file?(configuration_path)
         raise ConfigurationError,
@@ -61,11 +61,12 @@ module Cybort
     end
 
     def parse_options(args, out, output_mode:)
-      options = { force_fetch: false, output_mode: output_mode }
+      options = { force_fetch: false, output_mode: output_mode, root: nil }
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: cybort [--force-fetch] [--json]"
+        opts.banner = "Usage: cybort [--force-fetch] [--json] [--root PATH]"
         opts.on("--force-fetch", "Ignore adapter TTLs") { options[:force_fetch] = true }
         opts.on("--json", "Emit a machine-readable JSON run summary") { options[:output_mode] = :json }
+        opts.on("--root PATH", "Use an alternate installation directory") { |path| options[:root] = File.expand_path(path) }
         opts.on("--help", "Show this help") do
           out.puts opts
           exit 0
@@ -78,11 +79,12 @@ module Cybort
     end
 
     def purge_instance(args, input:, out:, home:, clock:)
-      options = { confirm: false, backup: nil }
+      options = { confirm: false, backup: nil, root: nil }
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: cybort purge INSTANCE_ID [--yes] [--backup PATH]"
+        opts.banner = "Usage: cybort purge INSTANCE_ID [--yes] [--backup PATH] [--root PATH]"
         opts.on("--yes", "Skip the interactive purge confirmation") { options[:confirm] = true }
         opts.on("--backup PATH", "Create a SQLite backup before deletion") { |path| options[:backup] = path }
+        opts.on("--root PATH", "Use an alternate installation directory") { |path| options[:root] = File.expand_path(path) }
         opts.on("--help", "Show this help") do
           out.puts opts
           exit 0
@@ -93,7 +95,7 @@ module Cybort
       raise OptionParser::MissingArgument, "INSTANCE_ID" unless instance_id
       raise OptionParser::InvalidOption, args.join(" ") unless args.empty?
 
-      root = File.join(home, ".cybort")
+      root = options.fetch(:root) || File.join(home, ".cybort")
       database_path = File.join(root, "cybort.sqlite3")
       raise ConfigurationError, "No Cybort database found at #{database_path}" unless File.file?(database_path)
 

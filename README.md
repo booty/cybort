@@ -330,6 +330,12 @@ Use cached data when each adapter’s TTL is still fresh:
 bundle exec bin/cybort
 ```
 
+For an installation initialized outside `~/.cybort`, select it explicitly:
+
+```bash
+bundle exec bin/cybort --root /path/to/cybort
+```
+
 Ignore TTL checks and request fresh source data:
 
 ```bash

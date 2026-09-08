@@ -160,6 +160,36 @@ class PersistenceTest < Minitest::Test
     end
   end
 
+  def test_rejects_duplicate_item_identities_before_changing_persisted_data
+    with_database do |path|
+      persistence = Cybort::Persistence.new(path)
+      persistence.setup!
+      persistence.register_instance(instance)
+
+      duplicate_items = [item(canonical_id: "same", title: "First"), item(canonical_id: "same", title: "Second")]
+      error = assert_raises(Cybort::ValidationError) do
+        persistence.write_fetch_result(result(items: duplicate_items))
+      end
+
+      assert_includes error.message, "duplicate item canonical_id: same"
+      assert_empty persistence.items_for(instance_id: "rss")
+      assert_empty persistence.fetch_runs_for(instance_id: "rss")
+    end
+  end
+
+  def test_items_with_equal_timestamps_have_deterministic_identity_order
+    with_database do |path|
+      persistence = Cybort::Persistence.new(path)
+      persistence.setup!
+      persistence.register_instance(instance)
+      persistence.write_fetch_result(
+        result(items: [item(canonical_id: "z"), item(canonical_id: "a")])
+      )
+
+      assert_equal %w[a z], persistence.items_for(instance_id: "rss").map(&:canonical_id)
+    end
+  end
+
   def test_same_item_is_updated_and_same_id_can_exist_for_two_instances
     with_database do |path|
       persistence = Cybort::Persistence.new(path)

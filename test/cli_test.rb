@@ -105,6 +105,24 @@ class CliTest < Minitest::Test
     end
   end
 
+  def test_runtime_root_selects_an_alternate_installation
+    Dir.mktmpdir do |directory|
+      root = File.join(directory, "alternate")
+      write_config(root)
+      output = StringIO.new
+
+      status = Cybort::CLI.start(
+        ["--root", root, "--force-fetch"],
+        out: output, err: StringIO.new, home: directory,
+        http_client: StubHttpClient.new(RSS_BODY)
+      )
+
+      assert_equal 0, status
+      assert_equal "CLI article", JSON.parse(output.string).fetch("instances").first.fetch("items").first.fetch("title")
+      assert_path_exists File.join(root, "cybort.sqlite3")
+    end
+  end
+
   def test_diagnostic_mode_reports_rss_progress_without_json_blob
     Dir.mktmpdir do |directory|
       root = File.join(directory, ".cybort")

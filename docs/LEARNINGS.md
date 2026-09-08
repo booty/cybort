@@ -108,22 +108,22 @@ fails.
 **Next action:** Keep the current singleton-method pattern unless the test
 framework gains an equivalent scoped arbitrary-object stub API.
 
-## 2026-09-04 — Alternate installation paths are not selectable at runtime
+## 2026-09-08 — Alternate installation paths are selectable at runtime
 
-**Status:** Open
+**Status:** Resolved
 
-**Observation:** `cybort init /alternate/path` creates an installation at the
-specified path, but normal CLI execution currently reads `~/.cybort` and has no
-installation-path option.
+**Observation:** The normal and purge CLI workflows accept `--root PATH`, so an
+installation created with `cybort init /alternate/path` can be selected without
+changing the default `~/.cybort` behavior.
 
-**Evidence:** `lib/cybort/cli.rb`; installer tests cover creation at an
-alternate path, while CLI startup uses `Dir.home`.
+**Evidence:** `lib/cybort/cli.rb`, `test/cli_test.rb`, and the README runtime
+root example.
 
-**Impact:** An alternate installation cannot currently be run through the
-normal CLI without additional path-selection support.
+**Impact:** Alternate installations are now usable through the normal CLI and
+can be purged without touching the default installation.
 
-**Next action:** Add an explicit installation-path option or environment
-setting before documenting alternate paths as a complete runtime workflow.
+**Next action:** None for this follow-up; retain the option in future command
+surface changes.
 
 ## 2026-09-04 — Gmail command runtime superseded; direct API gate remains open
 

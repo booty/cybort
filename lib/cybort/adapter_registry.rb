@@ -1,14 +1,14 @@
 module Cybort
   class AdapterRegistry
-    Entry = Struct.new(:factory, :dependencies, :validator, keyword_init: true)
+    Entry = Struct.new(:factory, :dependencies, :validator, :display_name, :item_noun, keyword_init: true)
 
     def self.default
       new.tap do |registry|
-        registry.register("rss", Adapters::RSS)
-        registry.register("github", Adapters::GitHub)
-        registry.register("reddit", Adapters::Reddit)
-        registry.register("reddit_rss", Adapters::RedditRSS)
-        registry.register("gmail", Adapters::Gmail)
+        registry.register("rss", Adapters::RSS, display_name: "RSS", item_noun: "articles")
+        registry.register("github", Adapters::GitHub, display_name: "GitHub", item_noun: "notifications")
+        registry.register("reddit", Adapters::Reddit, display_name: "Reddit", item_noun: "items")
+        registry.register("reddit_rss", Adapters::RedditRSS, display_name: "Reddit RSS", item_noun: "posts")
+        registry.register("gmail", Adapters::Gmail, display_name: "Gmail", item_noun: "messages")
       end
     end
 
@@ -16,15 +16,26 @@ module Cybort
       @adapters = {}
     end
 
-    def register(name, adapter_factory, dependencies: [], validate_configuration: nil)
+    def register(name, adapter_factory, dependencies: [], validate_configuration: nil,
+                 display_name: nil, item_noun: "items")
       validator = validate_configuration || if adapter_factory.respond_to?(:validate_configuration!)
         ->(instance) { adapter_factory.validate_configuration!(instance) }
       end
       @adapters[name.to_s] = Entry.new(
         factory: adapter_factory,
         dependencies: Array(dependencies).freeze,
-        validator: validator || ->(_instance) {}
+        validator: validator || ->(_instance) {},
+        display_name: display_name,
+        item_noun: item_noun
       )
+    end
+
+    def display_name_for(instance)
+      @adapters.fetch(instance.adapter).display_name || instance.adapter
+    end
+
+    def item_noun_for(instance)
+      @adapters.fetch(instance.adapter).item_noun || "items"
     end
 
     def validate!(instances)
