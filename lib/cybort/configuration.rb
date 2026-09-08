@@ -8,13 +8,14 @@ module Cybort
       :adapter,
       :ttl_minutes,
       :retention_ttl_minutes,
+      :hard_expiry_ttl_minutes,
       :num_items_to_fetch,
       :options,
       keyword_init: true
     )
 
     REQUIRED_INSTANCE_KEYS = %i[name adapter ttl_minutes num_items_to_fetch].freeze
-    COMMON_INSTANCE_KEYS = (REQUIRED_INSTANCE_KEYS + %i[retention_ttl_minutes]).freeze
+    COMMON_INSTANCE_KEYS = (REQUIRED_INSTANCE_KEYS + %i[retention_ttl_minutes hard_expiry_ttl_minutes]).freeze
     INVALID_TOML_MESSAGE = "invalid TOML configuration"
 
     attr_reader :schema_version, :instances
@@ -64,6 +65,11 @@ module Cybort
              (retention_ttl_minutes.is_a?(Integer) && retention_ttl_minutes.positive?)
         raise ConfigurationError, "instance #{id} retention_ttl_minutes must be a positive integer"
       end
+      hard_expiry_ttl_minutes = raw[:hard_expiry_ttl_minutes]
+      unless hard_expiry_ttl_minutes.nil? ||
+             (hard_expiry_ttl_minutes.is_a?(Integer) && hard_expiry_ttl_minutes.positive?)
+        raise ConfigurationError, "instance #{id} hard_expiry_ttl_minutes must be a positive integer"
+      end
 
       options = raw.reject { |key, _value| COMMON_INSTANCE_KEYS.include?(key) }
       Instance.new(
@@ -72,6 +78,7 @@ module Cybort
         adapter: raw.fetch(:adapter).to_s,
         ttl_minutes: ttl_minutes,
         retention_ttl_minutes: retention_ttl_minutes,
+        hard_expiry_ttl_minutes: hard_expiry_ttl_minutes,
         num_items_to_fetch: num_items_to_fetch,
         options: options
       )

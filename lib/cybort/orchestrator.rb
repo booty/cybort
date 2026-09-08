@@ -1,3 +1,5 @@
+require "set"
+
 module Cybort
   class InstanceRunStatus
     attr_reader :instance_id, :status, :source_fetched, :item_count, :error, :metadata
@@ -61,7 +63,24 @@ module Cybort
       retention_ttl_minutes_by_instance_id = instances.values.to_h do |instance|
         [instance.id, instance.retention_ttl_minutes]
       end.freeze
-      contexts = instances.transform_values { |instance| @persistence.context_for(instance_id: instance.id) }
+      hard_expired_items_by_instance_id = instances.values.to_h do |instance|
+        count = if instance.hard_expiry_ttl_minutes
+          @persistence.expire_items(
+            instance_id: instance.id,
+            hard_expiry_ttl_minutes: instance.hard_expiry_ttl_minutes
+          )
+        else
+          0
+        end
+        [instance.id, count]
+      end.freeze
+      contexts = instances.transform_values do |instance|
+        if @persistence.respond_to?(:planning_context_for)
+          @persistence.planning_context_for(instance_id: instance.id)
+        else
+          @persistence.context_for(instance_id: instance.id)
+        end
+      end
 
       planned_at = @clock.call
       plans = instances.values.to_h do |instance|
@@ -72,6 +91,14 @@ module Cybort
           planned_at: planned_at
         )
         [instance.id, { plan: plan }]
+      end
+
+      plans.each do |instance_id, entry|
+        next unless entry.fetch(:plan).fetch_mode == :cached
+
+        entry[:plan] = entry.fetch(:plan).with(
+          context: @persistence.context_for(instance_id: instance_id)
+        )
       end
 
       dependency_groups = Hash.new { |groups, executable| groups[executable] = [] }
@@ -154,7 +181,8 @@ module Cybort
           instance: instance,
           result: results.fetch(instance.id),
           retention_ttl_minutes: retention_ttl_minutes_by_instance_id.fetch(instance.id),
-          context: contexts.fetch(instance.id)
+          context: contexts.fetch(instance.id),
+          hard_expired_items: hard_expired_items_by_instance_id.fetch(instance.id)
         )
       end
       guidance = unavailable.values.map { |value| value.merge(instances: value.fetch(:instances).sort) }
@@ -163,7 +191,7 @@ module Cybort
 
     private
 
-    def persist_result(instance:, result:, retention_ttl_minutes:, context:)
+    def persist_result(instance:, result:, retention_ttl_minutes:, context:, hard_expired_items:)
       unless result.instance_id == instance.id
         raise ValidationError,
               "adapter result instance_id #{result.instance_id.inspect} does not match configured instance #{instance.id.inspect}"
@@ -196,15 +224,16 @@ module Cybort
           retention_ttl_minutes: retention_ttl_minutes
         )
         pruned_count ||= 0
-        existing_ids = context.fetch(:items, []).map(&:canonical_id)
+        existing_ids = context.fetch(:item_ids, Set.new)
         metadata = (result.metadata || {}).merge(
           items_found: result.items.length,
           new_items: result.items.count { |item| !existing_ids.include?(item.canonical_id) },
           cached_items: result.items.count { |item| existing_ids.include?(item.canonical_id) },
-          items_pruned: pruned_count
+          items_pruned: pruned_count,
+          items_expired: hard_expired_items
         )
       else
-        metadata = result.metadata
+        metadata = (result.metadata || {}).merge(items_expired: hard_expired_items)
       end
       status = result.source_fetched ? :success : :cached
       run_status = InstanceRunStatus.new(instance_id: instance.id, status: status, source_fetched: result.source_fetched, item_count: result.items.length, metadata: metadata)

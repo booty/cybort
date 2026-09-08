@@ -1,6 +1,6 @@
 module Cybort
   module Schema
-    VERSION = 1
+    VERSION = 2
 
     DDL = <<~SQL
       CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -41,6 +41,9 @@ module Cybort
         error_message TEXT,
         metadata_json TEXT NOT NULL
       );
+
+      CREATE INDEX IF NOT EXISTS idx_items_instance_fetched_at
+        ON items (instance_id, fetched_at);
     SQL
 
     def self.apply(database)

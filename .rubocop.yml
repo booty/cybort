@@ -1,0 +1,22 @@
+plugins:
+  - rubocop-performance
+
+AllCops:
+  TargetRubyVersion: 4.0
+  NewCops: enable
+  SuggestExtensions: false
+  Exclude:
+    - "vendor/**/*"
+    - "tmp/**/*"
+
+# The existing codebase predates this baseline. Enable correctness and
+# performance checks first; style, layout, naming, and metrics are staged for
+# later ratcheting instead of being mass-autocorrected in one change.
+Layout:
+  Enabled: false
+Metrics:
+  Enabled: false
+Naming:
+  Enabled: false
+Style:
+  Enabled: false

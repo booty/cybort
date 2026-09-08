@@ -23,13 +23,17 @@ class OrchestratorTest < Minitest::Test
   end
 
   class PersistenceSpy
-    attr_reader :writes, :failures, :registered, :retention_writes
+    attr_reader :writes, :failures, :registered, :retention_writes,
+                :planning_context_calls, :hydrated_context_calls, :expiry_calls
 
     def initialize
       @writes = []
       @failures = []
       @registered = []
       @retention_writes = []
+      @planning_context_calls = []
+      @hydrated_context_calls = []
+      @expiry_calls = []
     end
 
     def register_instance(instance)
@@ -37,7 +41,18 @@ class OrchestratorTest < Minitest::Test
     end
 
     def context_for(instance_id:)
+      @hydrated_context_calls << instance_id
       { items: [], last_successful_fetch: nil, sync_state: nil }
+    end
+
+    def planning_context_for(instance_id:)
+      @planning_context_calls << instance_id
+      { items: [], last_successful_fetch: nil, sync_state: nil }
+    end
+
+    def expire_items(instance_id:, hard_expiry_ttl_minutes:)
+      @expiry_calls << [instance_id, hard_expiry_ttl_minutes]
+      0
     end
 
     def write_fetch_result(result, retention_ttl_minutes: nil)
@@ -57,7 +72,13 @@ class OrchestratorTest < Minitest::Test
     end
 
     def context_for(instance_id:)
+      @hydrated_context_calls << instance_id
       @contexts.fetch(instance_id)
+    end
+
+    def planning_context_for(instance_id:)
+      @planning_context_calls << instance_id
+      @contexts.fetch(instance_id).merge(items: [])
     end
   end
 
@@ -150,13 +171,14 @@ class OrchestratorTest < Minitest::Test
     end
   end
 
-  def instance(id, retention_ttl_minutes: nil)
+  def instance(id, retention_ttl_minutes: nil, hard_expiry_ttl_minutes: nil)
     Cybort::Configuration::Instance.new(
       id: id,
       name: id.capitalize,
       adapter: "gate",
       ttl_minutes: 30,
       retention_ttl_minutes: retention_ttl_minutes,
+      hard_expiry_ttl_minutes: hard_expiry_ttl_minutes,
       num_items_to_fetch: 5,
       options: {}
     )
@@ -234,6 +256,44 @@ class OrchestratorTest < Minitest::Test
       ["retained", 120],
       ["forever", nil]
     ], persistence.retention_writes
+  end
+
+  def test_expires_hard_bound_items_before_planning
+    registry = Cybort::AdapterRegistry.new
+    registry.register("force", ->(**kwargs) { ForceRecordingAdapter.new(**kwargs, calls: []) })
+    configured = instance("retained", hard_expiry_ttl_minutes: 1).tap { |value| value.adapter = "force" }
+    configuration = Struct.new(:instances).new({ "retained" => configured })
+    persistence = PersistenceSpy.new
+    orchestrator = Cybort::Orchestrator.new(
+      configuration: configuration,
+      persistence: persistence,
+      registry: registry,
+      http_client: nil
+    )
+
+    orchestrator.run(force_fetch: true)
+
+    assert_equal [["retained", 1]], persistence.expiry_calls
+    assert_equal ["retained"], persistence.planning_context_calls
+  end
+
+  def test_remote_planning_does_not_hydrate_cached_items
+    registry = Cybort::AdapterRegistry.new
+    registry.register("force", ->(**kwargs) { ForceRecordingAdapter.new(**kwargs, calls: []) })
+    configured = instance("remote").tap { |value| value.adapter = "force" }
+    configuration = Struct.new(:instances).new({ "remote" => configured })
+    persistence = PersistenceSpy.new
+    orchestrator = Cybort::Orchestrator.new(
+      configuration: configuration,
+      persistence: persistence,
+      registry: registry,
+      http_client: nil
+    )
+
+    orchestrator.run(force_fetch: true)
+
+    assert_equal ["remote"], persistence.planning_context_calls
+    assert_empty persistence.hydrated_context_calls
   end
 
   def test_uses_retention_policy_snapshotted_after_configuration_validation

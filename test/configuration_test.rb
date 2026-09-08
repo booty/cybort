@@ -12,6 +12,7 @@ class ConfigurationTest < Minitest::Test
     assert_equal "rss", instance.adapter
     assert_equal 30, instance.ttl_minutes
     assert_nil instance.retention_ttl_minutes
+    assert_nil instance.hard_expiry_ttl_minutes
     assert_equal 10, instance.num_items_to_fetch
     assert_equal "https://example.test/feed.xml", instance.options.fetch(:url)
   end
@@ -32,6 +33,22 @@ class ConfigurationTest < Minitest::Test
     end
   end
 
+  def test_loads_optional_hard_expiry_ttl_minutes_as_common_configuration
+    source = File.read(FIXTURE).sub(
+      "ttl_minutes = 30\n",
+      "ttl_minutes = 30\nhard_expiry_ttl_minutes = 43200\n"
+    )
+
+    Tempfile.create(["cybort-config", ".toml"]) do |file|
+      file.write(source)
+      file.flush
+      instance = Cybort::Configuration.load(file.path).instances.fetch("personal_rss")
+
+      assert_equal 43_200, instance.hard_expiry_ttl_minutes
+      refute instance.options.key?(:hard_expiry_ttl_minutes)
+    end
+  end
+
   def test_rejects_invalid_retention_ttl_minutes
     invalid_values = ["0", "-1", "1.5", '"48h"', "true"]
 
@@ -49,6 +66,27 @@ class ConfigurationTest < Minitest::Test
           Cybort::Configuration.load(file.path)
         end
         assert_includes error.message, "retention_ttl_minutes"
+      end
+    end
+  end
+
+  def test_rejects_invalid_hard_expiry_ttl_minutes
+    invalid_values = ["0", "-1", "1.5", '"30d"', "true"]
+
+    invalid_values.each do |value|
+      source = File.read(FIXTURE).sub(
+        "ttl_minutes = 30\n",
+        "ttl_minutes = 30\nhard_expiry_ttl_minutes = #{value}\n"
+      )
+
+      Tempfile.create(["cybort-config", ".toml"]) do |file|
+        file.write(source)
+        file.flush
+
+        error = assert_raises(Cybort::ConfigurationError) do
+          Cybort::Configuration.load(file.path)
+        end
+        assert_includes error.message, "hard_expiry_ttl_minutes"
       end
     end
   end

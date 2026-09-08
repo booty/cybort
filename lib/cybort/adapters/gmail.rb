@@ -27,7 +27,7 @@ module Cybort
         if options.key?(:credentials_file)
           path = options[:credentials_file]
           valid_path = GmailCredentials.printable?(path, 4_096) &&
-            (path.start_with?("/") || path.start_with?("~/"))
+            path.start_with?("/", "~/")
           raise ConfigurationError, "gmail credentials_file must be an absolute or ~/ path" unless valid_path
         end
 

@@ -28,6 +28,12 @@ invariants and workflow rules here, not session-by-session narration.
   one reading of its own clock for both that cutoff and durable cache
   freshness. Fetch history retains the raw completion timestamp. Cache hits and
   failed fetches do not prune.
+- A configured source instance may separately define
+  `hard_expiry_ttl_minutes`. At the start of every collection run, persistence
+  deletes that instance's items older than the hard-expiry cutoff before source
+  planning, even if the source later fails. The explicit `purge INSTANCE_ID`
+  CLI workflow transactionally removes an instance's items, sync state, and
+  fetch history, optionally after a SQLite backup.
 - Adapter threads fetch, validate, and normalize source data. They do not own
   SQLite schema details, SQL, transactions, or persistence writes.
 - The orchestrator snapshots each validated instance's retention policy before

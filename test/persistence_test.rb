@@ -67,6 +67,8 @@ class PersistenceTest < Minitest::Test
       persistence.setup!
 
       assert_equal ["adapter_instances", "fetch_runs", "items", "schema_migrations"], persistence.table_names
+      indexes = persistence.send(:query, "PRAGMA index_list('items')").map { |row| row.fetch("name") }
+      assert_includes indexes, "idx_items_instance_fetched_at"
     end
   end
 
@@ -80,6 +82,66 @@ class PersistenceTest < Minitest::Test
 
       assert_equal "Renamed RSS", persistence.instance_record("rss").fetch("name")
       assert_equal 1, persistence.instance_count
+    end
+  end
+
+  def test_planning_context_returns_ids_without_hydrating_items
+    with_database do |path|
+      persistence = Cybort::Persistence.new(path)
+      persistence.setup!
+      persistence.register_instance(instance)
+      persistence.write_fetch_result(result)
+
+      context = persistence.planning_context_for(instance_id: "rss")
+
+      assert_empty context.fetch(:items)
+      assert_equal ["entry-1"], context.fetch(:item_ids).to_a
+      assert_equal({ cursor: "next" }, context.fetch(:sync_state))
+    end
+  end
+
+  def test_hard_expiry_prunes_only_the_target_instance
+    with_database do |path|
+      now = Time.utc(2026, 8, 16, 13)
+      persistence = Cybort::Persistence.new(path, clock: -> { now })
+      persistence.setup!
+      persistence.register_instance(instance("rss"))
+      persistence.register_instance(instance("other"))
+      persistence.write_fetch_result(result(items: [item(canonical_id: "old", fetched_at: now - 3_600)]))
+      persistence.write_fetch_result(result(instance_id: "other", items: [item(instance_id: "other", fetched_at: now - 3_600)]))
+
+      assert_equal 1, persistence.expire_items(instance_id: "rss", hard_expiry_ttl_minutes: 60)
+      assert_empty persistence.items_for(instance_id: "rss")
+      assert_equal ["entry-1"], persistence.items_for(instance_id: "other").map(&:canonical_id)
+    end
+  end
+
+  def test_delete_instance_removes_items_state_and_fetch_history
+    with_database do |path|
+      persistence = Cybort::Persistence.new(path)
+      persistence.setup!
+      persistence.register_instance(instance)
+      persistence.write_fetch_result(result)
+
+      assert persistence.delete_instance(instance_id: "rss")
+      refute persistence.delete_instance(instance_id: "rss")
+      assert_nil persistence.instance_record("rss")
+      assert_empty persistence.items_for(instance_id: "rss")
+      assert_empty persistence.fetch_runs_for(instance_id: "rss")
+    end
+  end
+
+  def test_backup_to_writes_a_standalone_database
+    with_database do |path|
+      persistence = Cybort::Persistence.new(path)
+      persistence.setup!
+      persistence.register_instance(instance)
+      persistence.write_fetch_result(result)
+      backup = "#{path}.backup"
+
+      assert_equal backup, persistence.backup_to(backup)
+      backup_persistence = Cybort::Persistence.new(backup).setup!
+      assert_equal ["entry-1"], backup_persistence.items_for(instance_id: "rss").map(&:canonical_id)
     end
   end
 

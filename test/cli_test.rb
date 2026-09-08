@@ -185,4 +185,42 @@ class CliTest < Minitest::Test
       refute_includes output.string, sentinel
     end
   end
+
+  def test_purge_requires_exact_confirmation_and_can_create_a_backup
+    Dir.mktmpdir do |directory|
+      root = File.join(directory, ".cybort")
+      FileUtils.mkdir_p(root)
+      database = File.join(root, "cybort.sqlite3")
+      persistence = Cybort::Persistence.new(database).setup!
+      instance = Cybort::Configuration::Instance.new(
+        id: "rss", name: "RSS", adapter: "rss", ttl_minutes: 30,
+        retention_ttl_minutes: nil, hard_expiry_ttl_minutes: nil,
+        num_items_to_fetch: 5, options: {}
+      )
+      persistence.register_instance(instance)
+      persistence.write_fetch_result(
+        Cybort::FetchResult.success(
+          instance_id: "rss",
+          items: [Cybort::Item.new(instance_id: "rss", canonical_id: "entry", fetched_at: Time.now.utc, title: "Entry")],
+          sync_state: { cursor: "next" },
+          started_at: Time.now.utc,
+          finished_at: Time.now.utc,
+          source_fetched: true
+        )
+      )
+      backup = File.join(directory, "rss-backup.sqlite3")
+      output = StringIO.new
+
+      status = Cybort::CLI.start(
+        ["purge", "rss", "--backup", backup],
+        out: output, err: StringIO.new, home: directory,
+        input: StringIO.new("PURGE rss\n")
+      )
+
+      assert_equal 0, status
+      assert_path_exists backup
+      assert_nil persistence.instance_record("rss")
+      assert_includes output.string, "Purged rss"
+    end
+  end
 end

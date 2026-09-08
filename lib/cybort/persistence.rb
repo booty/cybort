@@ -1,11 +1,14 @@
 require "json"
+require "fileutils"
+require "set"
 require "sqlite3"
 require "time"
 
 module Cybort
   class Persistence
     def initialize(path, clock: -> { Time.now.utc })
-      @database = SQLite3::Database.new(path.to_s)
+      @path = File.expand_path(path.to_s)
+      @database = SQLite3::Database.new(@path)
       @database.busy_timeout(5_000)
       @clock = clock
     end
@@ -46,11 +49,58 @@ module Cybort
 
     def context_for(instance_id:)
       record = instance_record(instance_id)
+      items = items_for(instance_id: instance_id)
       {
-        items: items_for(instance_id: instance_id),
+        items: items,
+        item_ids: items.map(&:canonical_id).to_set,
         last_successful_fetch: record && parse_time(record["last_successful_fetch"]),
         sync_state: record && parse_json(record["sync_state_json"])
       }
+    end
+
+    def planning_context_for(instance_id:)
+      record = instance_record(instance_id)
+      {
+        items: [],
+        item_ids: canonical_ids_for(instance_id: instance_id),
+        last_successful_fetch: record && parse_time(record["last_successful_fetch"]),
+        sync_state: record && parse_json(record["sync_state_json"])
+      }
+    end
+
+    def expire_items(instance_id:, hard_expiry_ttl_minutes:)
+      unless hard_expiry_ttl_minutes.is_a?(Integer) && hard_expiry_ttl_minutes.positive?
+        raise ValidationError, "hard_expiry_ttl_minutes must be a positive integer"
+      end
+
+      cutoff = @clock.call - (hard_expiry_ttl_minutes * 60)
+      @database.transaction do
+        @database.execute(
+          "DELETE FROM items WHERE instance_id = ? AND fetched_at <= ?",
+          [instance_id, timestamp(cutoff)]
+        )
+        @database.changes
+      end
+    end
+
+    def delete_instance(instance_id:)
+      @database.transaction do
+        next false unless instance_record(instance_id)
+
+        @database.execute("DELETE FROM fetch_runs WHERE instance_id = ?", [instance_id])
+        @database.execute("DELETE FROM items WHERE instance_id = ?", [instance_id])
+        @database.execute("DELETE FROM adapter_instances WHERE id = ?", [instance_id])
+        true
+      end
+    end
+
+    def backup_to(path)
+      destination = File.expand_path(path.to_s)
+      raise ValidationError, "backup destination already exists" if File.exist?(destination)
+
+      FileUtils.mkdir_p(File.dirname(destination))
+      @database.execute("VACUUM INTO ?", [destination])
+      destination
     end
 
     def items_for(instance_id: nil, limit: nil)
@@ -206,6 +256,12 @@ module Cybort
     def query(sql, *binds)
       columns, *rows = @database.execute2(sql, binds)
       rows.map { |row| columns.zip(row).to_h }
+    end
+
+    def canonical_ids_for(instance_id:)
+      query("SELECT canonical_id FROM items WHERE instance_id = ?", instance_id)
+        .map { |row| row.fetch("canonical_id") }
+        .to_set
     end
 
     def item_from_row(row)

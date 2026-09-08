@@ -1,91 +1,55 @@
 # Deferred Quality Follow-ups
 
 These items were identified during the 2026-09-05 adversarial reviews of
-configurable retention and the Reddit integration. They are intentionally
-deferred because they require broader measurement, lifecycle UX, or an
-architecture change, not because they are needed for the approved
-success-triggered retention and current-snapshot contracts.
+configurable retention and the Reddit integration. The implementation pass on
+2026-09-08 addressed the actionable items while preserving the existing
+success-triggered retention contract. The accepted lifecycle decision is in
+[ADR 0007](adr/0007-lifecycle-expiry-and-instance-purge.md).
 
-## Establish a staged RuboCop baseline
+## Establish a staged RuboCop baseline — implemented
 
-The repository now bundles RuboCop and RuboCop Performance, but the existing
-codebase has no `.rubocop.yml`; a full run currently reports 2,754 offenses
-across 52 files, mostly legacy string-literal, frozen-string, layout, and
-metrics defaults. The reviewed Reddit/transport production files are clean for
-the focused Lint and Security departments.
+The repository now has a checked-in `.rubocop.yml` and a `rake quality` task.
+Correctness, security, and performance cops run on the reviewed
+connector/configuration files. Style, layout, naming, and metrics remain
+disabled until they can be ratcheted in smaller reviewed changes. No mass
+autocorrection was performed.
 
-Follow-up: agree on a project style baseline, add configuration in stages, and
-ratchet only changed files or newly touched cops before enabling a whole-tree
-gate. Do not mass-autocorrect the existing suite without a separately reviewed
-formatting change.
+**Evidence:** `.rubocop.yml`, `Rakefile`, and the README quality command.
 
-Evidence: `bundle exec rubocop --format simple` and
-`bundle exec rubocop --only Lint,Security --format simple
-lib/cybort/http_client.rb lib/cybort/reddit_client.rb
-lib/cybort/adapters/gmail.rb lib/cybort/reddit_rate_limit_coordinator.rb
-lib/cybort/configuration.rb` on 2026-09-05.
+## Avoid eager item hydration during remote-only runs — implemented
 
-## Avoid eager item hydration during remote-only runs
+`Persistence#planning_context_for` returns freshness/state metadata and a
+canonical-ID set without materializing item objects. The orchestrator uses it
+for planning and hydrates full items only for cache plans; remote result
+accounting uses the ID set.
 
-`Orchestrator#run` currently asks `Persistence#context_for` for every instance
-before planning. That call materializes all stored items, even when a forced or
-stale remote fetch will discard them and the CLI will read the database again
-after persistence.
+**Evidence:** `lib/cybort/persistence.rb`, `lib/cybort/orchestrator.rb`, and
+the planning-context tests.
 
-Follow-up: split freshness/synchronization metadata from item hydration, or
-load item rows only for cache paths. Measure retained item counts and startup
-memory/time before choosing the API shape.
+## Evaluate an instance/fetched-at pruning index — implemented
 
-Evidence: `lib/cybort/orchestrator.rb`, `lib/cybort/persistence.rb`, and the
-2026-09-05 Sol adversarial review.
+Schema version 2 adds the idempotent composite index
+`idx_items_instance_fetched_at` for instance-scoped expiry deletes. `setup!`
+creates it for both new and existing databases.
 
-## Evaluate an instance/fetched-at pruning index
+**Evidence:** `lib/cybort/schema.rb` and the persistence schema test.
 
-Retention deletes by `instance_id` and `fetched_at`, while the current primary
-key is `(instance_id, canonical_id)`. A composite index may improve pruning for
-large histories, but adding it requires a schema migration.
+## Add hard wall-clock expiry independent of fetch success — implemented
 
-Follow-up: collect realistic database-size/query timings first, then decide
-whether to add a migration for `(instance_id, fetched_at)`.
+`hard_expiry_ttl_minutes` performs instance-scoped startup cleanup using
+persistence's clock before planning. It is independent of remote success and
+reports `items_expired` metadata. It is intentionally startup-bound rather
+than a background daemon; powered-off processes cannot delete data.
 
-Evidence: `lib/cybort/schema.rb`, `lib/cybort/persistence.rb`, and the
-2026-09-05 Sol adversarial review.
+**Evidence:** `lib/cybort/configuration.rb`, `lib/cybort/persistence.rb`,
+`lib/cybort/orchestrator.rb`, and ADR 0007.
 
-## Add hard wall-clock expiry independent of fetch success
+## Add explicit instance-removal and user-request deletion workflows — implemented
 
-Both configured retention and current-snapshot replacement intentionally run
-only after a successful remote fetch. During a prolonged authentication,
-network, rate-limit, or service outage, locally stored Reddit subjects and
-titles can therefore outlive the configured retention interval. The Reddit
-integration must not be represented as guaranteeing a fixed deletion deadline
-or full Data API deletion compliance during outages.
+`Persistence#delete_instance` and `cybort purge INSTANCE_ID` provide a narrow
+instance-ID boundary. The CLI requires exact confirmation unless `--yes` is
+supplied and offers `--backup PATH` before deletion. The transaction deletes
+fetch history and items before the adapter-instance row.
 
-Follow-up: design an explicit background/startup expiry mechanism, including
-clock ownership, transaction behavior, cache presentation, failure reporting,
-and how it supersedes or composes with ADR 0003. Treat this as a Reddit release
-and operator compliance caveat until that design is accepted. Operators who
-require a hard bound must remove the affected local data themselves rather than
-relying solely on successful-fetch cleanup.
-
-Evidence: [ADR 0003](adr/0003-configurable-item-retention.md),
-[ADR 0004](adr/0004-current-snapshot-item-replacement.md), and the 2026-09-05
-independent Reddit design review.
-
-## Add explicit instance-removal and user-request deletion workflows
-
-Removing an instance from `cybort.toml`, revoking Reddit access, terminating an
-approved use, or receiving a user deletion request does not currently target
-and purge that instance's items, synchronization state, and fetch history.
-Snapshot replacement cannot help when no later successful fetch occurs.
-
-Follow-up: design an explicit, narrowly targeted lifecycle command/API with a
-reviewable deletion boundary, backup guidance, recovery expectations, and tests
-for instance-ID isolation. Treat the absence of this workflow as a Reddit
-release/operator compliance caveat. Until it exists, operators remain
-responsible for deleting the SQLite database or otherwise removing the affected
-local data when access or approved use ends.
-
-Evidence: `lib/cybort/persistence.rb`,
-[ADR 0004](adr/0004-current-snapshot-item-replacement.md), Reddit's
-[Data API Terms](https://redditinc.com/policies/data-api-terms), and the
-2026-09-05 independent Reddit design review.
+**Evidence:** `lib/cybort/persistence.rb`, `lib/cybort/cli.rb`, the persistence
+and CLI tests, and ADR 0007.

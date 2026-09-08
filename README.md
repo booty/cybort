@@ -24,6 +24,17 @@ Install the declared dependencies:
 bundle install
 ```
 
+Run the staged static-quality baseline with:
+
+```bash
+bundle exec rake quality
+```
+
+The baseline currently gates correctness, security, and performance cops on
+the connector/configuration files reviewed most recently. Legacy style,
+layout, naming, and metrics offenses remain intentionally outside the gate
+until they can be ratcheted in smaller reviewed changes.
+
 ## Initialize an installation
 
 The default installation directory is `~/.cybort`:
@@ -63,6 +74,23 @@ and failed fetches preserve the existing items, even when they are older than
 the configured duration. It is valid for retention to be shorter than
 `ttl_minutes`; in that case, a cache hit preserves the old items and the next
 successful remote fetch may remove every item it does not return.
+
+`hard_expiry_ttl_minutes` is an independent optional bound. When configured,
+Cybort deletes items older than that window at the start of every collection
+run, before source planning, even when the source is unavailable. Omit it when
+last-known-good items must survive outages; use it when a source requires a
+wall-clock local bound.
+
+To remove one instance's items, synchronization state, and fetch history after
+an instance is removed from configuration or an approved use ends, run:
+
+```bash
+bundle exec bin/cybort purge INSTANCE_ID --backup /path/to/backup.sqlite3
+```
+
+The command requires typing `PURGE INSTANCE_ID` unless `--yes` is supplied. A
+backup is optional but recommended; deletion is transactional and irreversible
+after the backup step completes.
 
 ### Reddit connector
 
@@ -176,11 +204,11 @@ atomically replaces that instance's prior selected items. A cache hit, failed
 fetch, or incomplete remote operation leaves the prior items intact. The normal
 `retention_ttl_minutes` transaction still applies to successful remote writes;
 for Reddit, configure it at or below 2,880 minutes (48 hours) unless there is
-a deliberate reason not to. Neither retention nor snapshot replacement can
-guarantee wall-clock deletion while the source is unreachable, because cache
-and failure paths preserve last-known-good data. Removing an instance does not
-automatically purge its local rows, and Cybort has no user-facing purge command
-yet. To remove locally stored Reddit data, stop Cybort and delete the intended
+a deliberate reason not to. `hard_expiry_ttl_minutes` provides a separate
+startup-bound local deletion policy when a wall-clock bound is required.
+Removing an instance does not automatically purge its local rows; use the
+explicit `purge` workflow above. To remove locally stored Reddit data, stop
+Cybort and delete the intended
 SQLite installation data (normally `~/.cybort/cybort.sqlite3`); this is
 irreversible, so make any desired backup first. See
 [`docs/quality-followups.md`](docs/quality-followups.md) for the deferred

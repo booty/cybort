@@ -14,6 +14,9 @@ module Cybort
       if args.first == "init"
         return initialize_installation(args[1] || File.join(home, ".cybort"), input: input, out: out, clock: clock)
       end
+      if args.first == "purge"
+        return purge_instance(args.drop(1), input: input, out: out, home: home, clock: clock)
+      end
 
       options = parse_options(args, out, output_mode: output_mode)
       root = File.join(home, ".cybort")
@@ -72,6 +75,42 @@ module Cybort
       raise OptionParser::InvalidOption, args.join(" ") unless args.empty?
 
       options
+    end
+
+    def purge_instance(args, input:, out:, home:, clock:)
+      options = { confirm: false, backup: nil }
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: cybort purge INSTANCE_ID [--yes] [--backup PATH]"
+        opts.on("--yes", "Skip the interactive purge confirmation") { options[:confirm] = true }
+        opts.on("--backup PATH", "Create a SQLite backup before deletion") { |path| options[:backup] = path }
+        opts.on("--help", "Show this help") do
+          out.puts opts
+          exit 0
+        end
+      end
+      parser.parse!(args)
+      instance_id = args.shift
+      raise OptionParser::MissingArgument, "INSTANCE_ID" unless instance_id
+      raise OptionParser::InvalidOption, args.join(" ") unless args.empty?
+
+      root = File.join(home, ".cybort")
+      database_path = File.join(root, "cybort.sqlite3")
+      raise ConfigurationError, "No Cybort database found at #{database_path}" unless File.file?(database_path)
+
+      persistence = Persistence.new(database_path, clock: clock).setup!
+      record = persistence.instance_record(instance_id)
+      raise ConfigurationError, "Unknown adapter instance: #{instance_id}" unless record
+
+      unless options[:confirm]
+        out.puts "This permanently deletes #{instance_id}'s items, sync state, and fetch history."
+        out.puts "Type PURGE #{instance_id} to confirm, or anything else to cancel:"
+        return 1 unless input.gets.to_s.strip == "PURGE #{instance_id}"
+      end
+
+      backup_path = options[:backup] && persistence.backup_to(options[:backup])
+      persistence.delete_instance(instance_id: instance_id)
+      out.puts "Purged #{instance_id}.#{backup_path ? " Backup: #{backup_path}" : " No backup was created."}"
+      0
     end
 
     def initialize_installation(path, input:, out:, clock:)

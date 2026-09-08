@@ -12,6 +12,7 @@ supersedes the old one instead of silently rewriting it.
 | [0004](0004-current-snapshot-item-replacement.md) | Accepted | Optional complete-result replacement of one instance's current item set ([design](../superpowers/specs/2026-09-05-reddit-integration-design.md), [plan](../superpowers/plans/2026-09-05-reddit-integration.md)) | 2026-09-05 |
 | [0005](0005-gmail-direct-api-and-external-oauth-bootstrap.md) | Accepted | Direct Gmail API with external OAuth bootstrap; implementation offline-verified, authenticated live gate pending ([design](../superpowers/specs/2026-09-06-gmail-direct-api-design.md), [plan](../superpowers/plans/2026-09-06-gmail-direct-api.md)) | 2026-09-06 |
 | [0006](0006-reddit-rss-observed-ranking.md) | Accepted; implemented offline, live gates open | Separate public Reddit RSS adapter with bounded observed-pool ranking ([design](../superpowers/specs/2026-09-06-reddit-rss-design.md), [plan](../superpowers/plans/2026-09-06-reddit-rss.md)) | 2026-09-06 |
+| [0007](0007-lifecycle-expiry-and-instance-purge.md) | Accepted | Optional hard-expiry cleanup, planning-only contexts, and explicit instance purge | 2026-09-08 |
 
 When adding an ADR:
 
