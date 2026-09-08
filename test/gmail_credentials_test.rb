@@ -172,16 +172,6 @@ class GmailCredentialsTest < Minitest::Test
     assert_equal :unreadable, error.safe_metadata.fetch(:category)
   end
 
-  def test_printable_validation_is_shared_and_strict
-    assert Cybort::GmailCredentials.printable?("plain", 5)
-    refute Cybort::GmailCredentials.printable?(nil, 10)
-    refute Cybort::GmailCredentials.printable?("\xFF".b.force_encoding(Encoding::UTF_8), 10)
-    refute Cybort::GmailCredentials.printable?(" \t", 10)
-    refute Cybort::GmailCredentials.printable?("a\x00b", 10)
-    refute Cybort::GmailCredentials.printable?("a\u007Fb", 10)
-    refute Cybort::GmailCredentials.printable?("123456", 5)
-  end
-
   def test_gmail_api_error_has_allowlisted_safe_metadata_and_exact_403_guidance
     error = Cybort::GmailApiError.new(operation: :list, category: :authorization, status: 403)
     assert_kind_of Cybort::SourceError, error

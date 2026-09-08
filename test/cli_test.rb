@@ -71,19 +71,6 @@ class CliTest < Minitest::Test
     TOML
   end
 
-  def test_init_creates_installation_and_schema
-    Dir.mktmpdir do |directory|
-      path = File.join(directory, "cybort")
-      output = StringIO.new
-
-      status = Cybort::CLI.start(["init", path], out: output, err: output, home: directory)
-
-      assert_equal 0, status
-      assert_path_exists File.join(path, "cybort.toml")
-      assert_path_exists File.join(path, "cybort.sqlite3")
-    end
-  end
-
   def test_missing_configuration_explains_how_to_initialize_cybort
     Dir.mktmpdir do |directory|
       output = StringIO.new

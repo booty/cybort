@@ -63,31 +63,21 @@ class DependencyCheckerTest < Minitest::Test
     end
   end
 
-  def test_accepts_documented_gws_version
-    with_tool("gws") do |directory|
-      runner = FakeRunner.new(success_result(stdout: "gws version 0.22.5\n"))
-      checker = Cybort::DependencyChecker.new(command_runner: runner)
-      dependency = gws_dependency
+  def test_accepts_documented_gws_version_outputs
+    [
+      ["version command", "gws version 0.22.5\n"],
+      ["installed binary", "gws 0.22.5\nThis is not an officially supported Google product.\n"]
+    ].each do |label, stdout|
+      with_tool("gws") do |directory|
+        runner = FakeRunner.new(success_result(stdout: stdout))
+        checker = Cybort::DependencyChecker.new(command_runner: runner)
 
-      resolution = checker.resolve(dependency, env: { "PATH" => directory })
+        resolution = checker.resolve(gws_dependency, env: { "PATH" => directory })
 
-      assert_equal "0.22.5", resolution.version
-      assert_nil resolution.error
-      assert_equal [File.join(directory, "gws"), "--version"], runner.calls.first
-    end
-  end
-
-  def test_accepts_installed_gws_version_output
-    with_tool("gws") do |directory|
-      runner = FakeRunner.new(
-        success_result(stdout: "gws 0.22.5\nThis is not an officially supported Google product.\n")
-      )
-      checker = Cybort::DependencyChecker.new(command_runner: runner)
-
-      resolution = checker.resolve(gws_dependency, env: { "PATH" => directory })
-
-      assert_equal "0.22.5", resolution.version
-      assert_nil resolution.error
+        assert_equal "0.22.5", resolution.version, label
+        assert_nil resolution.error, label
+        assert_equal [File.join(directory, "gws"), "--version"], runner.calls.first, label
+      end
     end
   end
 

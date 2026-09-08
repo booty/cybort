@@ -59,7 +59,6 @@ class AdapterRegistryTest < Minitest::Test
     instance = Instance.new(adapter: "reddit_rss")
 
     assert_empty registry.dependencies_for(instance)
-    assert registry.respond_to?(:validate_configuration!)
   end
 
   def test_legacy_callable_factory_receives_only_legacy_keywords

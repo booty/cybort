@@ -440,10 +440,10 @@ class PersistenceTest < Minitest::Test
           sync_state: { cursor: "old" }
         )
       )
-      persistence.define_singleton_method(:insert_fetch_run) do |_result, _status|
-        raise "fetch history unavailable"
-      end
-      begin
+      with_persistence_failure(
+        persistence, :insert_fetch_run,
+        ->(_result, _status) { raise "fetch history unavailable" }
+      ) do
         assert_raises(RuntimeError) do
           persistence.write_fetch_result(
             result(
@@ -455,14 +455,9 @@ class PersistenceTest < Minitest::Test
             retention_ttl_minutes: 60
           )
         end
-      ensure
-        persistence.singleton_class.send(:remove_method, :insert_fetch_run)
       end
 
-      assert_equal ["old"], persistence.items_for(instance_id: "rss").map(&:canonical_id)
-      refute_includes persistence.items_for(instance_id: "rss").map(&:canonical_id), "new"
-      assert_equal({ cursor: "old" }, persistence.context_for(instance_id: "rss").fetch(:sync_state))
-      assert_equal 1, persistence.fetch_runs_for(instance_id: "rss").length
+      assert_rolled_back_replacement(persistence)
     end
   end
 
@@ -472,21 +467,18 @@ class PersistenceTest < Minitest::Test
       persistence.setup!
       persistence.register_instance(instance)
       persistence.write_fetch_result(result(items: [item(canonical_id: "old")], sync_state: { cursor: "old" }))
-      persistence.define_singleton_method(:upsert_item) { |_item| raise "upsert unavailable" }
-
-      begin
+      with_persistence_failure(
+        persistence, :upsert_item,
+        ->(_item) { raise "upsert unavailable" }
+      ) do
         assert_raises(RuntimeError) do
           persistence.write_fetch_result(
             result(items: [item(canonical_id: "new")], sync_state: { cursor: "new" }, replace_existing_items: true)
           )
         end
-      ensure
-        persistence.singleton_class.send(:remove_method, :upsert_item)
       end
 
-      assert_equal ["old"], persistence.items_for(instance_id: "rss").map(&:canonical_id)
-      assert_equal({ cursor: "old" }, persistence.context_for(instance_id: "rss").fetch(:sync_state))
-      assert_equal 1, persistence.fetch_runs_for(instance_id: "rss").length
+      assert_rolled_back_replacement(persistence)
     end
   end
 
@@ -496,23 +488,20 @@ class PersistenceTest < Minitest::Test
       persistence.setup!
       persistence.register_instance(instance)
       persistence.write_fetch_result(result(items: [item(canonical_id: "old")], sync_state: { cursor: "old" }))
-      persistence.define_singleton_method(:update_instance_state) do |_result, last_successful_fetch:, updated_at:|
-        raise "state unavailable"
-      end
-
-      begin
+      with_persistence_failure(
+        persistence, :update_instance_state,
+        lambda do |_result, last_successful_fetch:, updated_at:|
+          raise "state unavailable"
+        end
+      ) do
         assert_raises(RuntimeError) do
           persistence.write_fetch_result(
             result(items: [item(canonical_id: "new")], sync_state: { cursor: "new" }, replace_existing_items: true)
           )
         end
-      ensure
-        persistence.singleton_class.send(:remove_method, :update_instance_state)
       end
 
-      assert_equal ["old"], persistence.items_for(instance_id: "rss").map(&:canonical_id)
-      assert_equal({ cursor: "old" }, persistence.context_for(instance_id: "rss").fetch(:sync_state))
-      assert_equal 1, persistence.fetch_runs_for(instance_id: "rss").length
+      assert_rolled_back_replacement(persistence)
     end
   end
 
@@ -534,5 +523,20 @@ class PersistenceTest < Minitest::Test
 
       assert_equal({ cursor: "old" }, persistence.context_for(instance_id: "rss").fetch(:sync_state))
     end
+  end
+
+  private
+
+  def with_persistence_failure(persistence, method_name, failure)
+    persistence.singleton_class.define_method(method_name, &failure)
+    yield
+  ensure
+    persistence.singleton_class.send(:remove_method, method_name)
+  end
+
+  def assert_rolled_back_replacement(persistence)
+    assert_equal ["old"], persistence.items_for(instance_id: "rss").map(&:canonical_id)
+    assert_equal({ cursor: "old" }, persistence.context_for(instance_id: "rss").fetch(:sync_state))
+    assert_equal 1, persistence.fetch_runs_for(instance_id: "rss").length
   end
 end
