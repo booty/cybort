@@ -203,7 +203,7 @@ module Cybort
           error: result.error,
           started_at: result.started_at,
           finished_at: result.finished_at,
-          metadata: result.metadata
+          metadata: expiry_metadata(result.metadata, hard_expired_items)
         )
         @persistence.record_fetch_failure(failure)
         run_status = InstanceRunStatus.new(
@@ -212,7 +212,7 @@ module Cybort
           source_fetched: false,
           item_count: 0,
           error: result.error,
-          metadata: result.metadata
+          metadata: expiry_metadata(result.metadata, hard_expired_items)
         )
         progress_puts(progress_message(instance, run_status, result))
         return run_status
@@ -245,7 +245,7 @@ module Cybort
         error: error,
         started_at: result.started_at,
         finished_at: @clock.call,
-        metadata: error.respond_to?(:safe_metadata) ? error.safe_metadata : {}
+        metadata: expiry_metadata(error.respond_to?(:safe_metadata) ? error.safe_metadata : {}, hard_expired_items)
       )
       @persistence.record_fetch_failure(failure)
       run_status = InstanceRunStatus.new(instance_id: instance.id, status: :failure, source_fetched: result.source_fetched, item_count: 0, error: error, metadata: failure.metadata)
@@ -255,6 +255,12 @@ module Cybort
 
     def progress_puts(message)
       @progress&.puts(message)
+    end
+
+    def expiry_metadata(metadata, count)
+      return metadata if count.zero?
+
+      (metadata || {}).merge(items_expired: count)
     end
 
     def fetch_start_message(plan)
