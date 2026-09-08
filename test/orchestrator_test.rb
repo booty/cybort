@@ -215,6 +215,31 @@ class OrchestratorTest < Minitest::Test
     assert_empty persistence.failures
   end
 
+  def test_announces_gmail_message_fetch_before_completion
+    started = Queue.new
+    release = Queue.new
+    registry = Cybort::AdapterRegistry.new
+    registry.register(
+      "gmail", ->(**kwargs) { GateAdapter.new(**kwargs, started: started, release: release) },
+      display_name: "Gmail", item_noun: "messages"
+    )
+    mail = instance("mail").tap { |value| value.adapter = "gmail" }
+    configuration = Struct.new(:instances).new({ "mail" => mail })
+    progress = StringIO.new
+    orchestrator = Cybort::Orchestrator.new(
+      configuration: configuration, persistence: PersistenceSpy.new, registry: registry,
+      http_client: nil, progress: progress
+    )
+
+    run_thread = Thread.new { orchestrator.run }
+    assert_equal "mail", started.pop
+    assert_equal "Mail: Fetching Gmail messages...\n", progress.string
+
+    release << true
+    run_thread.value
+    assert_includes progress.string, "Mail: 1 messages found"
+  end
+
   def test_force_fetch_is_passed_to_every_adapter
     calls = []
     registry = Cybort::AdapterRegistry.new

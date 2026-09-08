@@ -266,6 +266,7 @@ module Cybort
     def fetch_start_message(plan)
       instance = plan.instance
       source = @registry.display_name_for(instance)
+      source = "#{source} messages" if instance.adapter == "gmail"
       source = if instance.adapter == "rss"
         url = instance.options.fetch(:url, nil)
         url ? "#{source} from #{url}" : source
