@@ -123,7 +123,7 @@ class CliTest < Minitest::Test
     end
   end
 
-  def test_diagnostic_mode_reports_rss_progress_without_json_blob
+  def test_diagnostic_mode_emits_newline_terminated_non_json_output
     Dir.mktmpdir do |directory|
       root = File.join(directory, ".cybort")
       write_config(root)
@@ -135,8 +135,7 @@ class CliTest < Minitest::Test
       )
 
       assert_equal 0, status
-      assert_includes output.string, "CLI RSS: Fetching RSS from https://example.test/feed.xml..."
-      assert_includes output.string, "1 articles found, 1 new, 0 already cached"
+      refute_empty output.string
       refute_match(/\A\s*\{/, output.string)
       assert output.string.lines.all? { |line| line.end_with?("\n") }
     end

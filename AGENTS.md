@@ -91,7 +91,12 @@ invariants and workflow rules here, not session-by-session narration.
   supports macOS/POSIX process semantics; Windows support requires a separate
   design.
 - Tests use local fixtures and injected clients; they must not contact external
-  services. Run them with `bundle exec rake test`.
+  services. Run them with `bundle exec rake test`. Do not assert exact
+  human-facing debugging or diagnostic prose, including connector progress
+  wording; it is nonessential and expected to change frequently. Test the
+  durable contract instead: failures are surfaced, useful typed or sanitized
+  diagnostic information is available, promised output framing is preserved,
+  and secrets or raw response bodies are absent.
 - `docs/spitballing/initial-spitballing.md` is historical exploratory material. Treat the
   current design spec and accepted ADRs as authoritative design records, and do
   not modify the spitballing document unless the user explicitly requests it.
