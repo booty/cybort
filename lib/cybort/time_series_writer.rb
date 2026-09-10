@@ -146,6 +146,8 @@ module Cybort
       @state_mutex.synchronize do
         if !@started
           raise RuntimeError, "time-series writer has not started"
+        elsif @worker_failure
+          raise RuntimeError, "time-series writer worker has failed"
         elsif @closing || @closed
           raise RuntimeError, "time-series writer is closed"
         end

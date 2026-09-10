@@ -78,6 +78,28 @@ class TimeSeriesWriterTest < Minitest::Test
     assert_equal ["sensor"], @persistence.deletions
   end
 
+  def test_failed_factory_rejects_late_submissions_and_waits_are_bounded
+    failing_writer = Cybort::TimeSeriesWriter.new(
+      time_series_persistence_factory: -> { raise "factory failed" }, event_queue: @events
+    )
+    @writer = failing_writer
+    failing_writer.start
+
+    failure = assert_raises(RuntimeError) do
+      Timeout.timeout(1) { failing_writer.close_and_join }
+    end
+    assert_equal "factory failed", failure.message
+
+    submission_failure = assert_raises(RuntimeError) do
+      Timeout.timeout(1) { failing_writer.submit_delete_instance(instance_id: "sensor") }
+    end
+    assert_match(/worker has failed/, submission_failure.message)
+
+    Timeout.timeout(1) do
+      assert_raises(ArgumentError) { failing_writer.event_for(1) }
+    end
+  end
+
   private
 
   def fake_artifact(import_key)
