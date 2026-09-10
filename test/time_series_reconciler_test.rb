@@ -38,8 +38,8 @@ class TimeSeriesReconcilerTest < Minitest::Test
     ], writer.calls
     assert_equal %w[a c], main.purged
     assert_equal %w[b d], result.fetch(:blocked_instances)
-    assert_equal [receipts.last], main.acknowledgements
-    assert_equal [receipts.last], writer.acknowledgements
+    assert_equal receipts, main.acknowledgements
+    assert_equal receipts, writer.acknowledgements
   end
 
   def test_marker_failure_rerun_is_idempotent_after_main_acknowledgement
