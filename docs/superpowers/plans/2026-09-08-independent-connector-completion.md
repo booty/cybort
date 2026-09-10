@@ -430,7 +430,7 @@ No adapter, persistence, schema, configuration, or connector-specific test file 
   Change ADR 0001's own status line to:
 
   ```markdown
-  - Status: Superseded by [ADR 0008](0008-independent-connector-completion.md) on 2026-09-08
+  - Status: Superseded by [ADR 0008](../../adr/0008-independent-connector-completion.md) on 2026-09-08
   ```
 
   Add a short note that its historical body is retained and ADR 0008 keeps the
