@@ -28,12 +28,14 @@ module Cybort
       end
 
       configuration = Configuration.load(configuration_path)
-      persistence = Persistence.new(File.join(root, "cybort.sqlite3"), clock: clock)
-      persistence.setup!
+      adapter_registry = registry || AdapterRegistry.default
+      persistence = nil
       time_series_path = File.join(root, "cybort-timeseries.sqlite3")
       time_series_bootstrap = nil
       time_series_reader = nil
       begin
+        persistence = Persistence.new(File.join(root, "cybort.sqlite3"), clock: clock)
+        persistence.setup!
         time_series_bootstrap = TimeSeriesPersistence.new(time_series_path, clock: clock)
         time_series_bootstrap.setup!
         time_series_reader = TimeSeriesReader.new(time_series_path)
@@ -48,7 +50,7 @@ module Cybort
         result = Orchestrator.new(
           configuration: configuration,
           persistence: persistence,
-          registry: registry || AdapterRegistry.default,
+          registry: adapter_registry,
           http_client: http_client || HttpClient.new,
           clock: clock,
           command_runner: command_runner,
@@ -65,23 +67,31 @@ module Cybort
             status: result.overall_status,
             unavailable_dependencies: result.unavailable_dependencies,
             instances: result.instances.map do |status|
-              status.to_h.merge(items: persistence.items_for(instance_id: status.instance_id).map(&:to_h))
+              instance = configuration.instances.fetch(status.instance_id)
+              items = if adapter_registry.result_kind_for(instance) == :time_series
+                []
+              else
+                persistence.items_for(instance_id: status.instance_id).map(&:to_h)
+              end
+              status.to_h.merge(items: items)
             end
           }
           out.puts JSON.generate(payload)
         end
         result.overall_status == :success ? 0 : 1
       ensure
-        begin
-          time_series_reader&.close
-        rescue StandardError
-          nil
+        active_error = $!
+        cleanup_error = nil
+        [time_series_reader, time_series_bootstrap, persistence].each do |resource|
+          next unless resource&.respond_to?(:close)
+
+          begin
+            resource.close
+          rescue Exception => error # rubocop:disable Lint/RescueException -- cleanup must not mask active errors
+            cleanup_error ||= error
+          end
         end
-        begin
-          time_series_bootstrap&.close
-        rescue StandardError
-          nil
-        end
+        raise cleanup_error if active_error.nil? && cleanup_error
       end
     rescue ConfigurationError, OptionParser::ParseError, SystemCallError => error
       err.puts error.message
