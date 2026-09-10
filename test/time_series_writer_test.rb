@@ -100,6 +100,50 @@ class TimeSeriesWriterTest < Minitest::Test
     end
   end
 
+  def test_successful_import_remains_success_when_artifact_cleanup_fails
+    cleanup_error = RuntimeError.new("cleanup failed")
+    writer = Cybort::TimeSeriesWriter.new(
+      time_series_persistence_factory: -> { @persistence }, event_queue: @events,
+      artifact_cleanup: ->(_artifact) { raise cleanup_error }
+    )
+    @writer = writer
+    writer.start
+    command_id = writer.submit_import(fake_artifact("cleanup-warning"))
+
+    event = @events.pop
+
+    assert_equal command_id, event.command_id
+    assert_equal :success, event.result
+    assert_nil event.error
+    assert_equal [
+      { phase: "artifact_cleanup", error_class: "RuntimeError" }
+    ], writer.cleanup_failures.fetch(command_id)
+  end
+
+  def test_import_error_remains_primary_when_artifact_cleanup_also_fails
+    import_error = ArgumentError.new("import failed")
+    cleanup_error = RuntimeError.new("cleanup failed")
+    persistence = Object.new
+    persistence.define_singleton_method(:import) { |_artifact| raise import_error }
+    writer = Cybort::TimeSeriesWriter.new(
+      time_series_persistence_factory: -> { persistence }, event_queue: @events,
+      artifact_cleanup: ->(_artifact) { raise cleanup_error }
+    )
+    @writer = writer
+    writer.start
+    command_id = writer.submit_import(fake_artifact("import-error"))
+
+    event = @events.pop
+
+    assert_equal command_id, event.command_id
+    assert_equal :failure, event.result
+    assert_same import_error, event.error
+    assert_equal [
+      { phase: "artifact_cleanup", error_class: "RuntimeError" }
+    ], event.error.cleanup_failures
+    refute_includes event.error.cleanup_failures.first.keys, :message
+  end
+
   private
 
   def fake_artifact(import_key)

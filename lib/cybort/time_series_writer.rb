@@ -32,6 +32,10 @@ module Cybort
       @event_waiters = {}
       @events = {}
       @known_command_ids = {}
+      @startup_events = Queue.new
+      @startup_signaled = false
+      @startup_error = nil
+      @cleanup_failures = {}
       @started = false
       @closing = false
       @closed = false
@@ -56,6 +60,23 @@ module Cybort
         end
       end
       self
+    end
+
+    # Wait for the worker to finish opening its private persistence connection.
+    # A startup error is returned to the orchestrator so it can isolate the
+    # affected time-series instances without treating a healthy item source as
+    # a failed run.
+    def wait_until_ready
+      @startup_events.pop unless @startup_signaled
+      @state_mutex.synchronize { @startup_error }
+    end
+
+    def worker_failure
+      @state_mutex.synchronize { @worker_failure }
+    end
+
+    def cleanup_failures
+      @state_mutex.synchronize { @cleanup_failures.dup.freeze }
     end
 
     def submit_import(artifact)
@@ -172,6 +193,7 @@ module Cybort
       active_error = nil
       begin
         persistence = @time_series_persistence_factory.call
+        signal_startup(nil)
         loop do
           command = @commands.pop
           break if command.equal?(SENTINEL)
@@ -180,6 +202,7 @@ module Cybort
         end
       rescue Exception => error # rubocop:disable Lint/RescueException -- Thread#value must observe abnormal worker termination
         active_error = error
+        signal_startup(error)
         fail_pending_commands(error)
         raise
       ensure
@@ -244,6 +267,8 @@ module Cybort
         rescue Exception => cleanup_error # rubocop:disable Lint/RescueException -- cleanup must not mask persistence failure
           if active_error
             attach_cleanup_failure(active_error, cleanup_error, phase: "artifact_cleanup")
+          elsif event&.result == :success
+            record_cleanup_failure(command.command_id, cleanup_error, phase: "artifact_cleanup")
           else
             event = failure_event(command, cleanup_error)
           end
@@ -340,6 +365,16 @@ module Cybort
       end
     end
 
+    def signal_startup(error)
+      @state_mutex.synchronize do
+        return if @startup_signaled
+
+        @startup_signaled = true
+        @startup_error = error
+        @startup_events << true
+      end
+    end
+
     # A worker can fail before it reaches commands (for example while opening
     # persistence). Give each accepted command a correlated terminal event so
     # callers cannot wait forever, while Thread#value still exposes the
@@ -363,13 +398,22 @@ module Cybort
     end
 
     def attach_cleanup_failure(error, cleanup_error, phase:)
-      details = [{ phase: phase, error_class: cleanup_error.class.name.to_s[0, 128] }.freeze].freeze
+      details = cleanup_failure_details(cleanup_error, phase: phase)
       begin
         error.instance_variable_set(:@cleanup_failures, details)
         error.define_singleton_method(:cleanup_failures) { @cleanup_failures }
       rescue Exception # rubocop:disable Lint/RescueException -- preserve the active error if it cannot be annotated
         nil
       end
+    end
+
+    def record_cleanup_failure(command_id, cleanup_error, phase:)
+      details = cleanup_failure_details(cleanup_error, phase: phase)
+      @state_mutex.synchronize { @cleanup_failures[command_id] = details }
+    end
+
+    def cleanup_failure_details(error, phase:)
+      [{ phase: phase, error_class: error.class.name.to_s[0, 128] }.freeze].freeze
     end
 
     def validate_identifier!(value, label, max_bytes)
