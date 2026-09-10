@@ -102,19 +102,31 @@ class TimeSeriesWriterTest < Minitest::Test
 
   def test_successful_import_remains_success_when_artifact_cleanup_fails
     cleanup_error = RuntimeError.new("cleanup failed")
+    cleanup_attempts = 0
+    artifact = fake_artifact("cleanup-warning")
     writer = Cybort::TimeSeriesWriter.new(
       time_series_persistence_factory: -> { @persistence }, event_queue: @events,
-      artifact_cleanup: ->(_artifact) { raise cleanup_error }
+      artifact_cleanup: lambda do |candidate|
+        cleanup_attempts += 1
+        raise cleanup_error if cleanup_attempts == 1
+
+        FileUtils.rm_f(candidate.path)
+      end
     )
     @writer = writer
     writer.start
-    command_id = writer.submit_import(fake_artifact("cleanup-warning"))
+    command_id = writer.submit_import(artifact)
 
     event = @events.pop
 
     assert_equal command_id, event.command_id
     assert_equal :success, event.result
     assert_nil event.error
+    assert_equal [
+      { phase: "artifact_cleanup", error_class: "RuntimeError" }
+    ], writer.cleanup_failures.fetch(command_id)
+
+    FileUtils.rm_f(artifact.path)
     assert_equal [
       { phase: "artifact_cleanup", error_class: "RuntimeError" }
     ], writer.cleanup_failures.fetch(command_id)

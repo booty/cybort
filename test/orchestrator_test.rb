@@ -150,6 +150,81 @@ class OrchestratorTest < Minitest::Test
     end
   end
 
+  class QueuedTimeSeriesWriterSpy
+    attr_reader :cleanup_failures
+
+    def initialize(canonical:, cleanup_failures: {})
+      @canonical = canonical
+      @cleanup_failures = cleanup_failures
+      @next_command_id = 100
+      @event_queue = nil
+      @closed = false
+    end
+
+    def attach_event_queue(event_queue)
+      @event_queue = event_queue
+    end
+
+    def submit_import(artifact)
+      command_id = next_command_id
+      receipt = @canonical.import(artifact)
+      @event_queue << Cybort::TimeSeriesWriterEvent.new(
+        command_id: command_id, phase: :import,
+        instance_id: artifact.instance_id, import_key: artifact.import_key,
+        result: :success, receipt: receipt, error: nil
+      )
+      command_id
+    end
+
+    def submit_acknowledgement(receipt)
+      command_id = next_command_id
+      begin
+        acknowledged_receipt = @canonical.mark_acknowledged(receipt)
+        result = :success
+        error = nil
+      rescue StandardError => caught
+        acknowledged_receipt = nil
+        result = :failure
+        error = caught
+      end
+      @event_queue << Cybort::TimeSeriesWriterEvent.new(
+        command_id: command_id, phase: :acknowledgement,
+        instance_id: receipt.instance_id, import_key: receipt.import_key,
+        result: result, receipt: acknowledged_receipt, error: error
+      )
+      command_id
+    end
+
+    def close_and_join
+      @closed = true
+      nil
+    end
+
+    def closed?
+      @closed
+    end
+
+    private
+
+    def next_command_id
+      @next_command_id += 1
+    end
+  end
+
+  class InjectedTimeSeriesOrchestrator < Cybort::Orchestrator
+    def initialize(test_writer:, **kwargs)
+      @test_writer = test_writer
+      super(**kwargs)
+    end
+
+    private
+
+    def prepare_time_series(_result_kinds, completions)
+      @test_writer.attach_event_queue(completions)
+      [@test_writer, { blocked_instances: [], errors: {} }]
+    end
+  end
+
   class SignalingPersistenceSpy < PersistenceSpy
     attr_reader :events
 
@@ -960,6 +1035,49 @@ class OrchestratorTest < Minitest::Test
       assert_equal true, run.instances.first.metadata.fetch(:receipt_acknowledgement_pending)
       assert_equal 1, main.acknowledgements.length
       assert_empty main.failures
+    end
+  end
+
+  def test_time_series_cleanup_warning_survives_marker_success_and_pending_acknowledgement
+    [nil, RuntimeError.new("marker failed")].each do |marker_error|
+      with_time_series_result do |source_result|
+        main = TimeSeriesMainSpy.new
+        canonical = TimeSeriesImportSpy.new(main: main, marker_error: marker_error)
+        cleanup_details = [{ phase: "artifact_cleanup", error_class: "RuntimeError" }.freeze].freeze
+        writer = QueuedTimeSeriesWriterSpy.new(
+          canonical: canonical,
+          cleanup_failures: { 101 => cleanup_details }
+        )
+        configured = instance("sensor").tap { |value| value.adapter = "series_fixture" }
+        registry = Cybort::AdapterRegistry.new
+        registry.register("series_fixture", ->(context:, spool_factory:, **) {
+          assert_equal 7, context.fetch(:observation_count)
+          refute_nil spool_factory
+          FixedResultAdapter.new(result: source_result)
+        }, result_kind: :time_series)
+        run = InjectedTimeSeriesOrchestrator.new(
+          test_writer: writer,
+          configuration: Struct.new(:instances).new({ configured.id => configured }),
+          persistence: main, registry: registry, http_client: nil,
+          clock: -> { Time.utc(2026, 9, 9, 13) },
+          time_series_reader: TimeSeriesReaderSpy.new,
+          time_series_persistence_factory: -> { canonical },
+          time_series_spool_factory: Object.new
+        ).run(force_fetch: true)
+
+        status = run.instances.first
+        assert_equal :success, status.status
+        assert_equal cleanup_details, status.metadata.fetch(:cleanup_failures)
+        refute_includes status.metadata.fetch(:cleanup_failures).first.keys, :message
+        refute_includes status.metadata.fetch(:cleanup_failures).first.keys, :path
+        if marker_error
+          assert_equal true, status.metadata.fetch(:receipt_acknowledgement_pending)
+        else
+          refute status.metadata.key?(:receipt_acknowledgement_pending)
+        end
+        assert_equal cleanup_details, writer.cleanup_failures.fetch(101)
+        assert writer.closed?
+      end
     end
   end
 

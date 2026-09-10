@@ -364,7 +364,8 @@ module Cybort
       command_id = writer.submit_import(result.artifact)
       pending_writer_commands[command_id] = {
         phase: :import, instance_id: instance.id,
-        import_key: result.artifact.import_key, result: result
+        import_key: result.artifact.import_key, result: result,
+        import_command_id: command_id
       }
       nil
     end
@@ -380,7 +381,9 @@ module Cybort
       instance = instances.fetch(command.fetch(:instance_id))
       result = command.fetch(:result)
       if event.phase == :acknowledgement
-        metadata = result.metadata
+        metadata = merge_time_series_cleanup_metadata(
+          result.metadata, time_series_writer, command.fetch(:import_command_id)
+        )
         metadata = metadata.merge(receipt_acknowledgement_pending: true) if event.result == :failure
         return time_series_status(instance, result, status: :success, metadata: metadata)
       end
@@ -402,10 +405,30 @@ module Cybort
         # a contradictory failed fetch-history row.
         return time_series_status(
           instance, result, status: :success,
-          metadata: result.metadata.merge(receipt_acknowledgement_pending: true)
+          metadata: merge_time_series_cleanup_metadata(
+            result.metadata, time_series_writer, command.fetch(:import_command_id)
+          ).merge(receipt_acknowledgement_pending: true)
         )
       end
       nil
+    end
+
+    def merge_time_series_cleanup_metadata(metadata, writer, import_command_id)
+      failures = if writer.respond_to?(:cleanup_failures)
+        writer.cleanup_failures.fetch(import_command_id, nil)
+      end
+      return metadata unless failures
+
+      bounded_failures = Array(failures).first(8).filter_map do |failure|
+        phase = failure[:phase] || failure["phase"] if failure.respond_to?(:key?)
+        error_class = failure[:error_class] || failure["error_class"] if failure.respond_to?(:key?)
+        next unless phase.is_a?(String) && error_class.is_a?(String)
+
+        { phase: phase.byteslice(0, 128), error_class: error_class.byteslice(0, 128) }.freeze
+      end.freeze
+      return metadata if bounded_failures.empty?
+
+      (metadata || {}).merge(cleanup_failures: bounded_failures)
     end
 
     def record_time_series_failure(instance, result, error)
