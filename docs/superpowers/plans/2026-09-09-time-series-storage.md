@@ -37,11 +37,13 @@
 - `lib/cybort/time_series_spool.rb` — disposable schema, factory, streaming writer, and cleanup.
 - `lib/cybort/time_series_schema.rb` — canonical time-series schema and migration version.
 - `lib/cybort/time_series_import_receipt.rb` — immutable canonical-import receipt.
-- `lib/cybort/time_series_persistence.rb` — canonical import, query, receipt, and purge boundary.
+- `lib/cybort/time_series_persistence.rb` — thread-owned canonical write boundary.
+- `lib/cybort/time_series_reader.rb` — genuinely read-only planning, query, and receipt boundary.
 - `lib/cybort/time_series_writer.rb` — one queue-backed canonical writer worker.
 - `lib/cybort/time_series_reconciler.rb` — idempotent cross-database acknowledgement recovery through the writer.
+- `lib/cybort/installation_lock.rb` — process-wide lifecycle exclusion for one installation.
 - `lib/cybort/installation_backup.rb` — two-database backup directory plus manifest.
-- `script/benchmark_time_series.rb` — opt-in synthetic 1.5-million-observation benchmark.
+- `script/benchmark_time_series.rb` — opt-in synthetic scaling and query-plan benchmark.
 
 ### Modified production files
 
@@ -61,8 +63,10 @@
 - `test/time_series_fetch_result_test.rb`
 - `test/time_series_spool_test.rb`
 - `test/time_series_persistence_test.rb`
+- `test/time_series_reader_test.rb`
 - `test/time_series_writer_test.rb`
 - `test/time_series_reconciler_test.rb`
+- `test/installation_lock_test.rb`
 - `test/installation_backup_test.rb`
 - `test/system/time_series_orchestration_system_test.rb`
 
@@ -92,7 +96,7 @@
 
 **Interfaces:**
 - Produces: `Cybort::TimeSeriesJSON.validate_dimensions!(value)` and `validate_metadata!(value)`.
-- Produces: immutable `TimeSeriesSpoolArtifact` readers for `path`, `instance_id`, `import_key`, `import_mode`, `digest`, `series_count`, `observation_count`, `sync_state`, `source_finished_at`, and `metadata`.
+- Produces: immutable `TimeSeriesSpoolArtifact` readers for `path`, `instance_id`, `import_key`, `import_mode`, `digest`, `series_count`, `observation_count`, `sync_state`, `source_started_at`, `source_finished_at`, and `metadata`.
 - Produces: `TimeSeriesFetchResult.success`, `.cached`, and `.failure`, plus `success?` and `failure?`.
 - Produces: `AdapterRegistry#result_kind_for(instance)` returning `:items` or `:time_series`.
 
@@ -112,6 +116,7 @@ artifact = Cybort::TimeSeriesSpoolArtifact.new(
   series_count: 1,
   observation_count: 2,
   sync_state: { cursor: "next" },
+  source_started_at: Time.utc(2026, 9, 9, 11, 59),
   source_finished_at: Time.utc(2026, 9, 9, 12),
   metadata: {}
 )
@@ -187,7 +192,8 @@ and encoded JSON over the relevant limit. Return a deeply copied, deeply frozen
 value so callers cannot mutate validated state.
 
 Make `TimeSeriesSpoolArtifact` accept only an absolute existing regular file
-with mode no broader than `0600`; do not read its contents in the value object.
+with mode no broader than `0600`; a finalized spool will be `0400`. Do not read
+its contents in the value object.
 The spool writer in Task 2 is responsible for constructing it.
 
 Implement `TimeSeriesFetchResult` as an immutable class rather than adding
@@ -214,8 +220,10 @@ end
 ```
 
 Test the default, explicit time-series registration, invalid kinds, and that all
-built-in adapters remain `:items`. Load the new constants from `lib/cybort.rb`
-before the registry.
+built-in adapters remain `:items`. A time-series registration must reject a
+factory that accepts neither the required `spool_factory:` keyword nor keyrest;
+construction never silently omits that dependency. Load the new constants from
+`lib/cybort.rb` before the registry.
 
 - [ ] **Step 5: Run focused tests**
 
@@ -252,7 +260,7 @@ git commit -m "Add time-series result contracts"
 
 **Interfaces:**
 - Consumes: `TimeSeriesJSON` and `TimeSeriesSpoolArtifact` from Task 1.
-- Produces: `TimeSeriesSpoolFactory#open(instance_id:, import_key:, import_mode:)`.
+- Produces: `TimeSeriesSpoolFactory#open(instance_id:, import_key:, import_mode:, source_started_at:)`.
 - Produces: `TimeSeriesSpoolWriter#register_series`, `#add_observation`, `#finalize`, and `#abort`.
 
 - [ ] **Step 1: Write failing spool lifecycle and schema tests**
@@ -261,7 +269,10 @@ Use a temporary installation directory and assert:
 
 ```ruby
 factory = Cybort::TimeSeriesSpoolFactory.new(directory: directory, clock: clock)
-writer = factory.open(instance_id: "sensor", import_key: "batch-1", import_mode: :append)
+writer = factory.open(
+  instance_id: "sensor", import_key: "batch-1", import_mode: :append,
+  source_started_at: Time.utc(2026, 9, 9, 11, 59)
+)
 writer.register_series(
   series_key: "office-temperature", metric_key: "temperature",
   value_type: :numeric, canonical_unit: "Cel", dimensions: { "room" => "office" }
@@ -277,7 +288,7 @@ artifact = writer.finalize(
 
 assert_equal 1, artifact.series_count
 assert_equal 1, artifact.observation_count
-assert_equal 0o600, File.stat(artifact.path).mode & 0o777
+assert_equal 0o400, File.stat(artifact.path).mode & 0o777
 ```
 
 Combine assertions for duplicate series identity, series-definition mismatch,
@@ -329,18 +340,20 @@ CREATE TABLE spool_manifest (
   series_count INTEGER NOT NULL,
   observation_count INTEGER NOT NULL,
   sync_state_json TEXT,
+  source_started_at_us INTEGER NOT NULL,
   source_finished_at_us INTEGER NOT NULL,
   metadata_json TEXT NOT NULL
 );
 ```
 
-Set `PRAGMA foreign_keys = ON`, `PRAGMA journal_mode = WAL`,
+Set `PRAGMA foreign_keys = ON`, `PRAGMA journal_mode = DELETE`,
 `PRAGMA synchronous = NORMAL`, and `busy_timeout(5_000)` on the disposable
 database. Use prepared statements and commit every 10,000 writes so parser
 memory stays bounded. `finalize` commits the open batch, writes the singleton
-manifest in a final transaction, checkpoints and closes the database, computes
-SHA-256 over the finalized file, and returns the artifact. Mirror manifest
-values in the immutable artifact rather than using a mutable sidecar.
+manifest in a final transaction, closes the database, changes it to mode
+`0400`, computes SHA-256 with a streaming file digest, and returns the artifact.
+Mirror manifest values in the immutable artifact rather than using a mutable
+sidecar. Rollback-journal mode avoids `-wal`/`-shm` handoff state.
 
 Convert `Time` using integer arithmetic:
 
@@ -353,7 +366,9 @@ end
 Validate the series definition again when a duplicate `series_key` is
 registered. For categorical series require `canonical_unit: nil`; for numeric
 series require a nonblank unit. Ensure `abort` closes the handle and removes the
-database plus `-wal` and `-shm` sidecars.
+database and rollback journal. Create spools under a mode-`0700` installation
+temp directory with a reserved prefix; after taking the installation lock,
+startup removes only regular, non-symlink orphan files with that prefix.
 
 - [ ] **Step 4: Run focused tests**
 
@@ -381,12 +396,17 @@ git commit -m "Add disk-backed time-series spooling"
 - Create: `lib/cybort/time_series_schema.rb`
 - Create: `lib/cybort/time_series_import_receipt.rb`
 - Create: `lib/cybort/time_series_persistence.rb`
+- Create: `lib/cybort/time_series_reader.rb`
 - Create: `test/time_series_persistence_test.rb`
+- Create: `test/time_series_reader_test.rb`
 - Modify: `lib/cybort.rb`
 
 **Interfaces:**
 - Consumes: finalized `TimeSeriesSpoolArtifact` objects.
-- Produces: `TimeSeriesPersistence#setup!`, `#import`, `#context_for`, `#series_for`, `#observations_for`, `#pending_receipts`, `#mark_acknowledged`, `#delete_instance`, and `#backup_to`.
+- Produces: `TimeSeriesPersistence#setup!`, `#import`, `#mark_acknowledged`,
+  `#delete_instance`, and `#backup_to`.
+- Produces: read-only `TimeSeriesReader#context_for`, `#series_for`,
+  `#observations_for`, and `#pending_receipts`.
 - Produces: immutable `TimeSeriesImportReceipt` readers for instance/import
   identity, mode, digest, source/commit/acknowledgement times, imported and
   stored counts, synchronization state, and metadata.
@@ -404,6 +424,10 @@ small artifacts through the real spool and cover:
 - conflicting import-key/digest rejection;
 - deterministic bounded time-window queries; and
 - pending/acknowledged receipt transitions.
+
+Also prove that writable persistence rejects use from a thread other than its
+creator, the reader opens SQLite in read-only/query-only mode, and every write
+attempt through the reader fails.
 
 The range API must reject empty series IDs, inverted or unbounded ranges,
 nonpositive limits, limits above 10,000, and order values other than
@@ -460,6 +484,9 @@ CREATE TABLE observations (
 CREATE INDEX idx_observations_series_time
   ON observations (series_id, observed_at_us, source_record_key);
 
+CREATE INDEX idx_observations_time_series
+  ON observations (observed_at_us, series_id, source_record_key);
+
 CREATE TABLE time_series_instance_state (
   adapter_instance_id TEXT PRIMARY KEY,
   latest_import_key TEXT NOT NULL,
@@ -473,6 +500,7 @@ CREATE TABLE time_series_imports (
   import_key TEXT NOT NULL,
   artifact_digest TEXT NOT NULL,
   import_mode TEXT NOT NULL CHECK (import_mode IN ('append', 'snapshot')),
+  source_started_at_us INTEGER NOT NULL,
   source_finished_at_us INTEGER NOT NULL,
   committed_at_us INTEGER NOT NULL,
   imported_series_count INTEGER NOT NULL,
@@ -487,18 +515,26 @@ CREATE TABLE time_series_imports (
 ```
 
 Apply foreign keys, WAL, and busy timeout exactly as the main persistence class
-does. Set file permissions to `0600` after creation.
+does. Set file permissions to `0600` after creation. Writable persistence
+captures its owner thread when constructed and rejects every public operation
+from another thread. `TimeSeriesReader` opens the URI with `mode=ro`, enables
+`PRAGMA query_only = ON`, and exposes no write methods.
 
 - [ ] **Step 4: Implement set-oriented import and queries**
 
 Before attaching, independently open the artifact read-only and validate the
-expected spool tables, column sets, counts, instance metadata, and digest.
+expected spool tables, column sets, counts, instance metadata, timestamps, and
+streaming digest.
 Within one canonical transaction:
 
 1. Return the existing receipt when import key and digest match.
 2. Reject a conflicting digest before changing series or observations.
-3. `ATTACH DATABASE ? AS incoming` using a bound path.
-4. Upsert series definitions and reject definition changes for existing keys.
+3. `ATTACH` an escaped `file:` URI with `mode=ro&immutable=1` as the fixed
+   `incoming` alias on a URI-enabled connection; verify a write to it fails in
+   tests.
+4. Upsert series definitions. Treat `metric_key`, `value_type`, and canonical
+   unit as immutable, allow dimensions to change, and change `updated_at_us`
+   only when normalized dimensions change.
 5. Insert/update observations with `INSERT ... SELECT` joined to canonical
    series IDs. Include `WHERE true` before SQLite's `ON CONFLICT` clause to
    avoid `SELECT` parsing ambiguity.
@@ -507,14 +543,19 @@ Within one canonical transaction:
    spool series even when they contain no observations.
 7. Update `time_series_instance_state` with total stored counts and insert the
    pending import receipt with separate imported and stored counts.
-8. Commit, detach in `ensure`, and return an immutable receipt.
+8. Commit, detach in `ensure`, and return an immutable receipt. If detach also
+   fails while another exception is active, preserve the active exception and
+   attach the cleanup failure as bounded diagnostic context.
 
 Do not interpolate instance IDs, keys, or file paths into SQL. The fixed schema
 alias `incoming` is safe because the writer serializes imports.
 
 Reject value types that disagree with their spool series definition before the
-canonical transaction changes any data. Return query rows as immutable structs with UTC `Time` objects at the Ruby
-boundary. Always include deterministic tie breakers in SQL.
+canonical transaction changes any data. Return query rows as immutable structs
+with UTC `Time` objects at the Ruby boundary. Require `series_for` limits of 1
+through 1,000 with keyset pagination. Deduplicate and cap `observations_for`
+input at 500 integer series IDs and cap its result limit at 10,000. Always
+include deterministic tie breakers in SQL.
 
 - [ ] **Step 5: Run focused tests**
 
@@ -522,6 +563,7 @@ Run through Luna-medium:
 
 ```bash
 bundle exec ruby -Itest test/time_series_persistence_test.rb
+bundle exec ruby -Itest test/time_series_reader_test.rb
 bundle exec ruby -Itest test/time_series_spool_test.rb
 ```
 
@@ -532,8 +574,8 @@ Expected: all pass.
 ```bash
 git add lib/cybort.rb lib/cybort/time_series_schema.rb \
   lib/cybort/time_series_import_receipt.rb \
-  lib/cybort/time_series_persistence.rb \
-  test/time_series_persistence_test.rb
+  lib/cybort/time_series_persistence.rb lib/cybort/time_series_reader.rb \
+  test/time_series_persistence_test.rb test/time_series_reader_test.rb
 git commit -m "Persist time-series observations in SQLite"
 ```
 
@@ -549,7 +591,9 @@ git commit -m "Persist time-series observations in SQLite"
 
 **Interfaces:**
 - Consumes: `TimeSeriesImportReceipt`.
-- Produces: `Persistence#acknowledge_time_series_import(receipt)` and `#time_series_import_acknowledged?`.
+- Produces: `Persistence#acknowledge_time_series_import(receipt)`,
+  `#time_series_import_acknowledged?`, `#begin_time_series_purge`,
+  `#pending_time_series_purges`, and `#finish_time_series_purge`.
 
 - [ ] **Step 1: Write failing acknowledgement tests**
 
@@ -557,6 +601,8 @@ Add main persistence tests proving acknowledgement atomically:
 
 - advances `last_successful_fetch` and `sync_state_json`;
 - inserts exactly one successful fetch run with the observation count;
+- preserves the receipt's source start time in fetch history after constructing
+  fresh persistence objects, without relying on in-process result state;
 - records `(instance_id, import_key)`;
 - is a no-op when repeated; and
 - rejects an unknown instance and clamps a future receipt completion time to
@@ -583,6 +629,11 @@ CREATE TABLE IF NOT EXISTS time_series_acknowledgements (
   acknowledged_at TEXT NOT NULL,
   PRIMARY KEY (instance_id, import_key)
 );
+
+CREATE TABLE IF NOT EXISTS time_series_purge_intents (
+  instance_id TEXT PRIMARY KEY,
+  requested_at TEXT NOT NULL
+);
 ```
 
 `acknowledge_time_series_import` starts one main transaction, checks the
@@ -590,7 +641,15 @@ acknowledgement key, clamps the successful time exactly like
 `write_fetch_result`, updates adapter state, inserts a successful fetch run with
 `item_count = receipt.imported_observation_count` and metadata containing
 `result_kind: "time_series"`, then inserts the acknowledgement. Return `true`
-for a new acknowledgement and `false` for an existing one.
+for a new acknowledgement and `false` for an existing one. Use the receipt's
+durable `source_started_at` for the fetch run and its `source_finished_at` for
+completion/clamping; do not accept either timestamp from transient result state.
+
+`begin_time_series_purge` transactionally inserts an idempotent durable intent
+before either database is deleted. `finish_time_series_purge` transactionally
+deletes acknowledgement/control rows and the adapter instance, then deletes the
+intent. Intents intentionally have no foreign key to `adapter_instances`, so
+they remain recoverable throughout that final transaction.
 
 Modify `delete_instance` to delete acknowledgement rows before the adapter row;
 retain explicit ordering even though the foreign key cascades.
@@ -631,10 +690,13 @@ git commit -m "Reconcile time-series import receipts"
 - Modify: `test/orchestrator_test.rb`
 
 **Interfaces:**
-- Consumes: `TimeSeriesFetchResult`, `TimeSeriesPersistence#import`, and main acknowledgement APIs.
-- Produces: `TimeSeriesWriter#start`, `#submit_import`, `#submit_acknowledgement`, and `#close_and_join`.
-- Produces: `TimeSeriesReconciler#run` using the writer for canonical acknowledgement markers.
-- Changes: `Orchestrator.new` accepts `time_series_persistence:` and `time_series_spool_factory:`.
+- Consumes: `TimeSeriesFetchResult`, `TimeSeriesPersistence#import`, and main acknowledgement/purge APIs.
+- Produces: `TimeSeriesWriter#start`, `#submit_import`,
+  `#submit_acknowledgement`, `#submit_delete_instance`, and `#close_and_join`.
+- Produces: `TimeSeriesReconciler#run` using the writer for purge completion
+  and canonical acknowledgement markers.
+- Changes: `Orchestrator.new` accepts `time_series_reader:`,
+  `time_series_persistence_factory:`, and `time_series_spool_factory:`.
 
 - [ ] **Step 1: Write failing writer lifecycle tests**
 
@@ -643,14 +705,19 @@ events, normalized persistence failures, artifact cleanup after every terminal
 path, close with no submissions, abnormal worker termination, and that cleanup
 does not replace an active error.
 
-The writer event is a frozen struct:
+Every command receives a monotonic process-local command ID. Its terminal event
+is a frozen struct whose correlation fields cannot be confused with a current
+fetch or another reconciliation phase:
 
 ```ruby
-TimeSeriesWriterEvent = Data.define(:kind, :instance_id, :result, :receipt, :error)
+TimeSeriesWriterEvent = Data.define(
+  :command_id, :phase, :instance_id, :import_key, :result, :receipt, :error
+)
 ```
 
-Use the project's supported Ruby 4.0.1 `Data` class. `kind` is `:imported`,
-`:acknowledged`, or `:failed`; validate the corresponding receipt/error fields.
+Use the project's supported Ruby 4.0.1 `Data` class. `phase` is `:import`,
+`:acknowledgement`, or `:purge`; validate correlation and the corresponding
+receipt/error fields.
 
 - [ ] **Step 2: Run the writer test and confirm failure**
 
@@ -667,18 +734,22 @@ Expected: failure because `TimeSeriesWriter` is undefined.
 The writer accepts a `time_series_persistence_factory:` rather than a live
 SQLite-backed object. Its thread calls the factory once and exclusively owns
 that writable connection until shutdown; no SQLite connection object crosses a
-thread boundary. The worker owns no main persistence reference. It accepts import and
-acknowledgement commands. Imports call `TimeSeriesPersistence#import`, publish
-one terminal event, and ensure artifact deletion. Acknowledgement commands call
-`TimeSeriesPersistence#mark_acknowledged` and publish a terminal marker event.
+thread boundary. The worker owns no main persistence reference. It accepts
+import, acknowledgement, and instance-deletion commands. Imports call
+`TimeSeriesPersistence#import`, publish one terminal event, and ensure artifact
+deletion. Acknowledgement commands call
+`TimeSeriesPersistence#mark_acknowledged`; purge commands call
+`TimeSeriesPersistence#delete_instance`. Each publishes one correlated terminal
+event.
 `close_and_join` enqueues a private sentinel, observes `Thread#value`, and is
 idempotent. Reject submissions before `start` or after close.
 
 - [ ] **Step 4: Write failing reconciliation tests**
 
-Simulate both crash windows. Start a real writer against temporary persistence,
-then assert the reconciler performs the main acknowledgement before it submits
-the canonical acknowledgement marker:
+Simulate import and purge crash windows with fresh persistence objects. Start a
+real writer against temporary persistence, then assert the reconciler performs
+the main acknowledgement before it submits the canonical acknowledgement
+marker:
 
 ```ruby
 receipt = time_series.import(artifact)
@@ -696,12 +767,26 @@ commit, construct a fresh writer/reconciler, and prove rerunning produces no
 second fetch-history row. The reconciler may read pending receipts directly but
 all of its canonical time-series writes must be submitted to the writer.
 
+Create durable purge intents and independently crash before and after the
+time-series delete. Prove startup reconciliation processes purge intents first
+in instance-ID order, finishes the main deletion, and cannot strand a retained
+cursor after observations are gone. Then process import receipts in instance
+ID, source-finish-time, import-key order. A recovery failure blocks planning
+only for that affected time-series instance and leaves unrelated sources
+runnable.
+
 - [ ] **Step 5: Write failing orchestration tests**
 
 Register test-only adapters with `result_kind: :time_series` and an injected
 spool factory. Cover:
 
 - registry injection of the spool factory only when accepted by the factory;
+- registration rejection when a time-series adapter factory cannot accept the
+  required `spool_factory:` keyword (or keyrest), rather than silently omitting
+  it;
+- dependency-preflight failure creates the registered result class—
+  `TimeSeriesFetchResult.failure` for time-series entries and
+  `FetchResult.failure` for item entries;
 - startup reconciliation before adapter planning;
 - cached and failed time-series results never submitted to the writer;
 - malformed result-kind and mismatched-instance rejection;
@@ -732,25 +817,31 @@ assert_equal :success, result.overall_status
 - [ ] **Step 6: Route results through one event loop**
 
 Start a time-series writer when at least one registered instance has
-`result_kind: :time_series` or pending receipts exist, then run reconciliation
-before planning. Source events
+`result_kind: :time_series`, pending purge intents exist, or pending receipts
+exist, then run reconciliation before planning. Source events
 are consumed as today. Item results are finalized immediately; remote
 time-series successes are submitted and receive no terminal status until the
 writer event returns. On an imported event, acknowledge it on the main caller
-thread, submit the receipt-marker command to the writer, and create the terminal
-status only after the acknowledged event returns.
+thread and submit the receipt-marker command to the writer. A marker success
+creates the ordinary successful terminal status. A marker failure after durable
+import and main acknowledgement remains a successful terminal status with
+bounded `receipt_acknowledgement_pending` metadata; it must not create a
+contradictory failed fetch-history row.
 
 Loop until every configured instance has a terminal status rather than a fixed
 number of source events. In `ensure`, observe all adapter threads, then close
 and observe the writer. Preserve the current active-error precedence.
+Materialize dependency-preflight failures using the registry's result kind so
+time-series entries receive `TimeSeriesFetchResult.failure` and item entries
+receive `FetchResult.failure`.
 
 For time-series planning context, merge
-`time_series_persistence.context_for(instance_id:)` into the main planning
+`time_series_reader.context_for(instance_id:)` into the main planning
 context. A cached `TimeSeriesFetchResult` reports stored observation and series
 counts without loading observations.
 
-In the CLI, initialize the schema before concurrent work, construct a read-side
-`TimeSeriesPersistence` at `ROOT/cybort-timeseries.sqlite3`, and pass the writer
+In the CLI, initialize the schema before concurrent work, construct a
+`TimeSeriesReader` at `ROOT/cybort-timeseries.sqlite3`, and pass the writer
 a factory that constructs a separate instance for the same path inside its
 thread. Construct the spool factory at `ROOT/tmp`. Do not include raw
 observations in normal JSON output; the instance status contains counts and
@@ -788,7 +879,9 @@ git commit -m "Persist time-series results independently"
 ### Task 6: Make installation backup and purge cover both databases
 
 **Files:**
+- Create: `lib/cybort/installation_lock.rb`
 - Create: `lib/cybort/installation_backup.rb`
+- Create: `test/installation_lock_test.rb`
 - Create: `test/installation_backup_test.rb`
 - Modify: `lib/cybort/installer.rb`
 - Modify: `lib/cybort/cli.rb`
@@ -798,6 +891,8 @@ git commit -m "Persist time-series results independently"
 
 **Interfaces:**
 - Consumes: `Persistence#backup_to`, `TimeSeriesPersistence#backup_to`, and both `#delete_instance` methods.
+- Produces: `InstallationLock#synchronize` using one nonblocking exclusive lock
+  for collection, backup, purge, and reset.
 - Produces: `InstallationBackup#create(destination:)` returning the destination directory.
 
 - [ ] **Step 1: Write failing installation lifecycle tests**
@@ -812,15 +907,22 @@ DESTINATION/
   manifest.json
 ```
 
-The manifest contains format version 1, UTC creation time, both filenames, and
-their SHA-256 digests. Test refusal when the destination exists, cleanup of a
-partially created temporary directory, and successful reopening of both backup
-databases.
+The manifest contains format version 1, UTC installation backup start and
+completion times, per-database snapshot start and completion times, both
+filenames, and their SHA-256 digests. Test refusal when the destination exists,
+cleanup of a partially created temporary directory, and successful reopening
+of both backup databases. Assert directory mode `0700`, file modes `0600`, and
+that fsync occurs before publication.
 
 Change purge CLI tests so `--backup PATH` treats `PATH` as this backup directory.
 Cover an item-only instance, a time-series instance, a time-series deletion
 failure that preserves main control state, and an idempotent rerun after the
 time-series delete committed but main deletion did not.
+
+Test the installation lock separately: a second process cannot collect, back
+up, purge, or reset while the first holds it; release permits the next command;
+and the sibling lock file has mode `0600`. Use subprocess coordination rather
+than relying on same-process `flock` behavior.
 
 - [ ] **Step 2: Run lifecycle tests and confirm failure**
 
@@ -828,6 +930,7 @@ Run through Luna-medium:
 
 ```bash
 bundle exec ruby -Itest test/installation_backup_test.rb
+bundle exec ruby -Itest test/installation_lock_test.rb
 bundle exec ruby -Itest test/installer_test.rb
 bundle exec ruby -Itest test/cli_test.rb
 ```
@@ -850,19 +953,23 @@ whole installation directory and needs no format change.
 
 - [ ] **Step 4: Implement two-file backup creation**
 
-Build the backup in a uniquely named sibling temporary directory, call each
-persistence object's SQLite-native `backup_to`, write the manifest with mode
-`0600`, then rename the completed directory to the requested destination.
-Never publish a partial destination. Do not copy live SQLite files with
-`FileUtils.cp`.
+Take the installation lock, build the backup in a mode-`0700` uniquely named
+sibling temporary directory, call each persistence object's SQLite-native
+`backup_to`, and record start/completion timestamps around each snapshot. Set
+both database copies and the manifest to `0600`, stream their digests, fsync
+each file and the temporary directory, then rename the completed directory to
+the requested destination and fsync its parent. Never publish a partial
+destination. Do not copy live SQLite files with `FileUtils.cp`.
 
 - [ ] **Step 5: Implement recoverable purge ordering**
 
-When the time-series database exists, delete that instance's observations,
-series, and receipts first. Delete the main instance second. Both operations
-are individually transactional and idempotent. A time-series failure prevents
-main deletion; a crash after time-series deletion is repaired by rerunning the
-same purge. Update confirmation text to mention observations without pinning
+Take the installation lock. For a time-series instance, durably create the main
+purge intent first, delete that instance's observations, series, state, and
+receipts in one time-series transaction second, then finish the main deletion
+and intent in one main transaction. All steps are idempotent. Startup uses the
+same sequence before import-receipt reconciliation, so a crash after either
+commit is repaired automatically and an advanced cursor cannot survive removed
+observations. Update confirmation text to mention observations without pinning
 the entire sentence in tests.
 
 - [ ] **Step 6: Run focused tests**
@@ -871,6 +978,7 @@ Run through Luna-medium:
 
 ```bash
 bundle exec ruby -Itest test/installation_backup_test.rb
+bundle exec ruby -Itest test/installation_lock_test.rb
 bundle exec ruby -Itest test/installer_test.rb
 bundle exec ruby -Itest test/cli_test.rb
 ```
@@ -880,9 +988,10 @@ Expected: all pass.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add lib/cybort.rb lib/cybort/installation_backup.rb lib/cybort/installer.rb \
-  lib/cybort/cli.rb test/installation_backup_test.rb test/installer_test.rb \
-  test/cli_test.rb
+git add lib/cybort.rb lib/cybort/installation_lock.rb \
+  lib/cybort/installation_backup.rb lib/cybort/installer.rb lib/cybort/cli.rb \
+  test/installation_lock_test.rb test/installation_backup_test.rb \
+  test/installer_test.rb test/cli_test.rb
 git commit -m "Cover time-series data in installation lifecycle"
 ```
 
@@ -906,9 +1015,10 @@ git commit -m "Cover time-series data in installation lifecycle"
 
 The script accepts `--observations COUNT` with default `1_500_000` and a
 required `--output DIRECTORY`. It generates deterministic numeric observations
-without retaining them in an array, measures spool construction, canonical
-import, file/WAL sizes, and two representative bounded range queries, and emits
-one JSON summary. It contains no personal paths or source data.
+without retaining them in an array, measures peak RSS, spool construction,
+canonical import, file/WAL sizes, two representative bounded range queries, and
+their `EXPLAIN QUERY PLAN` output, then emits one JSON summary. Digesting must
+remain streaming. It contains no personal paths or source data.
 
 Use monotonic time for durations and UTC wall time for observation timestamps:
 
@@ -923,16 +1033,19 @@ for validation or persistence failures but has no maximum-duration assertion.
 
 - [ ] **Step 2: Run the benchmark once outside the test suite**
 
-Run through Luna-medium in a disposable directory:
+Run through Luna-medium at both a quick comparison size and Apple-Health scale
+in disposable directories:
 
 ```bash
 bundle exec ruby script/benchmark_time_series.rb \
-  --observations 1500000 --output /tmp/cybort-time-series-benchmark
+  --observations 100000 --output /tmp/cybort-time-series-benchmark-100k
+bundle exec ruby script/benchmark_time_series.rb \
+  --observations 1500000 --output /tmp/cybort-time-series-benchmark-1500k
 ```
 
-Expected: exit 0 and one bounded JSON summary. Record only counts, durations,
-sizes, SQLite/Ruby versions, and query row counts in `docs/LEARNINGS.md`; do not
-commit generated databases.
+Expected: exit 0 and one bounded JSON summary per run. Record only counts,
+durations, peak RSS, sizes, SQLite/Ruby versions, query row counts, and query
+plans in `docs/LEARNINGS.md`; do not commit generated databases.
 
 - [ ] **Step 3: Update durable documentation**
 
@@ -942,7 +1055,8 @@ Update `AGENTS.md` only after code implements the new truth:
 - time-series spools are disposable and adapters remain canonical-SQL-free;
 - the dedicated time-series writer may write concurrently with the
   orchestrator caller's main-database writes; and
-- observations are retained forever in version one.
+- observations are retained forever in version one; and
+- lifecycle commands share one installation lock.
 
 Update README initialization, backup/purge, file layout, and the statement that
 no connector currently emits time-series results. Do not add an Apple Health
@@ -977,6 +1091,10 @@ particular verify:
 - no canonical write occurs from an adapter thread;
 - no observation array is constructed by the spool or import path;
 - all SQL data is bound rather than interpolated;
+- spool attachment is immutable/read-only and finalized spools have no WAL
+  sidecars;
+- writable connections enforce thread ownership and query connections are
+  genuinely read-only;
 - exactly one time-series writer exists per run;
 - all threads and spool files are observed or cleaned under exceptions;
 - main source state never advances before its time-series receipt commits;
@@ -1002,12 +1120,13 @@ git commit -m "Document time-series storage operations"
   persistence.
 - Generated time-series adapters can return cached, failed, append, and
   snapshot results without using canonical SQL.
-- A synthetic 1.5-million-observation producer has bounded Ruby memory because
-  it streams to disk.
+- Synthetic 100,000- and 1.5-million-observation producers record peak RSS and
+  remain streaming through spool creation and digesting.
 - A blocked canonical time-series import does not prevent an ordinary item
   result from committing to the main database.
 - Cross-database crash windows reconcile without data loss, premature cursor
   advancement, or duplicate fetch history.
-- Backup, reset, and purge workflows cover both canonical databases.
+- Backup, reset, and purge workflows cover both canonical databases, share one
+  installation lock, and recover durable purge intents.
 - No Apple Health or other source connector is implemented or registered.
 - The full test and quality suites pass.

@@ -2,7 +2,7 @@
 
 - Status: Accepted; implementation pending
 - Date: 2026-09-09
-- Related: [ADR 0008](0008-independent-connector-completion.md)
+- Amends: [ADR 0008](0008-independent-connector-completion.md)
 
 ## Context
 
@@ -30,7 +30,8 @@ Future time-series adapters will stream normalized data into disposable SQLite
 spools through an injected, persistence-owned interface. A dedicated
 time-series writer will serialize canonical time-series imports while the
 orchestrator caller remains the only writer to the main database. The two
-writers may operate concurrently because they lock different files.
+writers may operate concurrently because they do not share a SQLite writer
+lock, although they can still contend for CPU and filesystem bandwidth.
 
 Canonical time-series imports are set-oriented and transactional. Append mode
 upserts the spool without deleting absent rows. Snapshot mode atomically
@@ -50,7 +51,8 @@ serialized writer so they cannot block the main database's writer lock.
 
 ## Consequences
 
-- Large time-series imports do not delay ordinary connector commits.
+- Large time-series imports do not hold the SQLite writer lock needed by
+  ordinary connector commits.
 - Ruby memory remains bounded by streaming to a disk-backed spool.
 - Time-window queries remain ordinary indexed SQLite queries.
 - Cross-source analysis needs to open or attach two known databases rather than
@@ -89,4 +91,3 @@ large Ruby object graph.
 ## Reference
 
 - [Time-series storage design](../superpowers/specs/2026-09-09-time-series-storage-design.md)
-

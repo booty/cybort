@@ -43,6 +43,12 @@ This ADR supersedes ADR 0001 as the current persistence-coordination decision.
 It retains ADR 0001's datastore, persistence ownership, transaction isolation,
 and serialized-write choices while replacing only the global result barrier.
 
+[ADR 0009](0009-isolate-time-series-storage.md) amends this decision for future
+time-series adapters. Such adapters may write only a disposable,
+persistence-owned spool; they still never access either canonical database or
+issue canonical SQL. Canonical time-series imports use the separate writer and
+database defined there.
+
 ## Alternatives considered
 
 ### Keep the global barrier

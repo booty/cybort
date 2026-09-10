@@ -15,8 +15,9 @@ Time-series observations will live in a second canonical SQLite database,
 `cybort-timeseries.sqlite3`, alongside the existing `cybort.sqlite3` control and
 item database. A dedicated time-series writer serializes writes to the new
 database while the orchestrator caller continues persisting ordinary connector
-results to the existing database. A large time-series import therefore cannot
-hold the SQLite writer lock needed by Gmail, RSS, Reddit, or GitHub results.
+results to the existing database. A large time-series import therefore does not
+hold the same SQLite writer lock needed by Gmail, RSS, Reddit, or GitHub
+results. It may still compete with them for CPU and filesystem bandwidth.
 
 Future time-series adapters will stream normalized observations into a
 disposable SQLite spool. They will return a finalized spool reference rather
@@ -127,6 +128,12 @@ new `series_key` if a channel's value type or canonical unit changes. Dimensions
 are descriptive; fields needed by common filters should eventually be promoted
 to typed columns instead of indexed inside JSON.
 
+`metric_key`, `value_type`, and canonical unit are immutable after a series is
+created; a connector must choose a new `series_key` to change them. Dimensions
+are replaceable descriptive metadata. An upsert changes `updated_at_us` only
+when the normalized dimensions JSON changes, so retries do not create false
+mutation history.
+
 ### Observation
 
 One table represents points and intervals. Each observation has:
@@ -141,11 +148,12 @@ One table represents points and intervals. Each observation has:
   and
 - bounded source metadata JSON for information not used in common predicates.
 
-The primary identity is `(series_id, source_record_key)`. A separate index on
+The primary identity is `(series_id, source_record_key)`. An index on
 `(series_id, observed_at_us, source_record_key)` supports the dominant query:
-one or more known series over a time window. No global time-only index is added
-until a demonstrated query needs it, because every index increases import cost
-and database size.
+one or more known series over a time window. A second index on
+`(observed_at_us, series_id, source_record_key)` supports bounded cross-series
+windows. The benchmark records both query plans because every index increases
+import cost and database size.
 
 SQLite `INTEGER` UTC microseconds are used for hot timestamps rather than ISO
 8601 text. This representation sorts numerically, is compact, preserves
@@ -185,7 +193,9 @@ contents. Reuse with the same content returns the existing receipt without
 rewriting observations. Import keys must therefore identify the acquired
 source version or page, not a random attempt.
 
-The time-series database also maintains one small instance-state row containing
+Both source start and completion timestamps are durable receipt fields so a
+fresh process can reconstruct required fetch history without inventing timing
+data. The time-series database also maintains one small instance-state row containing
 the latest import key and total stored series and observation counts. It is
 updated in the same transaction as every import, so planning and cached status
 do not scan a million-row observation table. Import receipts distinguish counts
@@ -200,7 +210,8 @@ time-series adapter. The adapter interacts with domain methods rather than SQL:
 spool = spool_factory.open(
   instance_id: instance.id,
   import_key: source_version,
-  import_mode: :snapshot
+  import_mode: :snapshot,
+  source_started_at: started_at
 )
 
 spool.register_series(
@@ -228,16 +239,21 @@ artifact = spool.finalize(
 ```
 
 The writer uses prepared statements and bounded transactions while parsing.
-Those transactions lock only the disposable spool. `finalize` validates the
-manifest stored inside the spool, closes the database, computes a content digest, and returns an
+The disposable spool uses rollback-journal mode because it has one writer and
+no concurrent reader; this avoids WAL sidecars at handoff. Those transactions
+lock only the spool. `finalize` validates the manifest stored inside the spool,
+closes it, changes the file to mode `0400`, streams a content digest, and returns an
 immutable `TimeSeriesSpoolArtifact`. An aborted or failed fetch closes and
 deletes its spool. The orchestrator owns cleanup after an artifact is returned,
 including every success, failure, and shutdown path.
 
-The spool is created in the installation's temporary area when possible so a
+The spool is created in a mode-`0700` installation temporary directory with a
+reserved filename prefix and mode `0600` while writable, so a
 canonical import does not depend on retaining a large Ruby object graph. It is
 not canonical state and need not survive a process crash; the unchanged source
-can be fetched or parsed again.
+can be fetched or parsed again. Once an installation-wide process lock is held,
+startup removes only regular, non-symlink files with that exact reserved prefix
+before creating new spools. This reclaims sensitive artifacts left by crashes.
 
 ## Time-series result contract
 
@@ -248,10 +264,12 @@ and exactly one finalized spool artifact for a successful remote fetch.
 Successful cached results and failures carry no artifact. The result and
 artifact are immutable after construction.
 
-The adapter registry records each adapter's result kind. The orchestrator
-rejects a result whose class, instance ID, source-fetched flag, or artifact does
-not match the registered kind and planned fetch mode. This prevents a malformed
-adapter from advancing main state without a canonical time-series import.
+For a remote success, result start/finish times and synchronization state must
+exactly match the artifact's durable manifest. The adapter registry records
+each adapter's result kind. The orchestrator rejects a result whose class,
+instance ID, source-fetched flag, or artifact does not match the registered
+kind and planned fetch mode. This prevents malformed adapters from advancing
+main state without a canonical time-series import.
 
 ## Import modes
 
@@ -268,7 +286,8 @@ Snapshot mode means the spool is a complete observation set for one configured
 instance. In one time-series transaction, persistence:
 
 1. validates the finalized spool and manifest;
-2. attaches it read-only;
+2. attaches it through an escaped SQLite `file:` URI with
+   `mode=ro&immutable=1` on a URI-enabled connection;
 3. upserts its series definitions;
 4. upserts its observations;
 5. removes observations for the instance that are absent from the spool;
@@ -296,12 +315,15 @@ Adapter fetch threads remain concurrent. An adapter registry entry declares a
 result kind of `items` or `time_series`; existing entries default to `items`.
 The registry injects a spool factory only into time-series adapters.
 
-At the start of a run that includes a time-series adapter, the orchestrator
-starts one dedicated time-series persistence worker. The worker constructs and
-exclusively owns its writable SQLite connection inside its thread; planning and
-query code uses a separate read connection and never shares a connection object
-across threads. Source completion and
-time-series persistence receipts are represented as tagged events:
+At the start of a run that includes a time-series adapter or has pending
+time-series recovery work, the orchestrator starts one dedicated time-series
+persistence worker. Collection already holds the installation lock. The worker
+constructs and exclusively owns its writable SQLite connection inside its
+thread; planning and query code uses a distinct read-only class whose connection
+cannot invoke write APIs, and no connection object crosses threads. Writable
+persistence objects record their owner thread and reject use elsewhere. Source
+completion and time-series persistence receipts are represented as tagged
+events:
 
 ```text
 adapter workers ── source completion ──┐
@@ -314,9 +336,10 @@ existing main `Persistence` object. For a successful remote time-series result,
 the caller transfers its finalized artifact to the time-series writer and
 continues consuming other completion events. The writer serially imports
 artifacts and publishes a success or failure receipt. The orchestrator caller
-then performs the short main-database acknowledgement, queues the advisory
-receipt marker back to the writer, and reports that source's terminal status
-after the marker completes.
+then performs the short main-database acknowledgement and queues the advisory
+receipt marker back to the writer. It reports success after the marker returns
+or reports success with pending-marker metadata if only that advisory write
+fails.
 
 Cached time-series results do not create a spool or enqueue a write. They return
 a cached status using counts from the planning context or stored receipt.
@@ -328,7 +351,7 @@ status. Cleanup closes the queue, observes the writer thread, and deletes all
 remaining spool artifacts without replacing an already-active source,
 persistence, or cleanup exception.
 
-This design preserves one writer per SQLite file:
+This design preserves one writer per SQLite file during collection:
 
 - the orchestrator caller is the only main-database writer;
 - the dedicated time-series worker is the only time-series-database writer;
@@ -336,6 +359,13 @@ This design preserves one writer per SQLite file:
   different files; and
 - time-series commits are serialized rather than competing through
   `busy_timeout`.
+
+Time-series commands and events carry a process-local command ID, instance ID,
+import key, and phase so current-run imports cannot be confused with startup
+reconciliation. Pending purge intents are reconciled first by instance ID;
+pending import receipts follow deterministically by instance ID, source finish
+time, and import key. A reconciliation failure prevents planning only for the
+affected time-series instance; unrelated sources still run.
 
 ## Cross-database commit recovery
 
@@ -361,6 +391,12 @@ the writer. If a crash occurs after step 2 but before step 3, reconciliation
 observes the existing acknowledgement and queues only step 3. No distributed
 rollback is attempted.
 
+A marker failure after steps 1 and 2 does not convert the already durable fetch
+into a failed source or insert a contradictory failed fetch-history row. The
+terminal source status remains successful and carries bounded
+`receipt_acknowledgement_pending` metadata; the receipt remains pending for the
+next startup reconciliation.
+
 The main schema therefore gains a small acknowledgement table instead of
 claiming that an attached multi-database WAL transaction is atomic.
 
@@ -370,7 +406,7 @@ The time-series persistence API exposes typed queries rather than raw attached
 database handles:
 
 ```ruby
-series_for(instance_id: nil, metric_key: nil)
+series_for(instance_id: nil, metric_key: nil, after_id: nil, limit:)
 
 observations_for(
   series_ids:,
@@ -382,8 +418,12 @@ observations_for(
 ```
 
 All range queries require a bounded time interval and result limit in version
-one. They order deterministically by observation time, series ID, and source
-record key.
+one. `series_for` requires a limit of 1 through 1,000. `observations_for`
+deduplicates and accepts 1 through 500 integer series IDs and a result limit of
+1 through 10,000. Queries order deterministically by observation time, series
+ID, and source record key. The canonical schema carries both a series/time
+index and an observation-time/series index; the benchmark records query plans
+so later evidence can justify removing either write-costing index.
 
 Future dashboards that genuinely need item/time-series joins may use a
 read-only analysis connection that opens the main database and attaches the one
@@ -410,24 +450,35 @@ complete installation backup after this feature. Before implementation is
 complete, backup and reset workflows must treat the two canonical database
 files as one logical installation. The purge CLI requires collection to be
 stopped, then uses SQLite backup operations for each file and records both
-snapshot times in a manifest so a user cannot mistake one file for a complete
-backup. The two backups are adjacent durable snapshots, not a globally atomic
-cross-file snapshot.
+snapshot start/completion times plus installation backup start/completion times
+in a manifest so a user cannot mistake one file for a complete backup. Backup
+directories are mode `0700`; database copies and the manifest are mode `0600`.
+Files and their temporary directory are fsynced before an atomic sibling rename
+publishes the backup. The two backups are adjacent durable snapshots, not a
+globally atomic cross-file snapshot.
 
-Purging a time-series instance deletes its observations, unused series, import
-receipts, and main acknowledgement/control rows. Because the files cannot share
-a foreign key or atomic transaction, purge uses the same idempotent recovery
-principle as imports and documents whether a partial purge remains pending.
+Purging a time-series instance first records a durable purge intent in the main
+database, then deletes that instance's observations, series, state, and import
+receipts in one time-series transaction, and finally deletes the main instance
+and completes the intent in one main transaction. Startup reconciliation uses
+the time-series writer and finishes pending purge intents before import
+receipts. Planning is blocked only for an affected instance while its purge
+intent cannot be reconciled; unrelated sources continue. This ordering makes a
+crash after either database commit
+recoverable without allowing an old cursor to survive deleted observations.
 
 Vacuuming and WAL checkpointing are maintenance operations, not part of every
 fetch. A large import must not force main-database checkpointing. Time-series
 checkpoint policy should be measured with representative fixtures before
 changing SQLite defaults.
 
+Collection, backup, purge, and reset take the same nonblocking exclusive
+installation `flock` on a mode-`0600` sibling lock file. Failure to acquire it
+aborts the lifecycle command instead of guessing whether collection is stopped.
 Lifecycle commands are explicit operational writers and may write the
-time-series database directly while normal collection is stopped. The
-dedicated-writer rule applies to a collection run, where adapter and main
-persistence activity is concurrent.
+time-series database directly while holding that lock. The dedicated-writer
+rule applies within a collection run, where adapter and main persistence
+activity is concurrent.
 
 ## Errors and diagnostics
 
@@ -468,11 +519,13 @@ Coverage includes:
 - complete purge recovery across both databases.
 
 Performance tests are bounded benchmarks rather than timing-sensitive unit-test
-assertions. Before enabling a high-volume connector, a local benchmark imports
-at least 1.5 million synthetic observations and records spool size, canonical
-database size, transaction duration, WAL growth, and representative range-query
-latency. The benchmark informs tuning but does not fail on absolute wall-clock
-thresholds in CI.
+assertions. Before enabling a high-volume connector, a local benchmark runs at
+100,000 and at least 1.5 million synthetic observations and records peak RSS,
+spool size, canonical database size, transaction duration, WAL growth,
+representative range-query latency, and `EXPLAIN QUERY PLAN` output. Digests
+and producers remain streaming so the measurement detects accidental
+whole-file or whole-result buffering. The benchmark informs tuning but does not
+fail on absolute wall-clock or memory thresholds in CI.
 
 ## Alternatives considered
 
