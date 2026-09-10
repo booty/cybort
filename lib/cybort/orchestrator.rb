@@ -49,6 +49,9 @@ module Cybort
   end
 
   class Orchestrator
+    CLEANUP_FAILURE_LIMIT = 8
+    CLEANUP_FAILURE_FIELD_BYTES = 128
+
     def initialize(configuration:, persistence:, registry:, http_client:, clock: -> { Time.now.utc },
                    command_runner: nil, dependency_checker: nil,
                    monotonic_clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) },
@@ -295,7 +298,7 @@ module Cybort
       end
       # Workers may finish with spools after a launch or caller error stopped
       # event consumption. Reclaim those only after the writer has stopped.
-      artifacts.each { |artifact| cleanup_time_series_artifact(artifact, active_error) }
+      artifacts.each { |artifact| cleanup_time_series_artifact(artifact) }
       startup_failure_handled = recovery && recovery[:writer_failure]
       raise cleanup_error if active_error.nil? && cleanup_error && !startup_failure_handled
     end
@@ -434,21 +437,16 @@ module Cybort
       merge_time_series_cleanup_metadata(metadata, writer, import_command_id, error: error)
     end
 
-    def merge_time_series_cleanup_metadata(metadata, writer, import_command_id, error: nil)
+    def merge_time_series_cleanup_metadata(metadata, writer, import_command_id, error: nil, cleanup_failures: [])
       failures = []
       if writer.respond_to?(:cleanup_failures)
         failures.concat(Array(writer.cleanup_failures.fetch(import_command_id, nil)))
       end
       failures.concat(Array(error.cleanup_failures)) if error&.respond_to?(:cleanup_failures)
+      failures.concat(Array(cleanup_failures))
       return metadata if failures.empty?
 
-      bounded_failures = failures.first(8).filter_map do |failure|
-        phase = failure[:phase] || failure["phase"] if failure.respond_to?(:key?)
-        error_class = failure[:error_class] || failure["error_class"] if failure.respond_to?(:key?)
-        next unless phase.is_a?(String) && error_class.is_a?(String)
-
-        { phase: phase.byteslice(0, 128), error_class: error_class.byteslice(0, 128) }.freeze
-      end.freeze
+      bounded_failures = bounded_cleanup_failures(failures)
       return metadata if bounded_failures.empty?
 
       (metadata || {}).merge(cleanup_failures: bounded_failures)
@@ -549,10 +547,19 @@ module Cybort
       progress_puts(progress_message(instance, run_status, result))
       run_status
     rescue StandardError => error
-      if result.is_a?(TimeSeriesFetchResult) && result.artifact
-        cleanup_time_series_artifact(result.artifact, error)
+      cleanup_failures = if result.is_a?(TimeSeriesFetchResult) && result.artifact
+        cleanup_time_series_artifact(result.artifact)
+      else
+        []
       end
-      return record_time_series_failure(instance, result, error) if result_kind == :time_series
+      if result_kind == :time_series
+        return record_time_series_failure(
+          instance, result, error,
+          metadata: time_series_failure_metadata(
+            result, error, time_series_writer, nil, cleanup_failures: cleanup_failures
+          )
+        )
+      end
 
       failure = failure_result(
         result_kind: result_kind,
@@ -560,7 +567,10 @@ module Cybort
         error: error,
         started_at: result.respond_to?(:started_at) ? result.started_at : @clock.call,
         finished_at: @clock.call,
-        metadata: expiry_metadata(error.respond_to?(:safe_metadata) ? error.safe_metadata : {}, hard_expired_items)
+        metadata: merge_time_series_cleanup_metadata(
+          expiry_metadata(error.respond_to?(:safe_metadata) ? error.safe_metadata : {}, hard_expired_items),
+          nil, nil, error: error, cleanup_failures: cleanup_failures
+        )
       )
       @persistence.record_fetch_failure(failure)
       run_status = InstanceRunStatus.new(instance_id: instance.id, status: :failure, source_fetched: result.respond_to?(:source_fetched) && result.source_fetched, item_count: 0, error: error, metadata: failure.metadata)
@@ -572,13 +582,49 @@ module Cybort
       @progress&.puts(message)
     end
 
-    def cleanup_time_series_artifact(artifact, active_error)
+    def cleanup_time_series_artifact(artifact)
+      failures = []
       [artifact.path, "#{artifact.path}-journal", "#{artifact.path}-wal", "#{artifact.path}-shm"].each do |path|
         FileUtils.rm_f(path)
+      rescue Exception => error # rubocop:disable Lint/RescueException -- cleanup must not mask the primary result error
+        failures.concat(cleanup_failure_details(error, phase: "artifact_cleanup"))
       end
-    rescue StandardError
-      # Preserve the result validation or submission error during cleanup.
-      active_error
+      bounded_cleanup_failures(failures)
+    end
+
+    def cleanup_failure_details(error, phase:)
+      [{
+        phase: cleanup_failure_field(phase),
+        error_class: cleanup_failure_field(error.class.name.to_s)
+      }.freeze]
+    end
+
+    def bounded_cleanup_failures(failures)
+      Array(failures).first(CLEANUP_FAILURE_LIMIT).filter_map do |failure|
+        next unless failure.respond_to?(:key?)
+
+        phase = cleanup_failure_field(failure[:phase] || failure["phase"])
+        error_class = cleanup_failure_field(failure[:error_class] || failure["error_class"])
+        next unless phase && error_class
+
+        { phase: phase, error_class: error_class }.freeze
+      end.freeze
+    end
+
+    def cleanup_failure_field(value)
+      return unless value.is_a?(String)
+
+      field = value.dup.force_encoding(Encoding::UTF_8)
+      return unless field.valid_encoding?
+
+      bounded = +""
+      field.each_char do |character|
+        candidate = bounded + character
+        break if candidate.bytesize > CLEANUP_FAILURE_FIELD_BYTES
+
+        bounded << character
+      end
+      bounded.freeze
     end
 
     def expiry_metadata(metadata, count)

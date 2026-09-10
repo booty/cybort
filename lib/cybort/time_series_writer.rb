@@ -6,6 +6,9 @@ module Cybort
   # during a collection run. Commands are queued by callers, but all
   # persistence calls happen on the worker thread created here.
   class TimeSeriesWriter
+    CLEANUP_FAILURE_LIMIT = 8
+    CLEANUP_FAILURE_FIELD_BYTES = 128
+
     Command = Struct.new(:command_id, :phase, :instance_id, :import_key, :payload, keyword_init: true)
     SENTINEL = Object.new.freeze
     COMMAND_SEQUENCE_MUTEX = Mutex.new
@@ -403,9 +406,15 @@ module Cybort
     end
 
     def attach_cleanup_failure(error, cleanup_error, phase:)
+      existing = begin
+        error.respond_to?(:cleanup_failures) ? error.cleanup_failures : []
+      rescue Exception
+        []
+      end
       details = cleanup_failure_details(cleanup_error, phase: phase)
+      failures = bounded_cleanup_failures(Array(existing) + details)
       begin
-        error.instance_variable_set(:@cleanup_failures, details)
+        error.instance_variable_set(:@cleanup_failures, failures)
         error.define_singleton_method(:cleanup_failures) { @cleanup_failures }
       rescue Exception # rubocop:disable Lint/RescueException -- preserve the active error if it cannot be annotated
         nil
@@ -413,12 +422,45 @@ module Cybort
     end
 
     def record_cleanup_failure(command_id, cleanup_error, phase:)
+      existing = @state_mutex.synchronize { @cleanup_failures.fetch(command_id, []) }
       details = cleanup_failure_details(cleanup_error, phase: phase)
-      @state_mutex.synchronize { @cleanup_failures[command_id] = details }
+      failures = bounded_cleanup_failures(Array(existing) + details)
+      @state_mutex.synchronize { @cleanup_failures[command_id] = failures }
     end
 
     def cleanup_failure_details(error, phase:)
-      [{ phase: phase, error_class: error.class.name.to_s[0, 128] }.freeze].freeze
+      [{
+        phase: cleanup_failure_field(phase),
+        error_class: cleanup_failure_field(error.class.name.to_s)
+      }.freeze]
+    end
+
+    def bounded_cleanup_failures(failures)
+      failures.first(CLEANUP_FAILURE_LIMIT).filter_map do |failure|
+        next unless failure.respond_to?(:key?)
+
+        phase = cleanup_failure_field(failure[:phase] || failure["phase"])
+        error_class = cleanup_failure_field(failure[:error_class] || failure["error_class"])
+        next unless phase && error_class
+
+        { phase: phase, error_class: error_class }.freeze
+      end.freeze
+    end
+
+    def cleanup_failure_field(value)
+      return unless value.is_a?(String)
+
+      field = value.dup.force_encoding(Encoding::UTF_8)
+      return unless field.valid_encoding?
+
+      bounded = +""
+      field.each_char do |character|
+        candidate = bounded + character
+        break if candidate.bytesize > CLEANUP_FAILURE_FIELD_BYTES
+
+        bounded << character
+      end
+      bounded.freeze
     end
 
     def validate_identifier!(value, label, max_bytes)
