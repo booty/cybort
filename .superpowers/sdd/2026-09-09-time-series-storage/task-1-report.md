@@ -39,3 +39,9 @@ Implementation commit SHA: `0de44df69ffd19e5e09822cd2dfa60110695faba`
 - Removed the cached artifact keyword, rejected whitespace-only import keys, and normalized strings through explicit UTF-8 validation before storage.
 - Expanded focused tests for nested defensive freezing, manifest mismatches, invalid digests/counts/identifiers/modes, exact and over-limit JSON boundaries, UTF-8 rejection, and registry spool-factory injection.
 - Syntax checks and `git diff --check` passed; project tests remain pending Luna verification.
+
+## Fix round 2
+
+- Completed the remaining contract matrix: accepted snapshot mode, invalid and negative modes, digest length/hex validation, import-key and count boundaries, failure artifact rejection, zero failure counts, accepted metadata depth, non-scalar dimensions, and absolute/existing/regular-file paths.
+- Split success, cached, and failure constructor coverage into focused tests and added explicit boundary assertions.
+- Syntax checks and `git diff --check` passed; project tests remain pending Luna verification.

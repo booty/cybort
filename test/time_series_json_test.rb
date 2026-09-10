@@ -12,6 +12,7 @@ class TimeSeriesJSONTest < Minitest::Test
 
   def test_dimensions_reject_nested_values_and_nonfinite_floats
     assert_raises(ArgumentError) { Cybort::TimeSeriesJSON.validate_dimensions!({ "x" => [] }) }
+    assert_raises(ArgumentError) { Cybort::TimeSeriesJSON.validate_dimensions!({ "x" => nil }) }
     assert_raises(ArgumentError) { Cybort::TimeSeriesJSON.validate_dimensions!({ "x" => Float::NAN }) }
   end
 
@@ -27,6 +28,9 @@ class TimeSeriesJSONTest < Minitest::Test
   end
 
   def test_metadata_enforces_depth_and_encoded_size
+    accepted = value = {}
+    7.times { value["x"] = {}; value = value["x"] }
+    assert Cybort::TimeSeriesJSON.validate_metadata!(accepted).frozen?
     nested = value = {}
     9.times { nested["x"] = {}; nested = nested["x"] }
     assert_raises(ArgumentError) { Cybort::TimeSeriesJSON.validate_metadata!(value) }
