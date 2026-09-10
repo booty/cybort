@@ -214,6 +214,7 @@ class PersistenceTest < Minitest::Test
 
       assert_raises(Cybort::ValidationError) { persistence.acknowledge_time_series_import(receipt) }
       refute persistence.time_series_import_acknowledged?(instance_id: "missing", import_key: "batch-1")
+      assert_empty persistence.send(:query, "SELECT * FROM adapter_instances")
       assert_empty persistence.send(:query, "SELECT * FROM fetch_runs")
     end
   end

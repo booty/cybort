@@ -318,7 +318,13 @@ module Cybort
     end
 
     def update_time_series_instance_state(receipt, last_successful_fetch:, updated_at:)
-      changes = @database.execute(
+      unless @database.get_first_value(
+               "SELECT 1 FROM adapter_instances WHERE id = ?", [receipt.instance_id]
+             )
+        raise ValidationError, "unknown adapter instance: #{receipt.instance_id}"
+      end
+
+      @database.execute(
         <<~SQL,
           UPDATE adapter_instances
           SET last_successful_fetch = ?, sync_state_json = ?, updated_at = ?
@@ -329,7 +335,6 @@ module Cybort
          timestamp(updated_at),
          receipt.instance_id]
       )
-      raise ValidationError, "unknown adapter instance: #{receipt.instance_id}" if changes == 0
     end
 
     def insert_time_series_fetch_run(receipt, finished_at:)
