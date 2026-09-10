@@ -39,6 +39,11 @@ module Cybort
         time_series_bootstrap = TimeSeriesPersistence.new(time_series_path, clock: clock)
         time_series_bootstrap.setup!
         time_series_reader = TimeSeriesReader.new(time_series_path)
+        # The bootstrap handle only creates the schema. Close it before the
+        # writer opens its own writable connection, while retaining the reader
+        # constructed from the initialized database for planning.
+        time_series_bootstrap.close
+        time_series_bootstrap = nil
         time_series_spool_factory = TimeSeriesSpoolFactory.new(
           directory: File.join(root, "tmp"), clock: clock
         )

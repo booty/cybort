@@ -252,10 +252,12 @@ module Cybort
           kind, instance_id, payload = event
           result = kind == :thread ? payload.value : payload
           instance = instances.fetch(instance_id)
+          plan = plans.fetch(instance_id).fetch(:plan)
           status = persist_result(
             instance: instance,
             result: result,
             result_kind: result_kinds.fetch(instance_id),
+            planned_fetch_mode: plan&.fetch_mode,
             retention_ttl_minutes: retention_ttl_minutes_by_instance_id.fetch(instance_id),
             context: contexts.fetch(instance_id),
             hard_expired_items: hard_expired_items_by_instance_id.fetch(instance_id),
@@ -294,7 +296,8 @@ module Cybort
       # Workers may finish with spools after a launch or caller error stopped
       # event consumption. Reclaim those only after the writer has stopped.
       artifacts.each { |artifact| cleanup_time_series_artifact(artifact, active_error) }
-      raise cleanup_error if active_error.nil? && cleanup_error
+      startup_failure_handled = recovery && recovery[:writer_failure]
+      raise cleanup_error if active_error.nil? && cleanup_error && !startup_failure_handled
     end
 
     private
@@ -318,13 +321,20 @@ module Cybort
         time_series_persistence_factory: @time_series_persistence_factory,
         event_queue: completions
       ).start
+      if (startup_error = writer.wait_until_ready)
+        errors = result_kinds.each_with_object({}) do |(instance_id, result_kind), blocked|
+          blocked[instance_id] = startup_error if result_kind == :time_series
+        end
+        return [writer, { blocked_instances: errors.keys.sort.freeze, errors: errors.freeze,
+                          writer_failure: startup_error }]
+      end
       recovery = TimeSeriesReconciler.new(
         main_persistence: @persistence, time_series_reader: @time_series_reader, writer: writer
       ).run
       # Recovery consumes command-specific waiters. Its terminal events are
       # already observed and must not be confused with new source commands.
       completions.pop(true) until completions.empty?
-      [writer, recovery]
+      [writer, recovery.merge(writer_failure: nil)]
     rescue Exception # rubocop:disable Lint/RescueException -- startup owns the writer until it returns
       begin
         writer&.close_and_join
@@ -426,7 +436,7 @@ module Cybort
       run_status
     end
 
-    def persist_result(instance:, result:, result_kind:, retention_ttl_minutes:, context:, hard_expired_items:,
+    def persist_result(instance:, result:, result_kind:, planned_fetch_mode:, retention_ttl_minutes:, context:, hard_expired_items:,
                        time_series_writer:, pending_writer_commands:)
       expected_class = result_kind == :time_series ? TimeSeriesFetchResult : FetchResult
       unless result.is_a?(expected_class)
@@ -435,6 +445,12 @@ module Cybort
       unless result.instance_id == instance.id
         raise ValidationError,
               "adapter result instance_id #{result.instance_id.inspect} does not match configured instance #{instance.id.inspect}"
+      end
+
+      if !result.failure? && planned_fetch_mode &&
+         result.source_fetched != (planned_fetch_mode == :remote)
+        raise ValidationError,
+              "successful result source_fetched does not match planned #{planned_fetch_mode} fetch mode"
       end
 
       if result_kind == :time_series

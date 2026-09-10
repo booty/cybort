@@ -828,6 +828,70 @@ class OrchestratorTest < Minitest::Test
     assert_equal 0, factory_calls
   end
 
+  def test_cached_mode_mismatch_records_failure_without_writing_items
+    now = Time.utc(2026, 9, 9, 12)
+    configured = instance("cached").tap { |value| value.adapter = "fixed" }
+    source_result = Cybort::FetchResult.success(
+      instance_id: configured.id, items: [], sync_state: {}, started_at: now,
+      finished_at: now, source_fetched: true
+    )
+    persistence = PersistenceSpyWithContexts.new(
+      configured.id => {
+        items: [], item_ids: Set.new, last_successful_fetch: now, sync_state: {}
+      }
+    )
+
+    run = run_item_mode_mismatch(configured, source_result, persistence, now: now + 60)
+
+    assert_equal :failure, run.instances.first.status
+    assert_instance_of Cybort::ValidationError, run.instances.first.error
+    assert_empty persistence.writes
+    assert_equal [configured.id], persistence.failures.map(&:instance_id)
+  end
+
+  def test_remote_mode_mismatch_records_failure_without_writing_items
+    now = Time.utc(2026, 9, 9, 12)
+    configured = instance("remote").tap { |value| value.adapter = "fixed" }
+    source_result = Cybort::FetchResult.success(
+      instance_id: configured.id, items: [], sync_state: {}, started_at: now,
+      finished_at: now, source_fetched: false
+    )
+    persistence = PersistenceSpyWithContexts.new(configured.id => empty_context)
+
+    run = run_item_mode_mismatch(configured, source_result, persistence, now: now)
+
+    assert_equal :failure, run.instances.first.status
+    assert_instance_of Cybort::ValidationError, run.instances.first.error
+    assert_empty persistence.writes
+    assert_equal [configured.id], persistence.failures.map(&:instance_id)
+  end
+
+  def test_time_series_writer_startup_failure_isolated_from_item_sources
+    registry = Cybort::AdapterRegistry.new
+    registry.register("gate", ->(**kwargs) { GateAdapter.new(**kwargs, started: Queue.new, release: Queue.new.tap { |queue| queue << true }) })
+    registry.register("series", ->(spool_factory:, **) { raise "time-series adapter must not be built" }, result_kind: :time_series)
+    item = instance("item").tap { |value| value.adapter = "gate" }
+    series = instance("series").tap { |value| value.adapter = "series" }
+    configuration = Struct.new(:instances).new({ item.id => item, series.id => series })
+    persistence = TimeSeriesMainSpy.new
+    startup_error = RuntimeError.new("time-series persistence unavailable")
+
+    run = Cybort::Orchestrator.new(
+      configuration: configuration,
+      persistence: persistence,
+      registry: registry,
+      http_client: nil,
+      time_series_reader: TimeSeriesReaderSpy.new,
+      time_series_persistence_factory: -> { raise startup_error },
+      time_series_spool_factory: Object.new
+    ).run(force_fetch: true)
+
+    assert_equal %i[success failure], run.instances.map(&:status)
+    assert_equal [item.id], persistence.writes.map(&:instance_id)
+    assert_equal [series.id], persistence.failures.map(&:instance_id)
+    assert_same startup_error, run.instances.find { |status| status.instance_id == series.id }.error
+  end
+
   def test_time_series_cache_and_failure_never_submit_imports
     now = Time.utc(2026, 9, 9, 12)
     results = [
@@ -993,6 +1057,19 @@ class OrchestratorTest < Minitest::Test
       registry: registry,
       http_client: nil
     ).run(force_fetch: true)
+  end
+
+  def run_item_mode_mismatch(configured, result, persistence, now:)
+    registry = Cybort::AdapterRegistry.new
+    registry.register("fixed", ->(**kwargs) { FixedResultAdapter.new(**kwargs, result: result) })
+    configuration = Struct.new(:instances).new({ configured.id => configured })
+    Cybort::Orchestrator.new(
+      configuration: configuration,
+      persistence: persistence,
+      registry: registry,
+      http_client: nil,
+      clock: -> { now }
+    ).run
   end
 
   def empty_context
