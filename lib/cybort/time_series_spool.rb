@@ -36,13 +36,21 @@ module Cybort
       )
       return writer unless block_given?
 
+      source_exception = nil
       begin
         yield writer
-      rescue Exception # rubocop:disable Lint/RescueException -- cleanup must include shutdown exceptions
+      rescue Exception => error # rubocop:disable Lint/RescueException -- cleanup must include shutdown exceptions
+        source_exception = error
         abort_without_replacing(writer)
         raise
       ensure
-        abort_without_replacing(writer) unless writer.closed?
+        if !writer.closed?
+          if source_exception
+            abort_without_replacing(writer)
+          else
+            writer.abort
+          end
+        end
       end
     rescue Exception # rubocop:disable Lint/RescueException -- remove partially-created spool on shutdown
       remove_path(path) if path

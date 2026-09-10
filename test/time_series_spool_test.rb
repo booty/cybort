@@ -183,4 +183,21 @@ class TimeSeriesSpoolTest < Minitest::Test
     assert_equal "source failure", raised.message
     refute File.exist?(path)
   end
+
+  def test_standalone_block_cleanup_failure_propagates
+    path = nil
+    raised = assert_raises(RuntimeError) do
+      @factory.open(instance_id: "sensor", import_key: "batch-4", import_mode: :append,
+                    source_started_at: @started) do |writer|
+        path = writer.path
+        original_abort = writer.method(:abort)
+        writer.define_singleton_method(:abort) do
+          original_abort.call
+          raise "standalone cleanup failure"
+        end
+      end
+    end
+    assert_equal "standalone cleanup failure", raised.message
+    refute File.exist?(path)
+  end
 end
