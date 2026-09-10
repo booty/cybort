@@ -30,31 +30,59 @@ module Cybort
       configuration = Configuration.load(configuration_path)
       persistence = Persistence.new(File.join(root, "cybort.sqlite3"), clock: clock)
       persistence.setup!
-      command_runner ||= CommandRunner.new(monotonic_clock: monotonic_clock)
-      dependency_checker ||= DependencyChecker.new(command_runner: command_runner)
-      result = Orchestrator.new(
-        configuration: configuration,
-        persistence: persistence,
-        registry: registry || AdapterRegistry.default,
-        http_client: http_client || HttpClient.new,
-        clock: clock,
-        command_runner: command_runner,
-        dependency_checker: dependency_checker,
-        monotonic_clock: monotonic_clock,
-        progress: options.fetch(:output_mode) == :diagnostic ? out : nil
-      ).run(force_fetch: options.fetch(:force_fetch))
+      time_series_path = File.join(root, "cybort-timeseries.sqlite3")
+      time_series_bootstrap = nil
+      time_series_reader = nil
+      begin
+        time_series_bootstrap = TimeSeriesPersistence.new(time_series_path, clock: clock)
+        time_series_bootstrap.setup!
+        time_series_reader = TimeSeriesReader.new(time_series_path)
+        time_series_spool_factory = TimeSeriesSpoolFactory.new(
+          directory: File.join(root, "tmp"), clock: clock
+        )
+        time_series_persistence_factory = lambda do
+          TimeSeriesPersistence.new(time_series_path, clock: clock).tap(&:setup!)
+        end
+        command_runner ||= CommandRunner.new(monotonic_clock: monotonic_clock)
+        dependency_checker ||= DependencyChecker.new(command_runner: command_runner)
+        result = Orchestrator.new(
+          configuration: configuration,
+          persistence: persistence,
+          registry: registry || AdapterRegistry.default,
+          http_client: http_client || HttpClient.new,
+          clock: clock,
+          command_runner: command_runner,
+          dependency_checker: dependency_checker,
+          monotonic_clock: monotonic_clock,
+          progress: options.fetch(:output_mode) == :diagnostic ? out : nil,
+          time_series_reader: time_series_reader,
+          time_series_persistence_factory: time_series_persistence_factory,
+          time_series_spool_factory: time_series_spool_factory
+        ).run(force_fetch: options.fetch(:force_fetch))
 
-      if options.fetch(:output_mode) == :json
-        payload = {
-          status: result.overall_status,
-          unavailable_dependencies: result.unavailable_dependencies,
-          instances: result.instances.map do |status|
-            status.to_h.merge(items: persistence.items_for(instance_id: status.instance_id).map(&:to_h))
-          end
-        }
-        out.puts JSON.generate(payload)
+        if options.fetch(:output_mode) == :json
+          payload = {
+            status: result.overall_status,
+            unavailable_dependencies: result.unavailable_dependencies,
+            instances: result.instances.map do |status|
+              status.to_h.merge(items: persistence.items_for(instance_id: status.instance_id).map(&:to_h))
+            end
+          }
+          out.puts JSON.generate(payload)
+        end
+        result.overall_status == :success ? 0 : 1
+      ensure
+        begin
+          time_series_reader&.close
+        rescue StandardError
+          nil
+        end
+        begin
+          time_series_bootstrap&.close
+        rescue StandardError
+          nil
+        end
       end
-      result.overall_status == :success ? 0 : 1
     rescue ConfigurationError, OptionParser::ParseError, SystemCallError => error
       err.puts error.message
       2
