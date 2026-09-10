@@ -124,13 +124,14 @@ class InstallerTest < Minitest::Test
       alias_path = File.join(directory, "cybort-alias")
       write_existing_installation(target)
       File.symlink(target, alias_path)
+      canonical_target = File.realpath(target)
 
       io = TestIO.new("2\n")
       installer_instance = Cybort::Installer.new(io: io, clock: clock)
 
       assert_equal :reset_with_config, installer_instance.run(location: alias_path)
 
-      backup_path = "#{target}.backup-20260816T123456Z.tar.gz"
+      backup_path = "#{canonical_target}.backup-20260816T123456Z.tar.gz"
       assert_path_exists backup_path
       stdout, stderr, status = Open3.capture3(
         "tar", "-xOzf", backup_path, "#{File.basename(target)}/marker.txt"
@@ -143,7 +144,7 @@ class InstallerTest < Minitest::Test
       assert_path_exists File.join(target, "cybort.sqlite3")
       assert_path_exists File.join(target, "cybort-timeseries.sqlite3")
       assert File.symlink?(alias_path)
-      assert_equal target, File.realpath(alias_path)
+      assert_equal canonical_target, File.realpath(alias_path)
     end
   end
 
@@ -153,6 +154,7 @@ class InstallerTest < Minitest::Test
       alias_path = File.join(directory, "cybort-alias")
       write_existing_installation(target)
       File.symlink(target, alias_path)
+      canonical_target = File.realpath(target)
 
       alias_lock = Cybort::InstallationLock.new(alias_path)
       target_lock = Cybort::InstallationLock.new(target)
@@ -170,10 +172,10 @@ class InstallerTest < Minitest::Test
       installer_instance = Cybort::Installer.new(io: TestIO.new("2\n"), clock: clock, archive: archive)
 
       assert_equal :reset_with_config, installer_instance.run(location: alias_path)
-      assert_equal target, observed_location
+      assert_equal canonical_target, observed_location
       assert_instance_of Cybort::InstallationLock::BusyError, lock_error
       assert File.symlink?(alias_path)
-      assert_equal target, File.realpath(alias_path)
+      assert_equal canonical_target, File.realpath(alias_path)
     end
   end
 
