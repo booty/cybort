@@ -418,15 +418,7 @@ module Cybort
         raise ArgumentError, "failed writer event cannot carry a receipt" unless receipt.nil?
       end
 
-      super(
-        command_id,
-        phase,
-        instance_id.dup.freeze,
-        import_key&.dup&.freeze,
-        result,
-        receipt,
-        error
-      )
+      super
     end
 
     private
