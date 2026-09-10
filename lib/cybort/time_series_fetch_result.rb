@@ -10,9 +10,8 @@ module Cybort
           series_count: artifact&.series_count, observation_count: artifact&.observation_count)
     end
 
-    def self.cached(instance_id:, artifact: nil, sync_state:, started_at:, finished_at:, metadata: {},
+    def self.cached(instance_id:, sync_state:, started_at:, finished_at:, metadata: {},
                     observation_count:, series_count: 0)
-      raise ArgumentError, "cached results cannot carry an artifact" if artifact
       new(instance_id: instance_id, artifact: nil, sync_state: sync_state,
           started_at: started_at, finished_at: finished_at, metadata: metadata,
           source_fetched: false, error: nil, series_count: series_count,
@@ -20,6 +19,7 @@ module Cybort
     end
 
     def self.failure(instance_id:, error:, started_at:, finished_at:, metadata: {})
+      raise ArgumentError, "failure results require an error" if error.nil?
       new(instance_id: instance_id, artifact: nil, sync_state: nil,
           started_at: started_at, finished_at: finished_at, metadata: metadata,
           source_fetched: false, error: error, series_count: 0, observation_count: 0)
@@ -37,8 +37,14 @@ module Cybort
                artifact.source_started_at == started_at && artifact.source_finished_at == finished_at
           raise ArgumentError, "result does not match artifact manifest"
         end
-      elsif artifact
-        raise ArgumentError, "cached and failure results cannot carry an artifact"
+      elsif error.nil?
+        raise ArgumentError, "cached results cannot carry an artifact" if artifact
+        raise ArgumentError, "cached results cannot be source-fetched" if source_fetched
+      else
+        raise ArgumentError, "failure results must not be source-fetched" if source_fetched
+        raise ArgumentError, "failure results cannot carry an artifact" if artifact
+        raise ArgumentError, "failure results cannot carry synchronization state" unless sync_state.nil?
+        raise ArgumentError, "failure results must have zero counts" unless series_count == 0 && observation_count == 0
       end
       raise ArgumentError, "counts must be nonnegative integers" unless [series_count, observation_count].all? { |n| n.is_a?(Integer) && n >= 0 }
       @instance_id = instance_id.dup.freeze

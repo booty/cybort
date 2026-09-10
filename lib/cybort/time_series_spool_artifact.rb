@@ -39,10 +39,11 @@ module Cybort
     end
 
     def validate_identifier(value, label, max_bytes)
-      unless value.is_a?(String) && value.valid_encoding? && !value.empty? && value.bytesize <= max_bytes && !value.match?(/[\x00-\x1f\x7f]/)
+      value = value.dup.force_encoding(Encoding::UTF_8) if value.is_a?(String)
+      unless value.is_a?(String) && value.valid_encoding? && !value.strip.empty? && value.bytesize <= max_bytes && !value.match?(/[\x00-\x1f\x7f]/)
         raise ArgumentError, "invalid #{label}"
       end
-      value.dup.freeze
+      value.freeze
     end
 
     def validate_count(value, label)

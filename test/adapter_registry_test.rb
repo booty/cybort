@@ -27,6 +27,9 @@ class AdapterRegistryTest < Minitest::Test
     registry.register("series", ->(spool_factory:, **_kwargs) { spool_factory }, result_kind: :time_series)
     assert_equal :items, registry.result_kind_for(Instance.new(adapter: "items"))
     assert_equal :time_series, registry.result_kind_for(Instance.new(adapter: "series"))
+    supplied = Object.new
+    assert_same supplied, registry.build(instance: Instance.new(adapter: "series"), context: {},
+      http_client: nil, clock: -> {}, spool_factory: supplied)
     assert_raises(ArgumentError) do
       registry.register("bad", ->(instance:) { instance }, result_kind: :time_series)
     end

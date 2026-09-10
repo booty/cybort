@@ -32,3 +32,10 @@
 ## Commit
 
 Implementation commit SHA: `0de44df69ffd19e5e09822cd2dfa60110695faba`
+
+## Fix round 1
+
+- Centralized valid cached, remote-success, and failure state combinations; failures now require a non-nil error and cannot carry artifacts, synchronization state, or counts.
+- Removed the cached artifact keyword, rejected whitespace-only import keys, and normalized strings through explicit UTF-8 validation before storage.
+- Expanded focused tests for nested defensive freezing, manifest mismatches, invalid digests/counts/identifiers/modes, exact and over-limit JSON boundaries, UTF-8 rejection, and registry spool-factory injection.
+- Syntax checks and `git diff --check` passed; project tests remain pending Luna verification.

@@ -49,11 +49,12 @@ module Cybort
           unless key.is_a?(String)
             raise ArgumentError, "time-series JSON object keys must be strings"
           end
-          check_string!(key, limits.fetch(:key_bytes), "object key")
+          normalized_key = utf8_copy(key)
+          check_string!(normalized_key, limits.fetch(:key_bytes), "object key")
           if flat && !scalar?(child)
             raise ArgumentError, "time-series dimensions must contain scalar values"
           end
-          copy[key.dup] = validate_node(child, limits: limits, depth: depth + 1, flat: flat)
+          copy[normalized_key] = validate_node(child, limits: limits, depth: depth + 1, flat: flat)
         end
       when Array
         if flat
@@ -67,8 +68,9 @@ module Cybort
         end
         value.map { |child| validate_node(child, limits: limits, depth: depth + 1, flat: false) }
       when String
-        check_string!(value, limits.fetch(:string_bytes), "string value")
-        value.dup
+        normalized = utf8_copy(value)
+        check_string!(normalized, limits.fetch(:string_bytes), "string value")
+        normalized
       when Integer, TrueClass, FalseClass, NilClass
         value
       when Float
@@ -85,8 +87,14 @@ module Cybort
     end
 
     def check_string!(value, limit, label)
-      raise ArgumentError, "time-series JSON #{label} is not valid UTF-8" unless value.valid_encoding?
+      raise ArgumentError, "time-series JSON #{label} is not valid UTF-8" unless value.encoding == Encoding::UTF_8 && value.valid_encoding?
       raise ArgumentError, "time-series JSON #{label} exceeds byte limit" if value.bytesize > limit
+    end
+
+    def utf8_copy(value)
+      copy = value.dup
+      copy.force_encoding(Encoding::UTF_8)
+      copy
     end
 
     def deep_freeze(value)
