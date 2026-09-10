@@ -1,6 +1,24 @@
 require "test_helper"
 
 class TimeSeriesWriterTest < Minitest::Test
+  class FailureWindowWriter < Cybort::TimeSeriesWriter
+    attr_reader :failure_window, :release_drain
+
+    def initialize(**kwargs)
+      super
+      @failure_window = Queue.new
+      @release_drain = Queue.new
+    end
+
+    private
+
+    def fail_pending_commands(error)
+      @failure_window << error
+      @release_drain.pop
+      super
+    end
+  end
+
   FakePersistence = Struct.new(:imports, :acknowledgements, :deletions, :closed) do
     def import(artifact)
       imports << artifact
@@ -97,6 +115,31 @@ class TimeSeriesWriterTest < Minitest::Test
 
     Timeout.timeout(1) do
       assert_raises(ArgumentError) { failing_writer.event_for(1) }
+    end
+  end
+
+  def test_worker_failure_claims_state_before_draining_queued_commands
+    factory_error = RuntimeError.new("factory failed")
+    writer = FailureWindowWriter.new(
+      time_series_persistence_factory: -> { raise factory_error }, event_queue: @events
+    )
+    @writer = writer
+    writer.start
+    close_thread = Thread.new { writer.close_and_join }
+
+    assert_same factory_error, writer.failure_window.pop
+    submission_error = assert_raises(RuntimeError) do
+      writer.submit_delete_instance(instance_id: "sensor")
+    end
+    assert_match(/worker has failed/, submission_error.message)
+  ensure
+    writer&.release_drain&.<< true
+    if close_thread
+      begin
+        close_thread.value
+      rescue StandardError => error
+        assert_same factory_error, error
+      end
     end
   end
 

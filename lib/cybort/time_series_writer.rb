@@ -203,6 +203,11 @@ module Cybort
       rescue Exception => error # rubocop:disable Lint/RescueException -- Thread#value must observe abnormal worker termination
         active_error = error
         signal_startup(error)
+        # Claim the failed state before draining commands. Submission checks
+        # and this transition share @state_mutex, so no caller can enqueue a
+        # command after the worker has failed but before its terminal event is
+        # published.
+        publish_worker_failure(error)
         fail_pending_commands(error)
         raise
       ensure

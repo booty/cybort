@@ -388,13 +388,23 @@ module Cybort
         return time_series_status(instance, result, status: :success, metadata: metadata)
       end
       if event.result == :failure
-        return record_time_series_failure(instance, result, event.error)
+        return record_time_series_failure(
+          instance, result, event.error,
+          metadata: time_series_failure_metadata(
+            result, event.error, time_series_writer, command.fetch(:import_command_id)
+          )
+        )
       end
 
       begin
         @persistence.acknowledge_time_series_import(event.receipt)
       rescue StandardError => error
-        return record_time_series_failure(instance, result, error)
+        return record_time_series_failure(
+          instance, result, error,
+          metadata: time_series_failure_metadata(
+            result, error, time_series_writer, command.fetch(:import_command_id)
+          )
+        )
       end
 
       begin
@@ -413,13 +423,26 @@ module Cybort
       nil
     end
 
-    def merge_time_series_cleanup_metadata(metadata, writer, import_command_id)
-      failures = if writer.respond_to?(:cleanup_failures)
-        writer.cleanup_failures.fetch(import_command_id, nil)
+    def time_series_failure_metadata(result, error, writer, import_command_id)
+      metadata = if result.failure?
+        result.metadata
+      elsif error.respond_to?(:safe_metadata)
+        error.safe_metadata
+      else
+        {}
       end
-      return metadata unless failures
+      merge_time_series_cleanup_metadata(metadata, writer, import_command_id, error: error)
+    end
 
-      bounded_failures = Array(failures).first(8).filter_map do |failure|
+    def merge_time_series_cleanup_metadata(metadata, writer, import_command_id, error: nil)
+      failures = []
+      if writer.respond_to?(:cleanup_failures)
+        failures.concat(Array(writer.cleanup_failures.fetch(import_command_id, nil)))
+      end
+      failures.concat(Array(error.cleanup_failures)) if error&.respond_to?(:cleanup_failures)
+      return metadata if failures.empty?
+
+      bounded_failures = failures.first(8).filter_map do |failure|
         phase = failure[:phase] || failure["phase"] if failure.respond_to?(:key?)
         error_class = failure[:error_class] || failure["error_class"] if failure.respond_to?(:key?)
         next unless phase.is_a?(String) && error_class.is_a?(String)
@@ -431,14 +454,14 @@ module Cybort
       (metadata || {}).merge(cleanup_failures: bounded_failures)
     end
 
-    def record_time_series_failure(instance, result, error)
+    def record_time_series_failure(instance, result, error, metadata: nil)
       # Main persistence owns item-shaped fetch history and its insert path
       # reads result.items.length. Keep the typed result at the orchestration
       # boundary, but normalize failures before crossing into that API.
       failure = FetchResult.failure(
         instance_id: instance.id, error: error, started_at: result.started_at,
         finished_at: result.failure? ? result.finished_at : [@clock.call, result.started_at].max,
-        metadata: result.failure? ? result.metadata : (error.respond_to?(:safe_metadata) ? error.safe_metadata : {})
+        metadata: metadata || (result.failure? ? result.metadata : (error.respond_to?(:safe_metadata) ? error.safe_metadata : {}))
       )
       @persistence.record_fetch_failure(failure)
       status = InstanceRunStatus.new(
