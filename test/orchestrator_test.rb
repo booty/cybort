@@ -81,6 +81,68 @@ class OrchestratorTest < Minitest::Test
     end
   end
 
+  class TimeSeriesMainSpy < PersistenceSpy
+    attr_reader :acknowledgements
+
+    def initialize
+      super
+      @acknowledgements = []
+    end
+
+    def pending_time_series_purges
+      []
+    end
+
+    def acknowledge_time_series_import(receipt)
+      @acknowledgements << [receipt, Thread.current]
+    end
+  end
+
+  class TimeSeriesReaderSpy
+    def pending_receipts
+      []
+    end
+
+    def context_for(instance_id:)
+      { series_count: 2, observation_count: 7, sync_state: { cursor: "stored" } }
+    end
+  end
+
+  class TimeSeriesImportSpy
+    attr_reader :imports, :markers, :closed
+
+    def initialize(main:, marker_error: nil)
+      @main = main
+      @marker_error = marker_error
+      @imports = []
+      @markers = []
+    end
+
+    def import(artifact)
+      @imports << [artifact, Thread.current]
+      Cybort::TimeSeriesImportReceipt.new(
+        instance_id: artifact.instance_id, import_key: artifact.import_key,
+        artifact_digest: artifact.digest, import_mode: artifact.import_mode,
+        source_started_at: artifact.source_started_at, source_finished_at: artifact.source_finished_at,
+        committed_at: artifact.source_finished_at, imported_series_count: artifact.series_count,
+        imported_observation_count: artifact.observation_count, stored_series_count: artifact.series_count,
+        stored_observation_count: artifact.observation_count, sync_state: artifact.sync_state,
+        metadata: artifact.metadata
+      )
+    end
+
+    def mark_acknowledged(receipt)
+      raise "main acknowledgement must precede marker" if @main.acknowledgements.empty?
+      @markers << receipt
+      raise @marker_error if @marker_error
+      receipt
+    end
+
+    def close
+      @closed = true
+    end
+  end
+
   class SignalingPersistenceSpy < PersistenceSpy
     attr_reader :events
 
@@ -766,7 +828,115 @@ class OrchestratorTest < Minitest::Test
     assert_equal 0, factory_calls
   end
 
+  def test_time_series_cache_and_failure_never_submit_imports
+    now = Time.utc(2026, 9, 9, 12)
+    results = [
+      Cybort::TimeSeriesFetchResult.cached(
+        instance_id: "sensor", sync_state: {}, started_at: now, finished_at: now,
+        series_count: 2, observation_count: 7
+      ),
+      Cybort::TimeSeriesFetchResult.failure(
+        instance_id: "sensor", error: RuntimeError.new("source unavailable"),
+        started_at: now, finished_at: now
+      )
+    ]
+    results.each do |source_result|
+      main = TimeSeriesMainSpy.new
+      canonical = TimeSeriesImportSpy.new(main: main)
+      run = run_time_series_result(source_result, main, canonical)
+
+      assert_empty canonical.imports
+      assert_empty canonical.markers
+      assert canonical.closed
+      assert_equal source_result.failure? ? :failure : :cached, run.instances.first.status
+      assert_equal source_result.observation_count, run.instances.first.observation_count
+      assert_equal 0, run.instances.first.item_count
+      assert_instance_of Cybort::FetchResult, main.failures.first if source_result.failure?
+    end
+  end
+
+  def test_time_series_import_acknowledges_on_caller_before_writer_marker
+    with_time_series_result do |source_result|
+      main = TimeSeriesMainSpy.new
+      canonical = TimeSeriesImportSpy.new(main: main)
+      run = run_time_series_result(source_result, main, canonical)
+
+      assert_equal :success, run.overall_status
+      assert_equal 1, canonical.imports.length
+      refute_equal Thread.current, canonical.imports.first.last
+      assert_equal Thread.current, main.acknowledgements.first.last
+      assert_equal 1, canonical.markers.length
+      assert_empty main.failures
+      refute File.exist?(source_result.artifact.path)
+      assert canonical.closed
+    end
+  end
+
+  def test_time_series_marker_failure_preserves_main_success
+    with_time_series_result do |source_result|
+      main = TimeSeriesMainSpy.new
+      canonical = TimeSeriesImportSpy.new(main: main, marker_error: RuntimeError.new("marker failed"))
+      run = run_time_series_result(source_result, main, canonical)
+
+      assert_equal :success, run.overall_status
+      assert_equal true, run.instances.first.metadata.fetch(:receipt_acknowledgement_pending)
+      assert_equal 1, main.acknowledgements.length
+      assert_empty main.failures
+    end
+  end
+
+  def test_time_series_registration_rejects_an_item_result_at_persistence_boundary
+    now = Time.utc(2026, 9, 9, 12)
+    source_result = Cybort::FetchResult.success(
+      instance_id: "sensor", items: [], sync_state: {}, started_at: now,
+      finished_at: now, source_fetched: true
+    )
+    main = TimeSeriesMainSpy.new
+    canonical = TimeSeriesImportSpy.new(main: main)
+    run = run_time_series_result(source_result, main, canonical)
+
+    assert_equal :failure, run.overall_status
+    assert_instance_of Cybort::ValidationError, run.instances.first.error
+    assert_instance_of Cybort::FetchResult, main.failures.first
+    assert_empty canonical.imports
+    assert_empty main.writes
+  end
+
   private
+
+  def run_time_series_result(source_result, main, canonical)
+    registry = Cybort::AdapterRegistry.new
+    spool_factory = Object.new
+    registry.register("series_fixture", ->(context:, spool_factory:, **) {
+      assert_equal 7, context.fetch(:observation_count)
+      assert_equal({ cursor: "stored" }, context.fetch(:sync_state))
+      refute_nil spool_factory
+      FixedResultAdapter.new(result: source_result)
+    }, result_kind: :time_series)
+    configured = instance("sensor").tap { |value| value.adapter = "series_fixture" }
+    Cybort::Orchestrator.new(
+      configuration: Struct.new(:instances).new({ "sensor" => configured }),
+      persistence: main, registry: registry, http_client: nil,
+      clock: -> { Time.utc(2026, 9, 9, 13) }, time_series_reader: TimeSeriesReaderSpy.new,
+      time_series_persistence_factory: -> { canonical }, time_series_spool_factory: spool_factory
+    ).run(force_fetch: true)
+  end
+
+  def with_time_series_result
+    Tempfile.create(["cybort-orchestrator-spool", ".sqlite3"]) do |file|
+      file.close
+      now = Time.utc(2026, 9, 9, 12)
+      artifact = Cybort::TimeSeriesSpoolArtifact.new(
+        path: file.path, instance_id: "sensor", import_key: "batch-1", import_mode: :append,
+        digest: Digest::SHA256.file(file.path).hexdigest, series_count: 0, observation_count: 0,
+        sync_state: {}, source_started_at: now, source_finished_at: now, metadata: {}
+      )
+      yield Cybort::TimeSeriesFetchResult.success(
+        instance_id: "sensor", artifact: artifact, sync_state: {},
+        started_at: now, finished_at: now, source_fetched: true
+      )
+    end
+  end
 
   def start_run(&block)
     Thread.new do
