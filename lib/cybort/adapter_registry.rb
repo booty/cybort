@@ -1,6 +1,7 @@
 module Cybort
   class AdapterRegistry
-    Entry = Struct.new(:factory, :dependencies, :validator, :display_name, :item_noun, keyword_init: true)
+    RESULT_KINDS = %i[items time_series].freeze
+    Entry = Struct.new(:factory, :dependencies, :validator, :display_name, :item_noun, :result_kind, keyword_init: true)
 
     def self.default
       new.tap do |registry|
@@ -17,7 +18,11 @@ module Cybort
     end
 
     def register(name, adapter_factory, dependencies: [], validate_configuration: nil,
-                 display_name: nil, item_noun: "items")
+                 display_name: nil, item_noun: "items", result_kind: :items)
+      raise ArgumentError, "invalid adapter result kind" unless RESULT_KINDS.include?(result_kind)
+      if result_kind == :time_series && !accepts_keyword?(adapter_factory, :spool_factory)
+        raise ArgumentError, "time-series adapter factory must accept spool_factory keyword"
+      end
       validator = validate_configuration || if adapter_factory.respond_to?(:validate_configuration!)
         ->(instance) { adapter_factory.validate_configuration!(instance) }
       end
@@ -26,7 +31,8 @@ module Cybort
         dependencies: Array(dependencies).freeze,
         validator: validator || ->(_instance) {},
         display_name: display_name,
-        item_noun: item_noun
+        item_noun: item_noun,
+        result_kind: result_kind
       )
     end
 
@@ -36,6 +42,10 @@ module Cybort
 
     def item_noun_for(instance)
       @adapters.fetch(instance.adapter).item_noun || "items"
+    end
+
+    def result_kind_for(instance)
+      @adapters.fetch(instance.adapter) { raise ConfigurationError, "unknown adapter: #{instance.adapter}" }.result_kind
     end
 
     def validate!(instances)
@@ -83,7 +93,7 @@ module Cybort
       end
     end
 
-    def build(instance:, context:, http_client:, clock:, command_runner: nil, dependency_resolutions: {}, monotonic_clock: nil)
+    def build(instance:, context:, http_client:, clock:, command_runner: nil, dependency_resolutions: {}, monotonic_clock: nil, spool_factory: nil)
       entry = @adapters.fetch(instance.adapter) do
         raise ConfigurationError, "unknown adapter: #{instance.adapter}"
       end
@@ -96,6 +106,7 @@ module Cybort
         dependency_resolutions: dependency_resolutions
       }
       kwargs[:monotonic_clock] = monotonic_clock if monotonic_clock
+      kwargs[:spool_factory] = spool_factory if entry.result_kind == :time_series
       if entry.factory.respond_to?(:new)
         entry.factory.new(**compatible_keywords(entry.factory, kwargs))
       else
@@ -115,6 +126,15 @@ module Cybort
 
       accepted = parameters.select { |kind, _name| %i[key keyreq].include?(kind) }.map(&:last)
       kwargs.select { |key, _value| accepted.include?(key) }
+    end
+
+    def accepts_keyword?(factory, keyword)
+      parameters = if factory.is_a?(Class)
+        factory.instance_method(:initialize).parameters
+      else
+        factory.parameters
+      end
+      parameters.any? { |kind, name| kind == :keyrest || (%i[key keyreq].include?(kind) && name == keyword) }
     end
   end
 end

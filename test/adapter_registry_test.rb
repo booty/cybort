@@ -21,6 +21,25 @@ class AdapterRegistryTest < Minitest::Test
     assert_equal [dependency], registry.dependencies_for(instance)
   end
 
+  def test_result_kinds_default_and_time_series_factory_require_spool_factory
+    registry = Cybort::AdapterRegistry.new
+    registry.register("items", ->(**_kwargs) { Object.new })
+    registry.register("series", ->(spool_factory:, **_kwargs) { spool_factory }, result_kind: :time_series)
+    assert_equal :items, registry.result_kind_for(Instance.new(adapter: "items"))
+    assert_equal :time_series, registry.result_kind_for(Instance.new(adapter: "series"))
+    assert_raises(ArgumentError) do
+      registry.register("bad", ->(instance:) { instance }, result_kind: :time_series)
+    end
+    assert_raises(ArgumentError) { registry.register("unknown", ->(**_) {}, result_kind: :bogus) }
+  end
+
+  def test_builtin_adapters_are_item_result_kind
+    registry = Cybort::AdapterRegistry.default
+    %w[rss github reddit reddit_rss gmail].each do |name|
+      assert_equal :items, registry.result_kind_for(Instance.new(adapter: name))
+    end
+  end
+
   def test_aggregates_configuration_errors_in_instance_order
     registry = Cybort::AdapterRegistry.new
     registry.register("fake", ->(**_kwargs) { Object.new }, validate_configuration: lambda do |instance|
