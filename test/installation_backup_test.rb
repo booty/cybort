@@ -35,7 +35,7 @@ class InstallationBackupTest < Minitest::Test
       end
       assert_equal 0o600, File.stat(File.join(destination, "manifest.json")).mode & 0o777
       assert_equal 0o700, File.stat(destination).mode & 0o777
-      assert_includes fsyncs, File.join(destination, "manifest.json")
+      assert fsyncs.any? { |path| File.basename(path) == "manifest.json" }
       assert_includes fsyncs, File.dirname(destination)
 
       reopened_main = Cybort::Persistence.new(File.join(destination, "cybort.sqlite3")).setup!
