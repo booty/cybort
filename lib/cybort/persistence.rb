@@ -89,6 +89,9 @@ module Cybort
 
         @database.execute("DELETE FROM fetch_runs WHERE instance_id = ?", [instance_id])
         @database.execute("DELETE FROM items WHERE instance_id = ?", [instance_id])
+        # Keep this explicit even though the acknowledgement foreign key
+        # cascades, so instance deletion documents and enforces its ordering.
+        @database.execute("DELETE FROM time_series_acknowledgements WHERE instance_id = ?", [instance_id])
         @database.execute("DELETE FROM adapter_instances WHERE id = ?", [instance_id])
         true
       end
@@ -120,6 +123,90 @@ module Cybort
 
     def fetch_runs_for(instance_id:)
       query("SELECT * FROM fetch_runs WHERE instance_id = ? ORDER BY id", instance_id)
+    end
+
+    def acknowledge_time_series_import(receipt)
+      unless receipt.is_a?(TimeSeriesImportReceipt)
+        raise ArgumentError, "expected a time-series import receipt"
+      end
+
+      persistence_now = @clock.call
+      successful_fetch_at = [receipt.source_finished_at, persistence_now].min
+
+      @database.transaction do
+        acknowledged = @database.get_first_value(
+          <<~SQL,
+            SELECT 1 FROM time_series_acknowledgements
+            WHERE instance_id = ? AND import_key = ?
+          SQL
+          [receipt.instance_id, receipt.import_key]
+        )
+        next false if acknowledged
+
+        update_time_series_instance_state(
+          receipt,
+          last_successful_fetch: successful_fetch_at,
+          updated_at: persistence_now
+        )
+        insert_time_series_fetch_run(receipt, finished_at: successful_fetch_at)
+        @database.execute(
+          <<~SQL,
+            INSERT INTO time_series_acknowledgements (instance_id, import_key, acknowledged_at)
+            VALUES (?, ?, ?)
+          SQL
+          [receipt.instance_id, receipt.import_key, timestamp(persistence_now)]
+        )
+        true
+      end
+    end
+
+    def time_series_import_acknowledged?(instance_id:, import_key:)
+      !@database.get_first_value(
+        <<~SQL,
+          SELECT 1 FROM time_series_acknowledgements
+          WHERE instance_id = ? AND import_key = ?
+        SQL
+        [instance_id, import_key]
+      ).nil?
+    end
+
+    def begin_time_series_purge(instance_id:)
+      requested_at = timestamp(@clock.call)
+      @database.transaction do
+        @database.execute(
+          <<~SQL,
+            INSERT OR IGNORE INTO time_series_purge_intents (instance_id, requested_at)
+            VALUES (?, ?)
+          SQL
+          [instance_id, requested_at]
+        )
+        @database.changes.positive?
+      end
+    end
+
+    def pending_time_series_purges
+      query(<<~SQL)
+        SELECT instance_id, requested_at
+        FROM time_series_purge_intents
+        ORDER BY instance_id ASC
+      SQL
+    end
+
+    def finish_time_series_purge(instance_id:)
+      @database.transaction do
+        deleted = false
+        [
+          "DELETE FROM fetch_runs WHERE instance_id = ?",
+          "DELETE FROM items WHERE instance_id = ?",
+          "DELETE FROM time_series_acknowledgements WHERE instance_id = ?",
+          "DELETE FROM adapter_instances WHERE id = ?",
+          "DELETE FROM time_series_purge_intents WHERE instance_id = ?"
+        ].each do |sql|
+          @database.execute(sql, [instance_id])
+          deleted ||= @database.changes.positive?
+        end
+        deleted
+      end
     end
 
     def write_fetch_result(result, retention_ttl_minutes: nil)
@@ -228,6 +315,42 @@ module Cybort
          result.instance_id]
       )
       raise ValidationError, "unknown adapter instance: #{result.instance_id}" if changes == 0
+    end
+
+    def update_time_series_instance_state(receipt, last_successful_fetch:, updated_at:)
+      changes = @database.execute(
+        <<~SQL,
+          UPDATE adapter_instances
+          SET last_successful_fetch = ?, sync_state_json = ?, updated_at = ?
+          WHERE id = ?
+        SQL
+        [timestamp(last_successful_fetch),
+         receipt.sync_state.nil? ? nil : JSON.generate(receipt.sync_state),
+         timestamp(updated_at),
+         receipt.instance_id]
+      )
+      raise ValidationError, "unknown adapter instance: #{receipt.instance_id}" if changes == 0
+    end
+
+    def insert_time_series_fetch_run(receipt, finished_at:)
+      metadata = receipt.metadata.merge("result_kind" => "time_series")
+      @database.execute(
+        <<~SQL,
+          INSERT INTO fetch_runs (
+            instance_id, status, started_at, finished_at, item_count,
+            error_message, metadata_json
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        SQL
+        [
+          receipt.instance_id,
+          "successful",
+          timestamp(receipt.source_started_at),
+          timestamp(finished_at),
+          receipt.imported_observation_count,
+          nil,
+          JSON.generate(metadata)
+        ]
+      )
     end
 
     def insert_fetch_run(result, status)

@@ -59,6 +59,28 @@ class PersistenceTest < Minitest::Test
     )
   end
 
+  def time_series_receipt(instance_id: "rss", import_key: "batch-1",
+                          source_started_at: Time.utc(2026, 8, 16, 11, 59),
+                          source_finished_at: Time.utc(2026, 8, 16, 12),
+                          sync_state: { "cursor" => "next" },
+                          imported_observation_count: 2)
+    Cybort::TimeSeriesImportReceipt.new(
+      instance_id: instance_id,
+      import_key: import_key,
+      artifact_digest: "a" * 64,
+      import_mode: :append,
+      source_started_at: source_started_at,
+      source_finished_at: source_finished_at,
+      committed_at: source_finished_at,
+      imported_series_count: 1,
+      imported_observation_count: imported_observation_count,
+      stored_series_count: 1,
+      stored_observation_count: imported_observation_count,
+      sync_state: sync_state,
+      metadata: { "fixture" => true }
+    )
+  end
+
   def test_setup_creates_schema_and_is_idempotent
     with_database do |path|
       persistence = Cybort::Persistence.new(path)
@@ -66,7 +88,8 @@ class PersistenceTest < Minitest::Test
       persistence.setup!
       persistence.setup!
 
-      assert_equal ["adapter_instances", "fetch_runs", "items", "schema_migrations"], persistence.table_names
+      assert_equal ["adapter_instances", "fetch_runs", "items", "schema_migrations",
+                    "time_series_acknowledgements", "time_series_purge_intents"], persistence.table_names
       indexes = persistence.send(:query, "PRAGMA index_list('items')").map { |row| row.fetch("name") }
       assert_includes indexes, "idx_items_instance_fetched_at"
     end
@@ -122,12 +145,114 @@ class PersistenceTest < Minitest::Test
       persistence.setup!
       persistence.register_instance(instance)
       persistence.write_fetch_result(result)
+      persistence.acknowledge_time_series_import(time_series_receipt)
 
       assert persistence.delete_instance(instance_id: "rss")
       refute persistence.delete_instance(instance_id: "rss")
       assert_nil persistence.instance_record("rss")
       assert_empty persistence.items_for(instance_id: "rss")
       assert_empty persistence.fetch_runs_for(instance_id: "rss")
+      refute persistence.time_series_import_acknowledged?(instance_id: "rss", import_key: "batch-1")
+    end
+  end
+
+  def test_acknowledge_time_series_import_advances_state_and_records_durable_history
+    with_database do |path|
+      now = Time.utc(2026, 8, 16, 13)
+      persistence = Cybort::Persistence.new(path, clock: -> { now })
+      persistence.setup!
+      persistence.register_instance(instance)
+      receipt = time_series_receipt(
+        source_started_at: Time.utc(2026, 8, 16, 12, 59),
+        source_finished_at: Time.utc(2026, 8, 16, 13),
+        sync_state: { "cursor" => "batch-1" }, imported_observation_count: 2
+      )
+
+      assert persistence.acknowledge_time_series_import(receipt)
+      assert persistence.time_series_import_acknowledged?(instance_id: "rss", import_key: "batch-1")
+      assert_equal({ cursor: "batch-1" }, persistence.context_for(instance_id: "rss").fetch(:sync_state))
+      assert_equal now, persistence.context_for(instance_id: "rss").fetch(:last_successful_fetch)
+
+      run = persistence.fetch_runs_for(instance_id: "rss").first
+      assert_equal "successful", run.fetch("status")
+      assert_equal "2026-08-16T12:59:00.000000Z", run.fetch("started_at")
+      assert_equal "2026-08-16T13:00:00.000000Z", run.fetch("finished_at")
+      assert_equal 2, run.fetch("item_count")
+      assert_equal "time_series", JSON.parse(run.fetch("metadata_json")).fetch("result_kind")
+
+      refute persistence.acknowledge_time_series_import(receipt)
+      assert_equal 1, persistence.fetch_runs_for(instance_id: "rss").length
+    end
+  end
+
+  def test_acknowledgement_uses_durable_source_start_after_reopening_persistence
+    with_database do |path|
+      receipt = time_series_receipt(
+        source_started_at: Time.utc(2026, 8, 16, 11, 58),
+        source_finished_at: Time.utc(2026, 8, 16, 12),
+        sync_state: { "cursor" => "durable" }
+      )
+      first = Cybort::Persistence.new(path)
+      first.setup!
+      first.register_instance(instance)
+      first.acknowledge_time_series_import(receipt)
+
+      reopened = Cybort::Persistence.new(path)
+      reopened.setup!
+
+      assert_equal "2026-08-16T11:58:00.000000Z",
+                   reopened.fetch_runs_for(instance_id: "rss").first.fetch("started_at")
+      assert_equal({ cursor: "durable" }, reopened.context_for(instance_id: "rss").fetch(:sync_state))
+    end
+  end
+
+  def test_acknowledgement_rejects_unknown_instance_without_writing_history
+    with_database do |path|
+      persistence = Cybort::Persistence.new(path)
+      persistence.setup!
+      receipt = time_series_receipt(instance_id: "missing")
+
+      assert_raises(Cybort::ValidationError) { persistence.acknowledge_time_series_import(receipt) }
+      refute persistence.time_series_import_acknowledged?(instance_id: "missing", import_key: "batch-1")
+      assert_empty persistence.send(:query, "SELECT * FROM fetch_runs")
+    end
+  end
+
+  def test_future_time_series_completion_is_clamped_in_state_and_fetch_history
+    with_database do |path|
+      now = Time.utc(2026, 8, 16, 13)
+      persistence = Cybort::Persistence.new(path, clock: -> { now })
+      persistence.setup!
+      persistence.register_instance(instance)
+      persistence.acknowledge_time_series_import(
+        time_series_receipt(source_finished_at: Time.utc(2030, 1, 1))
+      )
+
+      assert_equal now, persistence.context_for(instance_id: "rss").fetch(:last_successful_fetch)
+      assert_equal "2026-08-16T13:00:00.000000Z",
+                   persistence.fetch_runs_for(instance_id: "rss").first.fetch("finished_at")
+    end
+  end
+
+  def test_time_series_purge_intent_and_finish_are_idempotent_and_complete
+    with_database do |path|
+      persistence = Cybort::Persistence.new(path)
+      persistence.setup!
+      persistence.register_instance(instance)
+      persistence.write_fetch_result(result)
+      persistence.acknowledge_time_series_import(time_series_receipt)
+
+      assert persistence.begin_time_series_purge(instance_id: "rss")
+      refute persistence.begin_time_series_purge(instance_id: "rss")
+      assert_equal ["rss"], persistence.pending_time_series_purges.map { |row| row.fetch("instance_id") }
+
+      assert persistence.finish_time_series_purge(instance_id: "rss")
+      refute persistence.finish_time_series_purge(instance_id: "rss")
+      assert_empty persistence.pending_time_series_purges
+      assert_nil persistence.instance_record("rss")
+      assert_empty persistence.items_for(instance_id: "rss")
+      assert_empty persistence.fetch_runs_for(instance_id: "rss")
+      refute persistence.time_series_import_acknowledged?(instance_id: "rss", import_key: "batch-1")
     end
   end
 

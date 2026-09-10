@@ -1,6 +1,6 @@
 module Cybort
   module Schema
-    VERSION = 2
+    VERSION = 3
 
     DDL = <<~SQL
       CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -44,6 +44,18 @@ module Cybort
 
       CREATE INDEX IF NOT EXISTS idx_items_instance_fetched_at
         ON items (instance_id, fetched_at);
+
+      CREATE TABLE IF NOT EXISTS time_series_acknowledgements (
+        instance_id TEXT NOT NULL REFERENCES adapter_instances(id) ON DELETE CASCADE,
+        import_key TEXT NOT NULL,
+        acknowledged_at TEXT NOT NULL,
+        PRIMARY KEY (instance_id, import_key)
+      );
+
+      CREATE TABLE IF NOT EXISTS time_series_purge_intents (
+        instance_id TEXT PRIMARY KEY,
+        requested_at TEXT NOT NULL
+      );
     SQL
 
     def self.apply(database)
