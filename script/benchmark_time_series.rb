@@ -97,6 +97,7 @@ module Cybort
         series = reader.series_for(instance_id: INSTANCE_ID, limit: 1).fetch(0)
         query_results = run_queries(reader, canonical_path, series.id, observations)
         sqlite_version = query_results.delete(:sqlite_version)
+        rss = rss_measurements
 
         summary = {
           observations: observations,
@@ -106,7 +107,10 @@ module Cybort
           spool_digest_sha256: artifact.digest,
           spool_construction_seconds: spool_duration_seconds,
           canonical_import_seconds: import_duration_seconds,
-          peak_rss_bytes: peak_rss_bytes,
+          peak_rss_bytes: rss.fetch(:peak_rss_bytes),
+          peak_rss_measurement_kind: rss.fetch(:peak_rss_measurement_kind),
+          current_rss_bytes: rss.fetch(:current_rss_bytes),
+          current_rss_measurement_kind: rss.fetch(:current_rss_measurement_kind),
           sizes_bytes: {
             spool: spool_bytes,
             canonical: canonical_bytes,
@@ -261,15 +265,27 @@ module Cybort
       Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
     end
 
-    def peak_rss_bytes
-      getrusage_rss_bytes || proc_peak_rss_bytes || ps_rss_bytes
+    def rss_measurements
+      peak = if (bytes = getrusage_rss_bytes)
+        { bytes: bytes, kind: "getrusage_maxrss" }
+      elsif (bytes = proc_peak_rss_bytes)
+        { bytes: bytes, kind: "proc_vmhwm" }
+      end
+      current = if (bytes = ps_rss_bytes)
+        { bytes: bytes, kind: "ps_rss_current" }
+      end
+      {
+        peak_rss_bytes: peak&.fetch(:bytes),
+        peak_rss_measurement_kind: peak&.fetch(:kind),
+        current_rss_bytes: current&.fetch(:bytes),
+        current_rss_measurement_kind: current&.fetch(:kind)
+      }
     end
 
-    # Returns a best-effort resident-set measurement in bytes.  getrusage is
-    # preferred when Ruby exposes it; Linux /proc supplies a true high-water
-    # mark, while ps supplies the current RSS on macOS and other POSIX hosts.
-    # Measurement is optional, so an unavailable or malformed value is nil and
-    # must not make the benchmark fail or add unbounded output.
+    # Returns a best-effort resident-set high-water measurement in bytes.
+    # getrusage is preferred when Ruby exposes it; Linux /proc supplies a true
+    # high-water mark. Measurement is optional, so an unavailable or malformed
+    # value is nil and must not make the benchmark fail or add unbounded output.
     def getrusage_rss_bytes
       return unless Process.respond_to?(:getrusage)
 
@@ -296,6 +312,9 @@ module Cybort
     end
 
     def ps_rss_bytes
+      # ps reports current RSS, not a process high-water mark. Keep it separate
+      # from peak_rss_bytes so the summary never labels a point measurement as a
+      # peak.
       output, status = Open3.capture2("ps", "-o", "rss=", "-p", Process.pid.to_s)
       return unless status.success?
 

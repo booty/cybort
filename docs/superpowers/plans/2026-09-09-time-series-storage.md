@@ -772,8 +772,8 @@ time-series delete. Prove startup reconciliation processes purge intents first
 in instance-ID order, finishes the main deletion, and cannot strand a retained
 cursor after observations are gone. Then process import receipts in instance
 ID, source-finish-time, import-key order. A recovery failure blocks planning
-only for that affected time-series instance and leaves unrelated sources
-runnable.
+and source execution only for that affected configured instance ID, regardless
+of its current result kind, and leaves unrelated sources runnable.
 
 - [ ] **Step 5: Write failing orchestration tests**
 

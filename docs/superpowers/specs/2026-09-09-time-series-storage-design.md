@@ -1,6 +1,6 @@
 # Time-Series Storage Design
 
-**Status:** Approved for implementation planning  
+**Status:** Implemented
 **Date:** 2026-09-09
 
 ## Summary
@@ -364,8 +364,9 @@ Time-series commands and events carry a process-local command ID, instance ID,
 import key, and phase so current-run imports cannot be confused with startup
 reconciliation. Pending purge intents are reconciled first by instance ID;
 pending import receipts follow deterministically by instance ID, source finish
-time, and import key. A reconciliation failure prevents planning only for the
-affected time-series instance; unrelated sources still run.
+time, and import key. A reconciliation failure prevents planning and source
+execution only for each affected configured instance ID, regardless of its
+current result kind; unrelated sources still run.
 
 ## Cross-database commit recovery
 
@@ -445,13 +446,12 @@ the `items` table merely to make them visible to the existing CLI.
 
 ## Backup, purge, and lifecycle
 
-The existing SQLite backup command covers only the main database and is not a
-complete installation backup after this feature. Before implementation is
-complete, backup and reset workflows must treat the two canonical database
-files as one logical installation. The purge CLI requires collection to be
-stopped, then uses SQLite backup operations for each file and records both
-snapshot start/completion times plus installation backup start/completion times
-in a manifest so a user cannot mistake one file for a complete backup. Backup
+The low-level SQLite backup methods each cover one database, while the
+implemented installation backup workflow covers both canonical database files
+as one logical installation. The purge CLI requires collection to be stopped,
+then uses SQLite backup operations for each file and records both snapshot
+start/completion times plus installation backup start/completion times in a
+manifest so a user cannot mistake one file for a complete backup. Backup
 directories are mode `0700`; database copies and the manifest are mode `0600`.
 Files and their temporary directory are fsynced before an atomic sibling rename
 publishes the backup. The two backups are adjacent durable snapshots, not a
@@ -520,12 +520,15 @@ Coverage includes:
 
 Performance tests are bounded benchmarks rather than timing-sensitive unit-test
 assertions. Before enabling a high-volume connector, a local benchmark runs at
-100,000 and at least 1.5 million synthetic observations and records peak RSS,
-spool size, canonical database size, transaction duration, WAL growth,
-representative range-query latency, and `EXPLAIN QUERY PLAN` output. Digests
-and producers remain streaming so the measurement detects accidental
-whole-file or whole-result buffering. The benchmark informs tuning but does not
-fail on absolute wall-clock or memory thresholds in CI.
+100,000 and at least 1.5 million synthetic observations and records a
+high-water RSS measurement when the runtime exposes one. If only a current RSS
+measurement is available, it is reported separately with its measurement kind
+and never labeled as peak RSS. The benchmark also records spool size, canonical
+database size, transaction duration, WAL growth, representative range-query
+latency, and `EXPLAIN QUERY PLAN` output. Digests and producers remain streaming
+so the measurement detects accidental whole-file or whole-result buffering. The
+benchmark informs tuning but does not fail on absolute wall-clock or memory
+thresholds in CI.
 
 ## Alternatives considered
 
@@ -563,9 +566,10 @@ item commits. The separate database removes that contention more directly.
 
 ## Documentation impact
 
-Implementation changes the current invariant that one SQLite file is the whole
-canonical datastore. When the implementation lands, update `AGENTS.md`, the
-README installation/backup documentation, and the configuration template for
-any user-visible time-series options. Until then, code and the existing project
-invariant continue to describe actual behavior, while this approved spec and
-ADR describe the intended architecture.
+The implementation changes the original invariant that one SQLite file is the
+whole canonical datastore. The current implementation and project guidance
+now describe the pair of canonical SQLite databases, the dedicated writer,
+disposable spools, and lifecycle recovery guarantees. No user-visible
+time-series configuration options exist yet, so the connector template remains
+unchanged. This design remains the architectural record for the implemented
+substrate; future source connectors require their own design and release gates.

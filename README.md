@@ -239,11 +239,9 @@ for Reddit, configure it at or below 2,880 minutes (48 hours) unless there is
 a deliberate reason not to. `hard_expiry_ttl_minutes` provides a separate
 startup-bound local deletion policy when a wall-clock bound is required.
 Removing an instance does not automatically purge its local rows; use the
-explicit `purge` workflow above. To remove locally stored Reddit data, stop
-Cybort and delete the intended SQLite installation data (normally both
-`~/.cybort/cybort.sqlite3` and `~/.cybort/cybort-timeseries.sqlite3`); this is
-irreversible, so make any desired backup first. For a complete installation,
-that means both canonical SQLite files; see
+explicit `purge` workflow above to remove only that instance's data. Do not
+delete either canonical SQLite file manually: use `purge` for instance-scoped
+removal or the explicit reset workflow for a complete installation. See
 [`docs/adr/0009-isolate-time-series-storage.md`](docs/adr/0009-isolate-time-series-storage.md)
 for the time-series storage decision and lifecycle guarantees.
 

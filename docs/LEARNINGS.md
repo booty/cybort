@@ -6,7 +6,7 @@ future agent can distinguish observed behavior from an open follow-up.
 
 ## 2026-09-10 — Time-series substrate benchmark is streaming at Apple-Health scale
 
-**Status:** Measured; RSS unavailable in this Ruby runtime.
+**Status:** Measured; high-water RSS unavailable in this Ruby runtime.
 
 **Observation:** The synthetic time-series benchmark completed for 100,000 and
 1,500,000 observations without retaining an observation array. Both bounded
@@ -20,16 +20,20 @@ The 100k run took 0.651s to build the spool and 0.428s to import; the 1.5M run
 took 9.354s and 6.267s. Spool/canonical sizes were 13.2/18.5 MB and
 197.9/278.7 MB respectively. Early and late queries returned 100 and 1,000
 rows. `peak_rss_bytes` was `null` because this runtime exposes neither
-`Process.getrusage` nor a readable RSS fallback.
+`Process.getrusage` nor a readable high-water RSS fallback. The benchmark
+summary now keeps any `ps` point-in-time reading in `current_rss_bytes` with a
+`ps_rss_current` measurement kind instead of labeling it as a peak; the
+recorded runs did not establish a high-water value.
 
 **Impact:** The storage path remains practical for a high-frequency export
 without an in-memory observation collection, and its bounded indexes support
 range reads. These timings are machine-specific evidence, not performance
 contracts.
 
-**Next action:** Repeat the benchmark on a deployment where RSS measurement is
-available if memory sizing becomes a release concern; do not treat the current
-timings as guarantees.
+**Next action:** Repeat the benchmark on a deployment where high-water RSS
+measurement is available if memory sizing becomes a release concern; treat a
+`ps_rss_current` value as an informational point measurement and do not treat
+the current timings as guarantees.
 
 ## 2026-09-07 — Public Reddit RSS is offline-verified but remains experimental
 
