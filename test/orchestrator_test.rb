@@ -99,12 +99,13 @@ class OrchestratorTest < Minitest::Test
   end
 
   class TimeSeriesReaderSpy
-    def initialize(last_successful_fetch: nil)
+    def initialize(last_successful_fetch: nil, pending_receipts: [])
       @last_successful_fetch = last_successful_fetch
+      @pending_receipts = pending_receipts
     end
 
     def pending_receipts
-      []
+      @pending_receipts
     end
 
     def context_for(instance_id:)
@@ -222,6 +223,20 @@ class OrchestratorTest < Minitest::Test
     def prepare_time_series(_result_kinds, completions)
       @test_writer.attach_event_queue(completions)
       [@test_writer, { blocked_instances: [], errors: {} }]
+    end
+  end
+
+  class FailingPurgeTimeSeriesPersistence
+    def initialize(error)
+      @error = error
+    end
+
+    def delete_instance(instance_id:)
+      raise @error
+    end
+
+    def close
+      nil
     end
   end
 
@@ -768,6 +783,48 @@ class OrchestratorTest < Minitest::Test
       assert_nil persistence.instance_record("supplied")
       assert_equal ["failed"], persistence.fetch_runs_for(instance_id: "configured").map { |row| row.fetch("status") }
     end
+  end
+
+  def test_non_time_series_result_records_failure_for_configured_instance
+    main = TimeSeriesMainSpy.new
+    canonical = TimeSeriesImportSpy.new(main: main)
+
+    run = run_time_series_result(Object.new, main, canonical)
+
+    assert_equal :failure, run.overall_status
+    assert_equal "sensor", run.instances.first.instance_id
+    assert_instance_of Cybort::ValidationError, run.instances.first.error
+    assert_instance_of Cybort::FetchResult, main.failures.first
+    assert_equal "sensor", main.failures.first.instance_id
+    assert_empty canonical.imports
+  end
+
+  def test_time_series_recovery_failure_blocks_reused_item_instance
+    error = RuntimeError.new("time-series purge unavailable")
+    configured = instance("sensor", hard_expiry_ttl_minutes: 1).tap { |value| value.adapter = "force" }
+    configuration = Struct.new(:instances).new({ configured.id => configured })
+    persistence = Class.new(TimeSeriesMainSpy) do
+      define_method(:pending_time_series_purges) { [{ "instance_id" => "sensor" }] }
+    end.new
+    calls = []
+    registry = Cybort::AdapterRegistry.new
+    registry.register("force", ->(**kwargs) { ForceRecordingAdapter.new(**kwargs, calls: calls) })
+
+    run = Cybort::Orchestrator.new(
+      configuration: configuration,
+      persistence: persistence,
+      registry: registry,
+      http_client: nil,
+      time_series_reader: TimeSeriesReaderSpy.new,
+      time_series_persistence_factory: -> { FailingPurgeTimeSeriesPersistence.new(error) }
+    ).run(force_fetch: true)
+
+    assert_equal :failure, run.instances.first.status
+    assert_same error, run.instances.first.error
+    assert_empty calls
+    assert_empty persistence.writes
+    assert_equal ["sensor"], persistence.failures.map(&:instance_id)
+    assert_empty persistence.expiry_calls
   end
 
   def test_configuration_validation_happens_before_persistence_registration

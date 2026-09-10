@@ -81,11 +81,24 @@ module Cybort
       end.freeze
       time_series_writer, recovery = prepare_time_series(result_kinds, completions)
       results = {}
+      recovery.fetch(:errors).each do |instance_id, error|
+        next unless instances.key?(instance_id)
+
+        results[instance_id] = failure_result(
+          result_kind: result_kinds.fetch(instance_id),
+          instance_id: instance_id,
+          error: error,
+          started_at: @clock.call,
+          finished_at: @clock.call,
+          metadata: { "recovery" => "blocked" }
+        )
+      end
       retention_ttl_minutes_by_instance_id = instances.values.to_h do |instance|
         [instance.id, instance.retention_ttl_minutes]
       end.freeze
       hard_expired_items_by_instance_id = instances.values.to_h do |instance|
-        count = if result_kinds.fetch(instance.id) == :items && instance.hard_expiry_ttl_minutes
+        count = if result_kinds.fetch(instance.id) == :items && instance.hard_expiry_ttl_minutes &&
+                   !recovery.fetch(:errors).key?(instance.id)
           @persistence.expire_items(
             instance_id: instance.id,
             hard_expiry_ttl_minutes: instance.hard_expiry_ttl_minutes
@@ -106,19 +119,6 @@ module Cybort
         else
           context
         end
-      end
-
-      recovery.fetch(:errors).each do |instance_id, error|
-        next unless instances.key?(instance_id) && result_kinds.fetch(instance_id) == :time_series
-
-        results[instance_id] = failure_result(
-          result_kind: :time_series,
-          instance_id: instance_id,
-          error: error,
-          started_at: @clock.call,
-          finished_at: @clock.call,
-          metadata: { "recovery" => "blocked" }
-        )
       end
 
       planned_at = @clock.call
@@ -310,10 +310,15 @@ module Cybort
     end
 
     def prepare_time_series(result_kinds, completions)
-      pending_purges = @persistence.respond_to?(:pending_time_series_purges) &&
-        !@persistence.pending_time_series_purges.empty?
-      pending_receipts = @time_series_reader && !@time_series_reader.pending_receipts.empty?
-      required = result_kinds.value?(:time_series) || pending_purges || pending_receipts
+      pending_purge_rows = if @persistence.respond_to?(:pending_time_series_purges)
+        Array(@persistence.pending_time_series_purges)
+      else
+        []
+      end
+      pending_receipt_rows = @time_series_reader ? Array(@time_series_reader.pending_receipts) : []
+      recovery_instance_ids = (pending_purge_rows.filter_map { |row| recovery_instance_id(row) } +
+        pending_receipt_rows.filter_map { |receipt| recovery_instance_id(receipt) }).uniq
+      required = result_kinds.value?(:time_series) || !pending_purge_rows.empty? || !pending_receipt_rows.empty?
       return [nil, { blocked_instances: [], errors: {} }] unless required
 
       unless @time_series_reader && @time_series_persistence_factory
@@ -325,8 +330,11 @@ module Cybort
         event_queue: completions
       ).start
       if (startup_error = writer.wait_until_ready)
-        errors = result_kinds.each_with_object({}) do |(instance_id, result_kind), blocked|
-          blocked[instance_id] = startup_error if result_kind == :time_series
+        blocked_ids = (result_kinds.filter_map do |instance_id, result_kind|
+          instance_id if result_kind == :time_series
+        end + recovery_instance_ids).uniq.sort
+        errors = blocked_ids.each_with_object({}) do |instance_id, blocked|
+          blocked[instance_id] = startup_error
         end
         return [writer, { blocked_instances: errors.keys.sort.freeze, errors: errors.freeze,
                           writer_failure: startup_error }]
@@ -351,9 +359,33 @@ module Cybort
       @time_series_reader.context_for(instance_id: instance_id)
     end
 
+    def recovery_instance_id(value)
+      if value.respond_to?(:key?) && value.key?(:instance_id)
+        value[:instance_id]
+      elsif value.respond_to?(:key?) && value.key?("instance_id")
+        value["instance_id"]
+      elsif value.respond_to?(:instance_id)
+        value.instance_id
+      end
+    end
+
     def failure_result(result_kind:, **attributes)
       result_class = result_kind == :time_series ? TimeSeriesFetchResult : FetchResult
       result_class.failure(**attributes)
+    end
+
+    def typed_fetch_result?(result)
+      result.is_a?(FetchResult) || result.is_a?(TimeSeriesFetchResult)
+    end
+
+    def typed_failure_result?(result)
+      typed_fetch_result?(result) && result.failure?
+    end
+
+    def failure_metadata_for(result, error)
+      return result.metadata if typed_failure_result?(result)
+
+      error.respond_to?(:safe_metadata) ? error.safe_metadata : {}
     end
 
     def persist_time_series_result(instance:, result:, writer:, pending_writer_commands:)
@@ -427,7 +459,7 @@ module Cybort
     end
 
     def time_series_failure_metadata(result, error, writer, import_command_id, cleanup_failures: [])
-      metadata = if result.failure?
+      metadata = if typed_failure_result?(result)
         result.metadata
       elsif error.respond_to?(:safe_metadata)
         error.safe_metadata
@@ -458,10 +490,13 @@ module Cybort
       # Main persistence owns item-shaped fetch history and its insert path
       # reads result.items.length. Keep the typed result at the orchestration
       # boundary, but normalize failures before crossing into that API.
+      typed_result = typed_fetch_result?(result)
+      typed_failure = typed_failure_result?(result)
+      started_at = typed_result ? result.started_at : @clock.call
       failure = FetchResult.failure(
-        instance_id: instance.id, error: error, started_at: result.started_at,
-        finished_at: result.failure? ? result.finished_at : [@clock.call, result.started_at].max,
-        metadata: metadata || (result.failure? ? result.metadata : (error.respond_to?(:safe_metadata) ? error.safe_metadata : {}))
+        instance_id: instance.id, error: error, started_at: started_at,
+        finished_at: typed_failure ? result.finished_at : [@clock.call, started_at].max,
+        metadata: metadata || failure_metadata_for(result, error)
       )
       @persistence.record_fetch_failure(failure)
       status = InstanceRunStatus.new(
@@ -567,15 +602,19 @@ module Cybort
         result_kind: result_kind,
         instance_id: instance.id,
         error: error,
-        started_at: result.respond_to?(:started_at) ? result.started_at : @clock.call,
-        finished_at: @clock.call,
+        started_at: typed_fetch_result?(result) ? result.started_at : @clock.call,
+        finished_at: typed_failure_result?(result) ? result.finished_at : @clock.call,
         metadata: merge_time_series_cleanup_metadata(
-          expiry_metadata(error.respond_to?(:safe_metadata) ? error.safe_metadata : {}, hard_expired_items),
+          expiry_metadata(failure_metadata_for(result, error), hard_expired_items),
           nil, nil, error: error, cleanup_failures: cleanup_failures
         )
       )
       @persistence.record_fetch_failure(failure)
-      run_status = InstanceRunStatus.new(instance_id: instance.id, status: :failure, source_fetched: result.respond_to?(:source_fetched) && result.source_fetched, item_count: 0, error: error, metadata: failure.metadata)
+      run_status = InstanceRunStatus.new(
+        instance_id: instance.id, status: :failure,
+        source_fetched: typed_fetch_result?(result) && result.source_fetched,
+        item_count: 0, error: error, metadata: failure.metadata
+      )
       progress_puts(progress_message(instance, run_status, result))
       run_status
     end
