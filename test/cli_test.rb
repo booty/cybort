@@ -1,6 +1,9 @@
 require "test_helper"
+require_relative "support/lifecycle_resource"
 
 class CliTest < Minitest::Test
+  include LifecycleTestSupport
+
   class StubHttpClient
     attr_reader :calls
 
@@ -416,6 +419,33 @@ class CliTest < Minitest::Test
       reopened_main&.close
       main&.close
       time_series&.close
+    end
+  end
+
+  def test_purge_setup_failure_closes_every_initialized_resource_and_preserves_primary_error
+    primary = RuntimeError.new("injected time-series setup failure")
+    cleanup = RuntimeError.new("injected close failure")
+    LifecycleResource.reset!(setup_errors: [nil, primary], close_errors: [cleanup, cleanup])
+
+    Dir.mktmpdir do |directory|
+      root = File.join(directory, ".cybort")
+      FileUtils.mkdir_p(root)
+      File.write(File.join(root, "cybort.sqlite3"), "fixture database")
+
+      error = with_cybort_constants(
+        Persistence: LifecycleResource, TimeSeriesPersistence: LifecycleResource
+      ) do
+        assert_raises(RuntimeError) do
+          Cybort::CLI.start(
+            ["purge", "sensor", "--yes"], out: StringIO.new, err: StringIO.new,
+            home: directory
+          )
+        end
+      end
+
+      assert_same primary, error
+      assert_equal 2, LifecycleResource.instances.length
+      assert LifecycleResource.instances.all?(&:closed)
     end
   end
 end

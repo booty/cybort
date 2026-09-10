@@ -1,6 +1,9 @@
 require "test_helper"
+require_relative "support/lifecycle_resource"
 
 class InstallationBackupTest < Minitest::Test
+  include LifecycleTestSupport
+
   def test_creates_two_database_snapshots_and_manifest_before_publication
     Dir.mktmpdir do |directory|
       root = File.join(directory, "cybort")
@@ -109,6 +112,60 @@ class InstallationBackupTest < Minitest::Test
     ensure
       main&.close
       time_series&.close
+    end
+  end
+
+  def test_partial_snapshot_failure_removes_staging_sibling
+    Dir.mktmpdir do |directory|
+      root = File.join(directory, "cybort")
+      FileUtils.mkdir_p(root)
+      main = Cybort::Persistence.new(File.join(root, "cybort.sqlite3")).setup!
+      time_series = Cybort::TimeSeriesPersistence.new(
+        File.join(root, "cybort-timeseries.sqlite3")
+      ).setup!
+      failing = Object.new
+      def failing.backup_to(_path)
+        raise "injected second snapshot failure"
+      end
+      destination = File.join(directory, "backup")
+
+      error = assert_raises(RuntimeError) do
+        Cybort::InstallationBackup.new(
+          root: root, persistence: main, time_series_persistence: failing
+        ).create(destination: destination)
+      end
+
+      assert_equal "injected second snapshot failure", error.message
+      refute_path_exists destination
+      assert_empty Dir.glob(File.join(directory, ".backup.tmp-*"))
+    ensure
+      main&.close
+      time_series&.close
+    end
+  end
+
+  def test_setup_failure_closes_every_initialized_resource_and_preserves_primary_error
+    primary = RuntimeError.new("injected time-series setup failure")
+    cleanup = RuntimeError.new("injected close failure")
+    LifecycleResource.reset!(setup_errors: [nil, primary], close_errors: [cleanup, cleanup])
+
+    Dir.mktmpdir do |directory|
+      root = File.join(directory, "cybort")
+      destination = File.join(directory, "backup")
+
+      error = with_cybort_constants(
+        Persistence: LifecycleResource, TimeSeriesPersistence: LifecycleResource
+      ) do
+        assert_raises(RuntimeError) do
+          Cybort::InstallationBackup.new(root: root).create(destination: destination)
+        end
+      end
+
+      assert_same primary, error
+      assert_equal 2, LifecycleResource.instances.length
+      assert LifecycleResource.instances.all?(&:closed)
+      refute_path_exists destination
+      assert_empty Dir.glob(File.join(directory, ".backup.tmp-*"))
     end
   end
 end

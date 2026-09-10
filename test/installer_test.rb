@@ -1,6 +1,9 @@
 require "test_helper"
+require_relative "support/lifecycle_resource"
 
 class InstallerTest < Minitest::Test
+  include LifecycleTestSupport
+
   class TestIO
     def initialize(input)
       @input = StringIO.new(input)
@@ -111,6 +114,27 @@ class InstallerTest < Minitest::Test
       assert_path_exists File.join(path, "cybort.sqlite3")
       assert_path_exists File.join(path, "cybort-timeseries.sqlite3")
       assert_empty archives
+    end
+  end
+
+  def test_setup_failure_closes_every_initialized_resource_and_preserves_primary_error
+    primary = RuntimeError.new("injected time-series setup failure")
+    cleanup = RuntimeError.new("injected close failure")
+    LifecycleResource.reset!(setup_errors: [nil, primary], close_errors: [cleanup, cleanup])
+
+    Dir.mktmpdir do |directory|
+      path = File.join(directory, "cybort")
+      installer_instance, = installer
+
+      error = with_cybort_constants(
+        Persistence: LifecycleResource, TimeSeriesPersistence: LifecycleResource
+      ) do
+        assert_raises(RuntimeError) { installer_instance.run(location: path) }
+      end
+
+      assert_same primary, error
+      assert_equal 2, LifecycleResource.instances.length
+      assert LifecycleResource.instances.all?(&:closed)
     end
   end
 end

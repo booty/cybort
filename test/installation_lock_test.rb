@@ -104,4 +104,18 @@ class InstallationLockTest < Minitest::Test
       wait_thread&.join
     end
   end
+
+  def test_invalid_parent_reports_busy_error_instead_of_cleanup_method_error
+    Dir.mktmpdir do |directory|
+      parent = File.join(directory, "not-a-directory")
+      File.write(parent, "not a directory")
+      root = File.join(parent, "cybort")
+
+      error = assert_raises(Cybort::InstallationLock::BusyError) do
+        Cybort::InstallationLock.new(root).synchronize { flunk "lock unexpectedly acquired" }
+      end
+
+      assert_instance_of Cybort::InstallationLock::BusyError, error
+    end
+  end
 end
