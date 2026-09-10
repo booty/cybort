@@ -117,7 +117,7 @@ module Cybort
       parent = File.dirname(destination)
       basename = File.basename(destination)
       temporary = File.join(parent, ".#{basename}.tmp-#{Process.pid}-#{SecureRandom.hex(8)}")
-      FileUtils.mkdir(temporary, 0o700)
+      FileUtils.mkdir(temporary, mode: 0o700)
       File.chmod(0o700, temporary)
       temporary
     rescue Errno::EEXIST

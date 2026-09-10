@@ -170,9 +170,13 @@ module Cybort
             ).create(destination: options[:backup])
           end
 
-          if time_series_persistence.instance_present?(instance_id: instance_id)
+          pending_purge = persistence.pending_time_series_purges.any? do |pending|
+            pending.fetch("instance_id") == instance_id
+          end
+          canonical_present = time_series_persistence.instance_present?(instance_id: instance_id)
+          if pending_purge || canonical_present
             persistence.begin_time_series_purge(instance_id: instance_id)
-            time_series_persistence.delete_instance(instance_id: instance_id)
+            time_series_persistence.delete_instance(instance_id: instance_id) if canonical_present
             persistence.finish_time_series_purge(instance_id: instance_id)
           else
             persistence.delete_instance(instance_id: instance_id)

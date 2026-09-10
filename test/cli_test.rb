@@ -293,4 +293,57 @@ class CliTest < Minitest::Test
       time_series&.close
     end
   end
+
+  def test_purge_finishes_pending_intent_after_canonical_delete_commits
+    Dir.mktmpdir do |directory|
+      root = File.join(directory, ".cybort")
+      FileUtils.mkdir_p(root)
+      clock = -> { Time.utc(2026, 8, 16, 12, 34, 56) }
+      instance = Cybort::Configuration::Instance.new(
+        id: "sensor", name: "Sensor", adapter: "fixture", ttl_minutes: 30,
+        retention_ttl_minutes: nil, hard_expiry_ttl_minutes: nil,
+        num_items_to_fetch: 5, options: {}
+      )
+      main = Cybort::Persistence.new(File.join(root, "cybort.sqlite3"), clock: clock).setup!
+      main.register_instance(instance)
+      time_series = Cybort::TimeSeriesPersistence.new(
+        File.join(root, "cybort-timeseries.sqlite3"), clock: clock
+      ).setup!
+      factory = Cybort::TimeSeriesSpoolFactory.new(directory: root, clock: clock)
+      writer = factory.open(
+        instance_id: "sensor", import_key: "batch-1", import_mode: :append,
+        source_started_at: clock.call - 60
+      )
+      writer.register_series(
+        series_key: "temperature", metric_key: "temperature", value_type: :numeric,
+        canonical_unit: "Cel", dimensions: {}
+      )
+      writer.add_observation(
+        series_key: "temperature", source_record_key: "reading-1", observed_at: clock.call,
+        numeric_value: 21.5, metadata: {}
+      )
+      artifact = writer.finalize(sync_state: {}, source_finished_at: clock.call, metadata: {})
+      time_series.import(artifact)
+      FileUtils.rm_f(artifact.path)
+
+      assert main.begin_time_series_purge(instance_id: "sensor")
+      assert time_series.delete_instance(instance_id: "sensor")
+      time_series.close
+      main.close
+
+      status = Cybort::CLI.start(
+        ["purge", "sensor", "--yes"], out: StringIO.new, err: StringIO.new,
+        home: directory, clock: clock
+      )
+
+      assert_equal 0, status
+      reopened_main = Cybort::Persistence.new(File.join(root, "cybort.sqlite3"), clock: clock).setup!
+      assert_nil reopened_main.instance_record("sensor")
+      assert_empty reopened_main.pending_time_series_purges
+      reopened_main.close
+    ensure
+      main&.close
+      time_series&.close
+    end
+  end
 end

@@ -7,6 +7,7 @@ require "time"
 module Cybort
   class Persistence
     def initialize(path, clock: -> { Time.now.utc })
+      @owner_thread = Thread.current
       @path = File.expand_path(path.to_s)
       @database = SQLite3::Database.new(@path)
       @database.busy_timeout(5_000)
@@ -18,6 +19,12 @@ module Cybort
       @database.execute("PRAGMA journal_mode = WAL")
       @database.transaction { Schema.apply(@database) }
       self
+    end
+
+    def close
+      ensure_owner!
+      @database.close unless @database.closed?
+      nil
     end
 
     def table_names
@@ -421,6 +428,10 @@ module Cybort
 
     def timestamp(value)
       value.utc.iso8601(6)
+    end
+
+    def ensure_owner!
+      raise RuntimeError, "persistence must be used on its owner thread" unless Thread.current.equal?(@owner_thread)
     end
   end
 end

@@ -95,6 +95,18 @@ class PersistenceTest < Minitest::Test
     end
   end
 
+  def test_close_is_owner_safe_and_idempotent
+    with_database do |path|
+      persistence = Cybort::Persistence.new(path).setup!
+
+      assert_nil persistence.close
+      assert_nil persistence.close
+
+      error = Thread.new { persistence.close rescue $! }.value
+      assert_instance_of RuntimeError, error
+    end
+  end
+
   def test_registering_instance_updates_display_name_without_duplicate
     with_database do |path|
       persistence = Cybort::Persistence.new(path)
