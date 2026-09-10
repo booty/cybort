@@ -123,6 +123,19 @@ module Cybort
       end
     end
 
+    def instance_present?(instance_id:)
+      ensure_owner!
+      !@database.get_first_value(<<~SQL, [instance_id, instance_id, instance_id]).nil?
+        SELECT 1 FROM (
+          SELECT adapter_instance_id FROM series WHERE adapter_instance_id = ?
+          UNION ALL
+          SELECT adapter_instance_id FROM time_series_imports WHERE adapter_instance_id = ?
+          UNION ALL
+          SELECT adapter_instance_id FROM time_series_instance_state WHERE adapter_instance_id = ?
+        ) LIMIT 1
+      SQL
+    end
+
     def backup_to(path)
       ensure_owner!
       destination = File.expand_path(path.to_s)

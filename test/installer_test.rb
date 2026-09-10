@@ -43,6 +43,7 @@ class InstallerTest < Minitest::Test
       assert_equal :created, installer_instance.run(location: path)
       assert_path_exists File.join(path, "cybort.toml")
       assert_path_exists File.join(path, "cybort.sqlite3")
+      assert_path_exists File.join(path, "cybort-timeseries.sqlite3")
     end
   end
 
@@ -67,6 +68,8 @@ class InstallerTest < Minitest::Test
       assert_equal :reset_with_config, installer_instance.run(location: path)
       assert_equal "schema_version = 1\n", File.read(File.join(path, "cybort.toml"))
       refute_path_exists File.join(path, "marker.txt")
+      assert_path_exists File.join(path, "cybort.sqlite3")
+      assert_path_exists File.join(path, "cybort-timeseries.sqlite3")
       assert_equal File.join(directory, "cybort.backup-20260816T123456Z.tar.gz"), archives.first.last
     end
   end
@@ -79,6 +82,8 @@ class InstallerTest < Minitest::Test
 
       assert_equal :reset, installer_instance.run(location: path)
       refute_path_exists File.join(path, "cybort.toml")
+      assert_path_exists File.join(path, "cybort.sqlite3")
+      assert_path_exists File.join(path, "cybort-timeseries.sqlite3")
       assert_equal 1, archives.length
     end
   end
@@ -103,6 +108,8 @@ class InstallerTest < Minitest::Test
 
       assert_equal :reset, installer_instance.run(location: path)
       refute_path_exists File.join(path, "marker.txt")
+      assert_path_exists File.join(path, "cybort.sqlite3")
+      assert_path_exists File.join(path, "cybort-timeseries.sqlite3")
       assert_empty archives
     end
   end

@@ -11,6 +11,14 @@ module Cybort
 
     def run(location:)
       location = File.expand_path(location)
+      InstallationLock.new(location).synchronize do
+        run_locked(location)
+      end
+    end
+
+    private
+
+    def run_locked(location)
       return create_new(location) unless existing_installation?(location)
 
       @io.puts "Cybort is already initialized at #{location}."
@@ -29,8 +37,6 @@ module Cybort
       end
     end
 
-    private
-
     def existing_installation?(location)
       File.directory?(location) && !Dir.children(location).empty?
     end
@@ -39,7 +45,7 @@ module Cybort
       FileUtils.mkdir_p(location)
       config_path = File.join(location, "cybort.toml")
       File.write(config_path, "schema_version = 1\n") unless File.exist?(config_path)
-      Persistence.new(File.join(location, "cybort.sqlite3"), clock: @clock).setup!
+      initialize_databases(location)
       :created
     end
 
@@ -56,8 +62,20 @@ module Cybort
       FileUtils.rm_rf(location)
       FileUtils.mkdir_p(location)
       File.write(File.join(location, "cybort.toml"), config) if config
-      Persistence.new(File.join(location, "cybort.sqlite3"), clock: @clock).setup!
+      initialize_databases(location)
       keep_config ? :reset_with_config : :reset
+    end
+
+    def initialize_databases(location)
+      main = Persistence.new(File.join(location, "cybort.sqlite3"), clock: @clock).setup!
+      time_series = TimeSeriesPersistence.new(
+        File.join(location, "cybort-timeseries.sqlite3"), clock: @clock
+      ).setup!
+      nil
+    ensure
+      [time_series, main].each do |database|
+        database&.close if database&.respond_to?(:close)
+      end
     end
 
     def backup_path(location)
@@ -73,4 +91,3 @@ module Cybort
     end
   end
 end
-
