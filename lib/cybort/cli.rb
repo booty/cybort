@@ -184,9 +184,18 @@ module Cybort
           out.puts "Purged #{instance_id}.#{backup_path ? " Backup: #{backup_path}" : " No backup was created."}"
           0
         ensure
+          active_error = $!
+          cleanup_error = nil
           [time_series_persistence, persistence].each do |resource|
-            resource&.close if resource&.respond_to?(:close)
+            next unless resource&.respond_to?(:close)
+
+            begin
+              resource.close
+            rescue Exception => error # cleanup must not mask active purge errors
+              cleanup_error ||= error
+            end
           end
+          raise cleanup_error if active_error.nil? && cleanup_error
         end
       end
     end

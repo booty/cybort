@@ -15,6 +15,7 @@ module Cybort
     end
 
     def setup!
+      ensure_owner!
       @database.execute("PRAGMA foreign_keys = ON")
       @database.execute("PRAGMA journal_mode = WAL")
       @database.transaction { Schema.apply(@database) }
@@ -28,10 +29,12 @@ module Cybort
     end
 
     def table_names
+      ensure_owner!
       query("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").map { |row| row.fetch("name") }
     end
 
     def register_instance(instance)
+      ensure_owner!
       now = timestamp(@clock.call)
       @database.execute(
         <<~SQL,
@@ -47,14 +50,17 @@ module Cybort
     end
 
     def instance_record(instance_id)
+      ensure_owner!
       query("SELECT * FROM adapter_instances WHERE id = ?", instance_id).first
     end
 
     def instance_count
+      ensure_owner!
       @database.get_first_value("SELECT COUNT(*) FROM adapter_instances")
     end
 
     def context_for(instance_id:)
+      ensure_owner!
       record = instance_record(instance_id)
       items = items_for(instance_id: instance_id)
       {
@@ -66,6 +72,7 @@ module Cybort
     end
 
     def planning_context_for(instance_id:)
+      ensure_owner!
       record = instance_record(instance_id)
       {
         items: [],
@@ -76,6 +83,7 @@ module Cybort
     end
 
     def expire_items(instance_id:, hard_expiry_ttl_minutes:)
+      ensure_owner!
       unless hard_expiry_ttl_minutes.is_a?(Integer) && hard_expiry_ttl_minutes.positive?
         raise ValidationError, "hard_expiry_ttl_minutes must be a positive integer"
       end
@@ -91,6 +99,7 @@ module Cybort
     end
 
     def delete_instance(instance_id:)
+      ensure_owner!
       @database.transaction do
         next false unless instance_record(instance_id)
 
@@ -105,6 +114,7 @@ module Cybort
     end
 
     def backup_to(path)
+      ensure_owner!
       destination = File.expand_path(path.to_s)
       raise ValidationError, "backup destination already exists" if File.exist?(destination)
 
@@ -114,6 +124,7 @@ module Cybort
     end
 
     def items_for(instance_id: nil, limit: nil)
+      ensure_owner!
       sql = +"SELECT * FROM items"
       binds = []
       if instance_id
@@ -129,10 +140,12 @@ module Cybort
     end
 
     def fetch_runs_for(instance_id:)
+      ensure_owner!
       query("SELECT * FROM fetch_runs WHERE instance_id = ? ORDER BY id", instance_id)
     end
 
     def acknowledge_time_series_import(receipt)
+      ensure_owner!
       unless receipt.is_a?(TimeSeriesImportReceipt)
         raise ArgumentError, "expected a time-series import receipt"
       end
@@ -168,6 +181,7 @@ module Cybort
     end
 
     def time_series_import_acknowledged?(instance_id:, import_key:)
+      ensure_owner!
       !@database.get_first_value(
         <<~SQL,
           SELECT 1 FROM time_series_acknowledgements
@@ -178,6 +192,7 @@ module Cybort
     end
 
     def begin_time_series_purge(instance_id:)
+      ensure_owner!
       requested_at = timestamp(@clock.call)
       @database.transaction do
         @database.execute(
@@ -192,6 +207,7 @@ module Cybort
     end
 
     def pending_time_series_purges
+      ensure_owner!
       query(<<~SQL)
         SELECT instance_id, requested_at
         FROM time_series_purge_intents
@@ -200,6 +216,7 @@ module Cybort
     end
 
     def finish_time_series_purge(instance_id:)
+      ensure_owner!
       @database.transaction do
         deleted = false
         [
@@ -217,6 +234,7 @@ module Cybort
     end
 
     def write_fetch_result(result, retention_ttl_minutes: nil)
+      ensure_owner!
       raise ValidationError, "cannot persist a failed fetch result" unless result.success?
       replacement = result.replace_existing_items
       unless replacement == true || replacement == false
@@ -260,6 +278,7 @@ module Cybort
     end
 
     def record_fetch_failure(result)
+      ensure_owner!
       raise ValidationError, "cannot record a successful result as a failure" unless result.failure?
 
       @database.transaction { insert_fetch_run(result, "failed") }
