@@ -107,6 +107,29 @@ class PersistenceTest < Minitest::Test
     end
   end
 
+  def test_setup_read_write_backup_and_purge_are_owner_safe
+    with_database do |path|
+      persistence = Cybort::Persistence.new(path).setup!
+      persistence.register_instance(instance)
+      persistence.write_fetch_result(result)
+      operations = {
+        setup: -> { persistence.setup! },
+        read: -> { persistence.items_for(instance_id: "rss") },
+        write: -> { persistence.register_instance(instance("other")) },
+        backup: -> { persistence.backup_to(File.join(File.dirname(path), "wrong-thread.sqlite3")) },
+        purge: -> { persistence.delete_instance(instance_id: "rss") }
+      }
+
+      operations.each do |name, operation|
+        error = Thread.new { operation.call rescue $! }.value
+        assert_instance_of RuntimeError, error, "#{name} must reject a non-owner thread"
+      end
+
+      assert_equal 1, persistence.instance_count
+      assert_equal ["entry-1"], persistence.items_for(instance_id: "rss").map(&:canonical_id)
+    end
+  end
+
   def test_registering_instance_updates_display_name_without_duplicate
     with_database do |path|
       persistence = Cybort::Persistence.new(path)

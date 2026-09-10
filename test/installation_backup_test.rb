@@ -10,12 +10,21 @@ class InstallationBackupTest < Minitest::Test
       time_series = Cybort::TimeSeriesPersistence.new(
         File.join(root, "cybort-timeseries.sqlite3"), clock: clock
       ).setup!
-      fsyncs = []
       destination = File.join(directory, "backup")
+      fsyncs = []
+      fsync = lambda do |path|
+        directory_path = File.directory?(path)
+        fsyncs << {
+          path: path,
+          directory: directory_path,
+          destination_exists: File.exist?(destination),
+          entries: directory_path ? Dir.children(path).sort : nil
+        }
+      end
 
       result = Cybort::InstallationBackup.new(
         root: root, persistence: main, time_series_persistence: time_series,
-        clock: clock, fsync: ->(path) { fsyncs << path }
+        clock: clock, fsync: fsync
       ).create(destination: destination)
 
       assert_equal destination, result
@@ -35,8 +44,28 @@ class InstallationBackupTest < Minitest::Test
       end
       assert_equal 0o600, File.stat(File.join(destination, "manifest.json")).mode & 0o777
       assert_equal 0o700, File.stat(destination).mode & 0o777
-      assert fsyncs.any? { |path| File.basename(path) == "manifest.json" }
-      assert_includes fsyncs, File.dirname(destination)
+      database_syncs = fsyncs.select do |event|
+        !event.fetch(:directory) && %w[cybort.sqlite3 cybort-timeseries.sqlite3].include?(File.basename(event.fetch(:path)))
+      end
+      assert_equal %w[cybort-timeseries.sqlite3 cybort.sqlite3].sort,
+                   database_syncs.map { |event| File.basename(event.fetch(:path)) }.sort
+      database_syncs.each { |event| refute event.fetch(:destination_exists) }
+
+      manifest_sync = fsyncs.find { |event| File.basename(event.fetch(:path)) == "manifest.json" }
+      refute_nil manifest_sync
+      refute manifest_sync.fetch(:destination_exists)
+
+      staging_syncs = fsyncs.select do |event|
+        event.fetch(:directory) && event.fetch(:path) != File.dirname(destination) && event.fetch(:path) != destination
+      end
+      assert_equal 1, staging_syncs.length
+      staging_sync = staging_syncs.fetch(0)
+      refute staging_sync.fetch(:destination_exists)
+      assert_equal %w[cybort-timeseries.sqlite3 cybort.sqlite3 manifest.json], staging_sync.fetch(:entries)
+
+      parent_sync = fsyncs.find { |event| event.fetch(:path) == File.dirname(destination) }
+      refute_nil parent_sync
+      assert parent_sync.fetch(:destination_exists)
 
       reopened_main = Cybort::Persistence.new(File.join(destination, "cybort.sqlite3")).setup!
       reopened_time_series = Cybort::TimeSeriesPersistence.new(

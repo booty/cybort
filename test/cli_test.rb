@@ -346,4 +346,76 @@ class CliTest < Minitest::Test
       time_series&.close
     end
   end
+
+  def test_purge_time_series_delete_failure_preserves_main_intent_and_control_state
+    Dir.mktmpdir do |directory|
+      root = File.join(directory, ".cybort")
+      FileUtils.mkdir_p(root)
+      clock = -> { Time.utc(2026, 8, 16, 12, 34, 56) }
+      instance = Cybort::Configuration::Instance.new(
+        id: "sensor", name: "Sensor", adapter: "fixture", ttl_minutes: 30,
+        retention_ttl_minutes: nil, hard_expiry_ttl_minutes: nil,
+        num_items_to_fetch: 5, options: {}
+      )
+      main_path = File.join(root, "cybort.sqlite3")
+      time_series_path = File.join(root, "cybort-timeseries.sqlite3")
+      main = Cybort::Persistence.new(main_path, clock: clock).setup!
+      main.register_instance(instance)
+      main.write_fetch_result(
+        Cybort::FetchResult.success(
+          instance_id: "sensor",
+          items: [Cybort::Item.new(instance_id: "sensor", canonical_id: "state", fetched_at: clock.call, title: "State")],
+          sync_state: { cursor: "next" },
+          started_at: clock.call - 60,
+          finished_at: clock.call,
+          source_fetched: true
+        )
+      )
+      time_series = Cybort::TimeSeriesPersistence.new(time_series_path, clock: clock).setup!
+      factory = Cybort::TimeSeriesSpoolFactory.new(directory: root, clock: clock)
+      writer = factory.open(
+        instance_id: "sensor", import_key: "batch-1", import_mode: :append,
+        source_started_at: clock.call - 60
+      )
+      writer.register_series(
+        series_key: "temperature", metric_key: "temperature", value_type: :numeric,
+        canonical_unit: "Cel", dimensions: {}
+      )
+      writer.add_observation(
+        series_key: "temperature", source_record_key: "reading-1", observed_at: clock.call,
+        numeric_value: 21.5, metadata: {}
+      )
+      artifact = writer.finalize(sync_state: { "cursor" => "batch-1" }, source_finished_at: clock.call, metadata: {})
+      time_series.import(artifact)
+      FileUtils.rm_f(artifact.path)
+
+      database = SQLite3::Database.new(time_series_path)
+      database.execute(<<~SQL)
+        CREATE TRIGGER fail_time_series_purge BEFORE DELETE ON series
+        BEGIN SELECT RAISE(ABORT, 'injected time-series purge failure'); END
+      SQL
+      database.close
+      time_series.close
+      main.close
+
+      assert_raises(SQLite3::ConstraintException) do
+        Cybort::CLI.start(
+          ["purge", "sensor", "--yes"], out: StringIO.new, err: StringIO.new,
+          home: directory, clock: clock
+        )
+      end
+
+      reopened_main = Cybort::Persistence.new(main_path, clock: clock).setup!
+      assert reopened_main.instance_record("sensor")
+      assert_equal ["state"], reopened_main.items_for(instance_id: "sensor").map(&:canonical_id)
+      assert_equal ["sensor"], reopened_main.pending_time_series_purges.map { |row| row.fetch("instance_id") }
+      reopened_reader = Cybort::TimeSeriesReader.new(time_series_path)
+      assert_equal 1, reopened_reader.context_for(instance_id: "sensor").fetch(:observation_count)
+    ensure
+      reopened_reader&.close
+      reopened_main&.close
+      main&.close
+      time_series&.close
+    end
+  end
 end
