@@ -43,11 +43,15 @@ module Cybort
     end
 
     def canonical_operation_root(location)
-      return location unless File.directory?(location)
+      # Preserve lexical paths for ordinary directories so archive and output
+      # paths retain the spelling supplied by the user. Resolve only a
+      # symlinked installation root, allowing reset operations to remove and
+      # recreate its real target without unlinking the alias itself.
+      return location unless File.symlink?(location)
 
       File.realpath(location)
     rescue Errno::ENOENT
-      # If the directory disappears between the existence check and realpath,
+      # If a symlink target disappears between the symlink check and realpath,
       # retain the lexical path so a new installation follows normal creation
       # semantics.
       location
