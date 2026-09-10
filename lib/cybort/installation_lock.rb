@@ -89,6 +89,9 @@ module Cybort
         candidate = parent
       end
       File.join(File.realpath(candidate), *missing_components)
+    rescue Errno::ENOTDIR => error
+      # A non-directory path component makes the installation unavailable.
+      raise BusyError, "could not resolve Cybort installation: #{error.message}"
     end
 
     def enter_reentrant
