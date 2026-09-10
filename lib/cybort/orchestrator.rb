@@ -426,7 +426,7 @@ module Cybort
       nil
     end
 
-    def time_series_failure_metadata(result, error, writer, import_command_id)
+    def time_series_failure_metadata(result, error, writer, import_command_id, cleanup_failures: [])
       metadata = if result.failure?
         result.metadata
       elsif error.respond_to?(:safe_metadata)
@@ -434,7 +434,9 @@ module Cybort
       else
         {}
       end
-      merge_time_series_cleanup_metadata(metadata, writer, import_command_id, error: error)
+      merge_time_series_cleanup_metadata(
+        metadata, writer, import_command_id, error: error, cleanup_failures: cleanup_failures
+      )
     end
 
     def merge_time_series_cleanup_metadata(metadata, writer, import_command_id, error: nil, cleanup_failures: [])
