@@ -1,6 +1,6 @@
 # ADR 0009: Isolate Time-Series Storage
 
-- Status: Accepted; implementation pending
+- Status: Accepted; implemented
 - Date: 2026-09-09
 - Amends: [ADR 0008](0008-independent-connector-completion.md)
 

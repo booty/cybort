@@ -8,9 +8,11 @@ invariants and workflow rules here, not session-by-session narration.
 ## Project invariants
 
 - Cybort is a local, single-user personal-information collector.
-- The canonical datastore is one SQLite database. The default location is
-  `~/.cybort/cybort.sqlite3`. JSON is a presentation/export format, not the
-  primary mutable datastore.
+- The canonical datastore is exactly two SQLite databases. The default
+  locations are `~/.cybort/cybort.sqlite3` for control-plane/item data and
+  `~/.cybort/cybort-timeseries.sqlite3` for series, observations, and durable
+  import receipts. JSON is a presentation/export format, not the primary
+  mutable datastore.
 - The default configuration is `~/.cybort/cybort.toml`. A configured source
   instance has a stable ID, display name, adapter type, TTL, and
   `num_items_to_fetch`.
@@ -34,6 +36,10 @@ invariants and workflow rules here, not session-by-session narration.
   planning, even if the source later fails. The explicit `purge INSTANCE_ID`
   CLI workflow transactionally removes an instance's items, sync state, and
   fetch history, optionally after a SQLite backup.
+- Version one retains time-series observations forever and has no time-series
+  retention, rollup, downsampling, or compaction policy. Time-series adapters
+  stream normalized values into disposable, persistence-owned SQLite spools;
+  they remain canonical-SQL-free and never write either canonical database.
 - Adapter threads fetch, validate, and normalize source data. They do not own
   SQLite schema details, SQL, transactions, or persistence writes.
 - The orchestrator snapshots each validated instance's retention policy before
@@ -43,9 +49,18 @@ invariants and workflow rules here, not session-by-session narration.
   adapters. Final run aggregation still waits for every configured instance.
   The configured instance ID is authoritative: mismatched adapter result IDs
   become failures recorded only for the configured ID.
+- A collection run that includes time-series work starts exactly one dedicated
+  time-series writer. It is the only writer for `cybort-timeseries.sqlite3`,
+  while the orchestrator caller remains the only writer for
+  `cybort.sqlite3`; those two writers may commit concurrently because they
+  lock different files. Existing item-only runs do not start that worker.
 - Persistence owns SQLite access, upserts, synchronization state, and fetch
   history. Each successful adapter result has its own transaction; there is no
   transaction spanning all adapter instances.
+- Collection, initialization/reset, backup, and purge share one nonblocking
+  exclusive installation `flock` on a mode-`0600` sibling lock file. A busy
+  lock aborts the lifecycle operation; the pair of canonical database files is
+  treated as one logical installation, not as a globally atomic transaction.
 - A failed source must not discard successful results from other sources.
 - Item identity is scoped by `(adapter_instance_id, canonical_id)`.
 - RSS and GitHub adapters use direct HTTP APIs. Gmail uses the direct Gmail
@@ -103,9 +118,22 @@ invariants and workflow rules here, not session-by-session narration.
   current design spec and accepted ADRs as authoritative design records, and do
   not modify the spitballing document unless the user explicitly requests it.
 
-## Subagent delegation for tests and logs
+## Git workflow
 
-To conserve usage quotas, Codex MUST delegate the following work to a `gpt-5.6-luna` or Haiku subagent using medium reasoning effort when it would save tokens. Luna and Haiku tokens are approximately 5%-10% the cost of Sol/Opus/Fable/Astra tokens.
+- While Cybort remains a single-developer repository, explicitly authorized
+  implementation work defaults to the current `main` branch. Do not create a
+  feature branch or worktree unless the user requests one.
+- This branch-selection default does not authorize commits, pushes, or work
+  outside the requested task. Follow the user's requested commit and push
+  checkpoints.
+- Revisit this policy before another developer begins contributing or parallel
+  branches become useful.
+
+## Subagent delegation and review roles
+
+To conserve usage quotas, Codex MUST delegate the following work to a
+`gpt-5.6-luna` subagent using medium reasoning effort when it would save
+tokens. Luna tokens are substantially less expensive than Sol or Astra tokens.
 
 - Running any test command, including focused tests and full test suites.
 - Exploring, filtering, or analyzing test output, build logs, server logs, stack traces, or other noisy command output.
@@ -122,6 +150,19 @@ Keep raw output out of the main conversation whenever possible. The subagent mus
 6. Recommended next diagnostic or implementation step.
 
 Do not paste complete logs into the main conversation unless explicitly requested. The primary Codex agent remains responsible for interpreting the summary, making changes, and performing final verification.
+
+Use higher-cost independent reviewers only when the user explicitly requests
+them or the task's architectural, concurrency, security, or data-loss risk
+justifies them:
+
+- use `gpt-6-astra` with high reasoning effort for adversarial design or
+  implementation-plan review;
+- use `gpt-5.6-sol` with high reasoning effort for final implementation and
+  code-quality review.
+
+Review agents operate read-only. The primary agent verifies each recommendation
+against the repository, pushes back when it is unsound, and implements accepted
+feedback. Small, low-risk changes do not require Astra or Sol review by default.
 
 ## General
 

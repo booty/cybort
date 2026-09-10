@@ -4,8 +4,9 @@ Cybort is a local, single-user personal information collector. It has two
 separate pillars:
 
 - Collection fetches configured source instances, normalizes and caches their
-  data in one SQLite database, and prunes it according to the configured
-  retention policy.
+  item data in `cybort.sqlite3` and prunes it according to the configured item
+  retention policy. A separate `cybort-timeseries.sqlite3` stores generic
+  time-series observations for future connectors.
 - Dashboards will present that collected data through CLI and web views in a
   future phase; dashboard design has not started yet.
 
@@ -49,9 +50,31 @@ An alternate location can be supplied:
 bundle exec bin/cybort init /path/to/cybort
 ```
 
+Initialization creates the configuration file and both canonical SQLite
+databases. Reset choices also operate on both databases. Collection, reset,
+backup, and purge use one installation lock, so a lifecycle command exits when
+another operation is active instead of guessing whether the files are idle.
+
 Existing installations require an explicit choice before they are reset. The
-backup options create a timestamped `.tar.gz` backup first; a reset without a
-backup requires a second confirmation.
+backup options create a timestamped `.tar.gz` archive containing the complete
+installation first; a reset without a backup requires a second confirmation.
+
+### Installation files
+
+The default installation has this layout:
+
+```text
+~/.cybort/
+  cybort.toml                  configuration
+  cybort.sqlite3               items, source state, and fetch history
+  cybort-timeseries.sqlite3    series, observations, and import receipts
+  tmp/                         disposable time-series spools
+~/.cybort.lock                 lifecycle lock (sibling file)
+```
+
+The two SQLite files are one logical installation but do not provide a globally
+atomic cross-file snapshot. Version-one time-series observations are retained
+forever; there is no time-series retention or compaction setting.
 
 ## Configure adapter instances
 
@@ -85,12 +108,21 @@ To remove one instance's items, synchronization state, and fetch history after
 an instance is removed from configuration or an approved use ends, run:
 
 ```bash
-bundle exec bin/cybort purge INSTANCE_ID --backup /path/to/backup.sqlite3
+bundle exec bin/cybort purge INSTANCE_ID --backup /path/to/installation-backup
 ```
 
 The command requires typing `PURGE INSTANCE_ID` unless `--yes` is supplied. A
-backup is optional but recommended; deletion is transactional and irreversible
-after the backup step completes.
+backup is optional but recommended. Its destination is a new backup directory
+containing both canonical database snapshots and a manifest with their
+individual snapshot times; deletion is transactional and irreversible after
+the backup step completes. Purge removes the instance's items, observations,
+sync state, fetch history, and time-series import state while holding the same
+installation lock as collection and reset.
+
+No currently registered connector emits time-series results, and no Apple
+Health connector is implemented. The time-series database and disposable spool
+API are storage infrastructure for a future connector; do not add a
+time-series configuration block to the connector template yet.
 
 ### Reddit connector
 
@@ -208,9 +240,10 @@ a deliberate reason not to. `hard_expiry_ttl_minutes` provides a separate
 startup-bound local deletion policy when a wall-clock bound is required.
 Removing an instance does not automatically purge its local rows; use the
 explicit `purge` workflow above. To remove locally stored Reddit data, stop
-Cybort and delete the intended
-SQLite installation data (normally `~/.cybort/cybort.sqlite3`); this is
-irreversible, so make any desired backup first. See
+Cybort and delete the intended SQLite installation data (normally both
+`~/.cybort/cybort.sqlite3` and `~/.cybort/cybort-timeseries.sqlite3`); this is
+irreversible, so make any desired backup first. For a complete installation,
+that means both canonical SQLite files; see
 [`docs/quality-followups.md`](docs/quality-followups.md) for the deferred
 lifecycle work.
 
@@ -363,13 +396,16 @@ are collection interfaces over the same normalized store.
 
 ## Architecture
 
-Adapter threads fetch and normalize source data but do not write to SQLite. The
-orchestrator persists each result sequentially through the shared `Persistence`
-service as its adapter finishes, so a faster connector can commit and report
-completion without waiting for a slower connector. SQLite writes remain on the
-orchestrator caller thread, and each adapter result has its own transaction.
-Final run aggregation waits for every configured instance; there is no
-transaction spanning all sources.
+Adapter threads fetch and normalize source data but do not write either
+canonical SQLite database. Item results are persisted sequentially through the
+shared `Persistence` service as each adapter finishes, so a faster connector
+can commit and report completion without waiting for a slower connector.
+Time-series adapters (when one is added) stream into disposable spools; one
+dedicated writer imports those spools into `cybort-timeseries.sqlite3` while
+the orchestrator caller writes ordinary results to `cybort.sqlite3`. Those
+writers may commit concurrently because they lock different files. Final run
+aggregation waits for every configured instance; there is no transaction
+spanning all sources or both databases.
 
 ## Tests
 
@@ -386,6 +422,9 @@ external services or invoke `gws`.
 
 - [Core design](docs/superpowers/specs/2026-08-16-cybort-core-design.md)
 - [Current persistence ADR](docs/adr/0008-independent-connector-completion.md)
+- [Time-series storage ADR](docs/adr/0009-isolate-time-series-storage.md)
+- [Time-series storage design](docs/superpowers/specs/2026-09-09-time-series-storage-design.md)
+- [Time-series storage implementation plan](docs/superpowers/plans/2026-09-09-time-series-storage.md)
 - [Independent connector completion design](docs/superpowers/specs/2026-09-08-independent-connector-completion-design.md)
 - [Independent connector completion implementation plan](docs/superpowers/plans/2026-09-08-independent-connector-completion.md)
 - [External command connector ADR](docs/adr/0002-external-command-dependencies-and-cli-adapters.md)

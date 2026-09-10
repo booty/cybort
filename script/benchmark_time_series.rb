@@ -18,7 +18,6 @@ module Cybort
     METRIC_KEY = "temperature"
     CANONICAL_UNIT = "Cel"
     OBSERVATION_START = Time.utc(2026, 1, 1)
-    COMMIT_TIME = Time.utc(2026, 2, 1)
     RANGE_LIMIT = 1_000
 
     ValidationError = Class.new(StandardError)
@@ -43,7 +42,8 @@ module Cybort
       import_duration_seconds = nil
 
       begin
-        clock = -> { COMMIT_TIME }
+        commit_time = source_finished_at + 1
+        clock = -> { commit_time }
         persistence = TimeSeriesPersistence.new(canonical_path, clock: clock)
         persistence.setup!
 
@@ -102,6 +102,7 @@ module Cybort
           series: artifact.series_count,
           imported_observations: receipt.imported_observation_count,
           stored_observations: receipt.stored_observation_count,
+          spool_digest_sha256: artifact.digest,
           spool_construction_seconds: spool_duration_seconds,
           canonical_import_seconds: import_duration_seconds,
           peak_rss_bytes: peak_rss_bytes,
