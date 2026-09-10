@@ -244,8 +244,8 @@ Cybort and delete the intended SQLite installation data (normally both
 `~/.cybort/cybort.sqlite3` and `~/.cybort/cybort-timeseries.sqlite3`); this is
 irreversible, so make any desired backup first. For a complete installation,
 that means both canonical SQLite files; see
-[`docs/quality-followups.md`](docs/quality-followups.md) for the deferred
-lifecycle work.
+[`docs/adr/0009-isolate-time-series-storage.md`](docs/adr/0009-isolate-time-series-storage.md)
+for the time-series storage decision and lifecycle guarantees.
 
 #### Reddit authenticated release gate
 

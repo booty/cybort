@@ -4,6 +4,33 @@ This file records dated implementation discoveries and gotchas that are not
 architectural decisions. Each entry should include evidence and a status so a
 future agent can distinguish observed behavior from an open follow-up.
 
+## 2026-09-10 — Time-series substrate benchmark is streaming at Apple-Health scale
+
+**Status:** Measured; RSS unavailable in this Ruby runtime.
+
+**Observation:** The synthetic time-series benchmark completed for 100,000 and
+1,500,000 observations without retaining an observation array. Both bounded
+range queries used the `idx_observations_series_time` index and returned the
+configured limits.
+
+**Evidence:** `bundle exec ruby script/benchmark_time_series.rb --observations
+100000 --output /tmp/cybort-time-series-benchmark-100k` and the corresponding
+`--observations 1500000` command both exited 0 under Ruby 4.0.1 / SQLite 3.53.2.
+The 100k run took 0.651s to build the spool and 0.428s to import; the 1.5M run
+took 9.354s and 6.267s. Spool/canonical sizes were 13.2/18.5 MB and
+197.9/278.7 MB respectively. Early and late queries returned 100 and 1,000
+rows. `peak_rss_bytes` was `null` because this runtime exposes neither
+`Process.getrusage` nor a readable RSS fallback.
+
+**Impact:** The storage path remains practical for a high-frequency export
+without an in-memory observation collection, and its bounded indexes support
+range reads. These timings are machine-specific evidence, not performance
+contracts.
+
+**Next action:** Repeat the benchmark on a deployment where RSS measurement is
+available if memory sizing becomes a release concern; do not treat the current
+timings as guarantees.
+
 ## 2026-09-07 — Public Reddit RSS is offline-verified but remains experimental
 
 **Status:** Implemented and offline-verified; live release gates remain open.
