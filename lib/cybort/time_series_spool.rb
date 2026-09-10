@@ -189,7 +189,9 @@ module Cybort
         return nil
       end
 
+      write_started = false
       begin_batch
+      write_started = true
       execute_statement(@insert_series, [
         definition.fetch(:series_key), definition.fetch(:metric_key), definition.fetch(:value_type),
         definition.fetch(:canonical_unit), definition.fetch(:dimensions_json)
@@ -200,10 +202,10 @@ module Cybort
       count_batch_write
       nil
     rescue SQLite3::ConstraintException => error
-      rollback_batch
+      rollback_batch if write_started
       raise ArgumentError, "duplicate series key: #{error.message}"
     rescue Exception # rubocop:disable Lint/RescueException -- rollback and close on shutdown exceptions
-      rollback_batch
+      rollback_batch if write_started
       raise
     end
 
@@ -232,7 +234,9 @@ module Cybort
         raise ArgumentError, "categorical series require categorical_value"
       end
 
+      write_started = false
       begin_batch
+      write_started = true
       execute_statement(@insert_observation, [
         series_key, source_record_key, utc_microseconds(observed_at),
         ended_at && utc_microseconds(ended_at), numeric, categorical, JSON.generate(metadata)
@@ -242,10 +246,10 @@ module Cybort
       count_batch_write
       nil
     rescue SQLite3::ConstraintException => error
-      rollback_batch
+      rollback_batch if write_started
       raise ArgumentError, "duplicate source record key or observation constraint: #{error.message}"
     rescue Exception # rubocop:disable Lint/RescueException -- finalized files must not leak on shutdown exceptions
-      rollback_batch
+      rollback_batch if write_started
       raise
     end
 
@@ -307,7 +311,7 @@ module Cybort
     end
 
     def self.utc_microseconds(time)
-      (time.to_r * 1_000_000).to_i
+      (time.to_r * 1_000_000).floor
     end
 
     private
