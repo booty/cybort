@@ -919,7 +919,8 @@ class OrchestratorTest < Minitest::Test
       canonical = TimeSeriesImportSpy.new(main: main)
       run = run_time_series_result(
         source_result, main, canonical,
-        force_fetch: source_result.failure?, last_successful_fetch: source_result.failure? ? nil : now
+        force_fetch: source_result.failure?,
+        last_successful_fetch: source_result.failure? ? nil : Time.utc(2026, 9, 9, 13)
       )
 
       assert_empty canonical.imports
