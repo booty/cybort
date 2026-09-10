@@ -55,19 +55,40 @@ class MultiAdapterIntegrationTest < Minitest::Test
     [orchestrator, persistence]
   end
 
+  def start_run(path, client)
+    Thread.new do
+      Thread.current.report_on_exception = false
+      persistence = nil
+      begin
+        orchestrator, persistence = build_orchestrator(path, client)
+        orchestrator.run(force_fetch: true)
+      ensure
+        persistence&.close
+      end
+    end
+  end
+
+  def with_reader(path)
+    reader = Cybort::Persistence.new(path, clock: -> { Time.utc(2026, 8, 16, 12) })
+    yield reader
+  ensure
+    reader&.close
+  end
+
   def test_rss_and_github_persist_in_one_database
     with_database do |path|
       client = CoordinatedHttpClient.new
-      orchestrator, persistence = build_orchestrator(path, client)
-      run_thread = Thread.new { orchestrator.run(force_fetch: true) }
+      run_thread = start_run(path, client)
 
       client.wait_for_requests(2)
-      assert_empty persistence.items_for
+      with_reader(path) { |reader| assert_empty reader.items_for }
       client.release_requests(2)
       result = run_thread.value
 
       assert_equal :success, result.overall_status
-      assert_equal ["github", "rss"], persistence.items_for.map(&:instance_id).uniq.sort
+      with_reader(path) do |reader|
+        assert_equal ["github", "rss"], reader.items_for.map(&:instance_id).uniq.sort
+      end
       assert_equal 2, client.calls.length
     end
   end
@@ -75,23 +96,23 @@ class MultiAdapterIntegrationTest < Minitest::Test
   def test_github_failure_does_not_roll_back_rss
     with_database do |path|
       first_client = CoordinatedHttpClient.new
-      orchestrator, persistence = build_orchestrator(path, first_client)
-      first_thread = Thread.new { orchestrator.run(force_fetch: true) }
+      first_thread = start_run(path, first_client)
       first_client.wait_for_requests(2)
       first_client.release_requests(2)
       assert_equal :success, first_thread.value.overall_status
 
       second_client = CoordinatedHttpClient.new(fail_github: true)
-      second_orchestrator, = build_orchestrator(path, second_client)
-      second_thread = Thread.new { second_orchestrator.run(force_fetch: true) }
+      second_thread = start_run(path, second_client)
       second_client.wait_for_requests(2)
       second_client.release_requests(2)
       result = second_thread.value
 
       assert_equal :partial_failure, result.overall_status
-      assert_equal 2, persistence.items_for(instance_id: "rss").length
-      assert_equal 2, persistence.items_for(instance_id: "github").length
-      assert_equal "failed", persistence.fetch_runs_for(instance_id: "github").last.fetch("status")
+      with_reader(path) do |reader|
+        assert_equal 2, reader.items_for(instance_id: "rss").length
+        assert_equal 2, reader.items_for(instance_id: "github").length
+        assert_equal "failed", reader.fetch_runs_for(instance_id: "github").last.fetch("status")
+      end
     end
   end
 end
