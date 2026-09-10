@@ -255,12 +255,11 @@ module Cybort
 
     def finalize(sync_state:, source_finished_at:, metadata:)
       ensure_open!
-      source_finished_at = validate_time(source_finished_at, "source_finished_at")
-      raise ArgumentError, "source_finished_at precedes source_started_at" if source_finished_at < @source_started_at
-      sync_state = TimeSeriesJSON.validate_metadata!(sync_state)
-      metadata = TimeSeriesJSON.validate_metadata!(metadata)
-
       begin
+        source_finished_at = validate_time(source_finished_at, "source_finished_at")
+        raise ArgumentError, "source_finished_at precedes source_started_at" if source_finished_at < @source_started_at
+        sync_state = TimeSeriesJSON.validate_metadata!(sync_state)
+        metadata = TimeSeriesJSON.validate_metadata!(metadata)
         commit_batch
         execute_manifest(sync_state: sync_state, source_finished_at: source_finished_at, metadata: metadata)
         validate_manifest!(sync_state: sync_state, source_finished_at: source_finished_at, metadata: metadata)
@@ -354,8 +353,10 @@ module Cybort
     end
 
     def execute_statement(statement, binds)
-      result = statement.execute(*binds)
-      result.close if result.respond_to?(:close)
+      # `ResultSet#close` closes its originating prepared statement. Execute
+      # through the result-set enumerator instead, leaving the statement
+      # reusable after each bounded transaction and rollback.
+      statement.execute!(*binds)
       nil
     end
 
