@@ -185,6 +185,33 @@ class PersistenceTest < Minitest::Test
     end
   end
 
+  def test_acknowledgement_rolls_back_state_history_and_key_on_late_failure
+    with_database do |path|
+      persistence = Cybort::Persistence.new(path)
+      persistence.setup!
+      persistence.register_instance(instance)
+      persistence.write_fetch_result(result(sync_state: { cursor: "old" }))
+
+      with_persistence_failure(
+        persistence, :insert_time_series_fetch_run,
+        lambda do |_receipt, finished_at:|
+          raise "fetch history unavailable"
+        end
+      ) do
+        assert_raises(RuntimeError) do
+          persistence.acknowledge_time_series_import(
+            time_series_receipt(import_key: "failed", sync_state: { "cursor" => "new" })
+          )
+        end
+      end
+
+      assert_equal({ cursor: "old" }, persistence.context_for(instance_id: "rss").fetch(:sync_state))
+      assert_equal ["entry-1"], persistence.items_for(instance_id: "rss").map(&:canonical_id)
+      assert_equal 1, persistence.fetch_runs_for(instance_id: "rss").length
+      refute persistence.time_series_import_acknowledged?(instance_id: "rss", import_key: "failed")
+    end
+  end
+
   def test_acknowledgement_uses_durable_source_start_after_reopening_persistence
     with_database do |path|
       receipt = time_series_receipt(
@@ -254,6 +281,41 @@ class PersistenceTest < Minitest::Test
       assert_empty persistence.items_for(instance_id: "rss")
       assert_empty persistence.fetch_runs_for(instance_id: "rss")
       refute persistence.time_series_import_acknowledged?(instance_id: "rss", import_key: "batch-1")
+    end
+  end
+
+  def test_time_series_purge_rolls_back_late_failure_and_survives_reopen
+    with_database do |path|
+      first = Cybort::Persistence.new(path)
+      first.setup!
+      first.register_instance(instance)
+      first.write_fetch_result(result)
+      first.acknowledge_time_series_import(time_series_receipt)
+      assert first.begin_time_series_purge(instance_id: "rss")
+
+      reopened = Cybort::Persistence.new(path)
+      reopened.setup!
+      assert_equal ["rss"], reopened.pending_time_series_purges.map { |row| row.fetch("instance_id") }
+
+      database = reopened.instance_variable_get(:@database)
+      database.execute(<<~SQL)
+        CREATE TRIGGER fail_time_series_purge BEFORE DELETE ON adapter_instances
+        BEGIN SELECT RAISE(ABORT, 'injected purge failure'); END
+      SQL
+      assert_raises(SQLite3::ConstraintException) do
+        reopened.finish_time_series_purge(instance_id: "rss")
+      end
+
+      assert reopened.instance_record("rss")
+      assert_equal ["entry-1"], reopened.items_for(instance_id: "rss").map(&:canonical_id)
+      assert_equal 2, reopened.fetch_runs_for(instance_id: "rss").length
+      assert reopened.time_series_import_acknowledged?(instance_id: "rss", import_key: "batch-1")
+      assert_equal ["rss"], reopened.pending_time_series_purges.map { |row| row.fetch("instance_id") }
+
+      database.execute("DROP TRIGGER fail_time_series_purge")
+      assert reopened.finish_time_series_purge(instance_id: "rss")
+      assert_nil reopened.instance_record("rss")
+      assert_empty reopened.pending_time_series_purges
     end
   end
 

@@ -968,7 +968,8 @@ class CliSystemTest < Minitest::Test
       assert_equal "Quarterly review", items.find { |item| item.fetch("canonical_id") == "one" }.fetch("title")
       assert_equal 2, persistence.items_for(instance_id: "jer_gmail").length
       assert_equal ["one", "two"], persistence.items_for(instance_id: "jer_gmail").map(&:canonical_id).sort
-      assert_equal ["adapter_instances", "fetch_runs", "items", "schema_migrations"], persistence.table_names
+      assert_equal ["adapter_instances", "fetch_runs", "items", "schema_migrations",
+                    "time_series_acknowledgements", "time_series_purge_intents"], persistence.table_names
     end
   end
 
