@@ -39,14 +39,14 @@ module Cybort
       owned_services = []
       begin
         started_at = timestamp
-        persistence, owned = persistence_for(
-          @persistence, File.join(@root, "cybort.sqlite3"), Persistence
+        persistence, = persistence_for(
+          @persistence, File.join(@root, "cybort.sqlite3"), Persistence,
+          owned_services: owned_services
         )
-        owned_services << persistence if owned
-        time_series_persistence, owned = persistence_for(
-          @time_series_persistence, File.join(@root, "cybort-timeseries.sqlite3"), TimeSeriesPersistence
+        time_series_persistence, = persistence_for(
+          @time_series_persistence, File.join(@root, "cybort-timeseries.sqlite3"), TimeSeriesPersistence,
+          owned_services: owned_services
         )
-        owned_services << time_series_persistence if owned
 
         databases = DATABASE_FILENAMES.map do |filename|
           service = filename == "cybort.sqlite3" ? persistence : time_series_persistence
@@ -88,21 +88,29 @@ module Cybort
         temporary = nil
         destination
       ensure
+        active_error = $!
+        cleanup_error = nil
         owned_services.reverse_each do |service|
           begin
             service.close if service.respond_to?(:close)
-          rescue StandardError
-            nil
+          rescue Exception => error # cleanup must not mask an active backup error
+            cleanup_error ||= error
           end
         end
-        FileUtils.rm_rf(temporary) if temporary && File.exist?(temporary)
+        begin
+          FileUtils.rm_rf(temporary) if temporary && File.exist?(temporary)
+        rescue Exception => error # cleanup must not mask an active backup error
+          cleanup_error ||= error
+        end
+        raise cleanup_error if active_error.nil? && cleanup_error
       end
     end
 
-    def persistence_for(existing, path, klass)
+    def persistence_for(existing, path, klass, owned_services:)
       return [existing, false] if existing
 
       service = klass.new(path, clock: @clock)
+      owned_services << service
       service.setup! if service.respond_to?(:setup!)
       [service, true]
     end

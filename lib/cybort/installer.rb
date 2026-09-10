@@ -67,14 +67,29 @@ module Cybort
     end
 
     def initialize_databases(location)
-      main = Persistence.new(File.join(location, "cybort.sqlite3"), clock: @clock).setup!
-      time_series = TimeSeriesPersistence.new(
-        File.join(location, "cybort-timeseries.sqlite3"), clock: @clock
-      ).setup!
-      nil
-    ensure
-      [time_series, main].each do |database|
-        database&.close if database&.respond_to?(:close)
+      main = nil
+      time_series = nil
+      begin
+        main = Persistence.new(File.join(location, "cybort.sqlite3"), clock: @clock)
+        main.setup!
+        time_series = TimeSeriesPersistence.new(
+          File.join(location, "cybort-timeseries.sqlite3"), clock: @clock
+        )
+        time_series.setup!
+        nil
+      ensure
+        active_error = $!
+        cleanup_error = nil
+        [time_series, main].each do |database|
+          next unless database&.respond_to?(:close)
+
+          begin
+            database.close
+          rescue Exception => error # cleanup must not mask an active setup error
+            cleanup_error ||= error
+          end
+        end
+        raise cleanup_error if active_error.nil? && cleanup_error
       end
     end
 

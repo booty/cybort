@@ -162,6 +162,8 @@ module Cybort
     end
 
     def close_file(file)
+      return unless file
+
       file.close unless file.closed?
     end
   end

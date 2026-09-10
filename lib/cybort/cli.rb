@@ -149,10 +149,12 @@ module Cybort
         persistence = nil
         time_series_persistence = nil
         begin
-          persistence = Persistence.new(database_path, clock: clock).setup!
+          persistence = Persistence.new(database_path, clock: clock)
+          persistence.setup!
           time_series_persistence = TimeSeriesPersistence.new(
             File.join(root, "cybort-timeseries.sqlite3"), clock: clock
-          ).setup!
+          )
+          time_series_persistence.setup!
           record = persistence.instance_record(instance_id)
           raise ConfigurationError, "Unknown adapter instance: #{instance_id}" unless record
 
