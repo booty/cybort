@@ -124,6 +124,49 @@ class TimeSeriesReconcilerTest < Minitest::Test
     end
   end
 
+  def test_pending_purge_recovers_after_canonical_delete_commit_and_restart
+    reopened_main = nil
+    reopened_reader = nil
+
+    with_recovery_stores do |main, main_path, time_series_path, reader, receipt, clock|
+      assert main.acknowledge_time_series_import(receipt)
+      assert_equal 1, main.fetch_runs_for(instance_id: "sensor").length
+      assert main.begin_time_series_purge(instance_id: "sensor")
+
+      delete_canonical_instance(time_series_path, clock, instance_id: "sensor")
+
+      assert_equal ["sensor"], main.pending_time_series_purges.map { |row| row.fetch("instance_id") }
+      assert_equal 1, main.fetch_runs_for(instance_id: "sensor").length
+      assert_nil reader.context_for(instance_id: "sensor")[:sync_state]
+      assert_empty reader.pending_receipts
+      assert_canonical_instance_deleted(time_series_path)
+
+      close_main(main)
+      reader.close
+
+      reopened_main = Cybort::Persistence.new(main_path, clock: clock)
+      reopened_main.setup!
+      reopened_reader = Cybort::TimeSeriesReader.new(time_series_path)
+
+      result = run_reconciliation(
+        main: reopened_main, reader: reopened_reader,
+        writer: actual_writer(time_series_path, clock)
+      )
+
+      assert_empty result.fetch(:blocked_instances)
+      assert_equal ["sensor"], result.fetch(:purged_instances)
+      assert_empty reopened_main.pending_time_series_purges
+      assert_nil reopened_main.instance_record("sensor")
+      assert_empty reopened_main.fetch_runs_for(instance_id: "sensor")
+      assert_equal 0, sqlite_count(main_path, "time_series_acknowledgements")
+      assert_empty reopened_reader.pending_receipts
+      assert_canonical_instance_deleted(time_series_path)
+    end
+  ensure
+    close_main(reopened_main)
+    reopened_reader&.close
+  end
+
   class MainSpy
     attr_reader :acknowledgements
 
@@ -237,6 +280,7 @@ class TimeSeriesReconcilerTest < Minitest::Test
   ensure
     reader&.close
     bootstrap&.close
+    close_main(main)
     FileUtils.remove_entry(directory) if directory && File.exist?(directory)
   end
 
@@ -291,6 +335,35 @@ class TimeSeriesReconcilerTest < Minitest::Test
     ).run
   ensure
     writer.close_and_join if started
+  end
+
+  def delete_canonical_instance(time_series_path, clock, instance_id:)
+    writer = actual_writer(time_series_path, clock)
+    started = false
+    writer.start
+    started = true
+    startup_error = writer.wait_until_ready
+    raise startup_error if startup_error
+
+    command_id = writer.submit_delete_instance(instance_id: instance_id)
+    event = writer.event_for(command_id)
+    assert_instance_of Cybort::TimeSeriesWriterEvent, event
+    assert_equal :purge, event.phase
+    assert_equal instance_id, event.instance_id
+    assert_equal :success, event.result
+  ensure
+    writer.close_and_join if started
+  end
+
+  def assert_canonical_instance_deleted(time_series_path)
+    %w[time_series_imports time_series_instance_state series observations].each do |table|
+      assert_equal 0, sqlite_count(time_series_path, table)
+    end
+  end
+
+  def close_main(persistence)
+    database = persistence&.instance_variable_get(:@database)
+    database.close if database && !database.closed?
   end
 
   def sqlite_count(path, table)
