@@ -25,7 +25,7 @@ class InstallationBackupTest < Minitest::Test
       assert_equal 1, manifest.fetch("format_version")
       assert manifest.key?("installation_backup_started_at")
       assert manifest.key?("installation_backup_completed_at")
-      assert_equal %w[cybort.sqlite3 cybort-timeseries.sqlite3],
+      assert_equal %w[cybort.sqlite3 cybort-timeseries.sqlite3].sort,
                    manifest.fetch("databases").map { |entry| entry.fetch("filename") }.sort
       manifest.fetch("databases").each do |entry|
         snapshot = File.join(destination, entry.fetch("filename"))
