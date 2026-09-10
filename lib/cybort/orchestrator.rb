@@ -114,7 +114,7 @@ module Cybort
           error: error,
           started_at: @clock.call,
           finished_at: @clock.call,
-          metadata: { recovery: "blocked" }
+          metadata: { "recovery" => "blocked" }
         )
       end
 

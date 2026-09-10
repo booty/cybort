@@ -99,12 +99,19 @@ class OrchestratorTest < Minitest::Test
   end
 
   class TimeSeriesReaderSpy
+    def initialize(last_successful_fetch: nil)
+      @last_successful_fetch = last_successful_fetch
+    end
+
     def pending_receipts
       []
     end
 
     def context_for(instance_id:)
-      { series_count: 2, observation_count: 7, sync_state: { cursor: "stored" } }
+      {
+        series_count: 2, observation_count: 7, last_successful_fetch: @last_successful_fetch,
+        sync_state: { cursor: "stored" }
+      }
     end
   end
 
@@ -889,7 +896,10 @@ class OrchestratorTest < Minitest::Test
     assert_equal %i[success failure], run.instances.map(&:status)
     assert_equal [item.id], persistence.writes.map(&:instance_id)
     assert_equal [series.id], persistence.failures.map(&:instance_id)
-    assert_same startup_error, run.instances.find { |status| status.instance_id == series.id }.error
+    blocked_status = run.instances.find { |status| status.instance_id == series.id }
+    assert_same startup_error, blocked_status.error
+    assert_equal "blocked", blocked_status.metadata.fetch("recovery")
+    refute blocked_status.metadata.key?(:recovery)
   end
 
   def test_time_series_cache_and_failure_never_submit_imports
@@ -907,7 +917,10 @@ class OrchestratorTest < Minitest::Test
     results.each do |source_result|
       main = TimeSeriesMainSpy.new
       canonical = TimeSeriesImportSpy.new(main: main)
-      run = run_time_series_result(source_result, main, canonical)
+      run = run_time_series_result(
+        source_result, main, canonical,
+        force_fetch: source_result.failure?, last_successful_fetch: source_result.failure? ? nil : now
+      )
 
       assert_empty canonical.imports
       assert_empty canonical.markers
@@ -968,7 +981,7 @@ class OrchestratorTest < Minitest::Test
 
   private
 
-  def run_time_series_result(source_result, main, canonical)
+  def run_time_series_result(source_result, main, canonical, force_fetch: true, last_successful_fetch: nil)
     registry = Cybort::AdapterRegistry.new
     spool_factory = Object.new
     registry.register("series_fixture", ->(context:, spool_factory:, **) {
@@ -981,9 +994,10 @@ class OrchestratorTest < Minitest::Test
     Cybort::Orchestrator.new(
       configuration: Struct.new(:instances).new({ "sensor" => configured }),
       persistence: main, registry: registry, http_client: nil,
-      clock: -> { Time.utc(2026, 9, 9, 13) }, time_series_reader: TimeSeriesReaderSpy.new,
+      clock: -> { Time.utc(2026, 9, 9, 13) },
+      time_series_reader: TimeSeriesReaderSpy.new(last_successful_fetch: last_successful_fetch),
       time_series_persistence_factory: -> { canonical }, time_series_spool_factory: spool_factory
-    ).run(force_fetch: true)
+    ).run(force_fetch: force_fetch)
   end
 
   def with_time_series_result
