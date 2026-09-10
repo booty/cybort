@@ -1,4 +1,5 @@
 require "test_helper"
+require "open3"
 require_relative "support/lifecycle_resource"
 
 class InstallerTest < Minitest::Test
@@ -114,6 +115,65 @@ class InstallerTest < Minitest::Test
       assert_path_exists File.join(path, "cybort.sqlite3")
       assert_path_exists File.join(path, "cybort-timeseries.sqlite3")
       assert_empty archives
+    end
+  end
+
+  def test_symlink_reset_archives_and_recreates_the_real_target
+    Dir.mktmpdir do |directory|
+      target = File.join(directory, "cybort-target")
+      alias_path = File.join(directory, "cybort-alias")
+      write_existing_installation(target)
+      File.symlink(target, alias_path)
+
+      io = TestIO.new("2\n")
+      installer_instance = Cybort::Installer.new(io: io, clock: clock)
+
+      assert_equal :reset_with_config, installer_instance.run(location: alias_path)
+
+      backup_path = "#{target}.backup-20260816T123456Z.tar.gz"
+      assert_path_exists backup_path
+      stdout, stderr, status = Open3.capture3(
+        "tar", "-xOzf", backup_path, "#{File.basename(target)}/marker.txt"
+      )
+      assert status.success?, stderr
+      assert_equal "old data", stdout
+
+      refute_path_exists File.join(target, "marker.txt")
+      assert_equal "schema_version = 1\n", File.read(File.join(target, "cybort.toml"))
+      assert_path_exists File.join(target, "cybort.sqlite3")
+      assert_path_exists File.join(target, "cybort-timeseries.sqlite3")
+      assert File.symlink?(alias_path)
+      assert_equal target, File.realpath(alias_path)
+    end
+  end
+
+  def test_symlink_reset_uses_canonical_lock_while_archiving_target
+    Dir.mktmpdir do |directory|
+      target = File.join(directory, "cybort-target")
+      alias_path = File.join(directory, "cybort-alias")
+      write_existing_installation(target)
+      File.symlink(target, alias_path)
+
+      alias_lock = Cybort::InstallationLock.new(alias_path)
+      target_lock = Cybort::InstallationLock.new(target)
+      assert_equal target_lock.path, alias_lock.path
+
+      observed_location = nil
+      lock_error = nil
+      archive = lambda do |location, backup_path|
+        observed_location = location
+        lock_error = assert_raises(Cybort::InstallationLock::BusyError) do
+          alias_lock.synchronize { flunk "symlink alias acquired the active installer lock" }
+        end
+        File.write(backup_path, "backup")
+      end
+      installer_instance = Cybort::Installer.new(io: TestIO.new("2\n"), clock: clock, archive: archive)
+
+      assert_equal :reset_with_config, installer_instance.run(location: alias_path)
+      assert_equal target, observed_location
+      assert_instance_of Cybort::InstallationLock::BusyError, lock_error
+      assert File.symlink?(alias_path)
+      assert_equal target, File.realpath(alias_path)
     end
   end
 

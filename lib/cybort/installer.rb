@@ -11,8 +11,9 @@ module Cybort
 
     def run(location:)
       location = File.expand_path(location)
-      InstallationLock.new(location).synchronize do
-        run_locked(location)
+      operation_root = canonical_operation_root(location)
+      InstallationLock.new(operation_root).synchronize do
+        run_locked(operation_root)
       end
     end
 
@@ -39,6 +40,17 @@ module Cybort
 
     def existing_installation?(location)
       File.directory?(location) && !Dir.children(location).empty?
+    end
+
+    def canonical_operation_root(location)
+      return location unless File.directory?(location)
+
+      File.realpath(location)
+    rescue Errno::ENOENT
+      # If the directory disappears between the existence check and realpath,
+      # retain the lexical path so a new installation follows normal creation
+      # semantics.
+      location
     end
 
     def create_new(location)
