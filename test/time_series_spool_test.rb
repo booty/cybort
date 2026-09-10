@@ -164,4 +164,23 @@ class TimeSeriesSpoolTest < Minitest::Test
     refute File.exist?(path)
     refute File.exist?("#{path}-journal")
   end
+
+  def test_cleanup_failure_does_not_replace_block_exception
+    original_error = Class.new(StandardError)
+    path = nil
+    raised = assert_raises(original_error) do
+      @factory.open(instance_id: "sensor", import_key: "batch-3", import_mode: :append,
+                    source_started_at: @started) do |writer|
+        path = writer.path
+        original_abort = writer.method(:abort)
+        writer.define_singleton_method(:abort) do
+          original_abort.call
+          raise "injected cleanup failure"
+        end
+        raise original_error, "source failure"
+      end
+    end
+    assert_equal "source failure", raised.message
+    refute File.exist?(path)
+  end
 end

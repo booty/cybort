@@ -39,14 +39,13 @@ module Cybort
       begin
         yield writer
       rescue Exception # rubocop:disable Lint/RescueException -- cleanup must include shutdown exceptions
-        writer.abort
+        abort_without_replacing(writer)
         raise
       ensure
-        writer.abort unless writer.closed?
+        abort_without_replacing(writer) unless writer.closed?
       end
     rescue Exception # rubocop:disable Lint/RescueException -- remove partially-created spool on shutdown
-      FileUtils.rm_f(path) if path
-      FileUtils.rm_f("#{path}-journal") if path
+      remove_path(path) if path
       raise
     end
 
@@ -103,6 +102,20 @@ module Cybort
 
     def validate_time!(value, label)
       raise ArgumentError, "#{label} must be a Time" unless value.is_a?(Time)
+    end
+
+    def abort_without_replacing(writer)
+      writer.abort
+    rescue Exception # rubocop:disable Lint/RescueException -- preserve the active source exception
+      nil
+    end
+
+    def remove_path(path)
+      [path, "#{path}-journal"].each do |candidate|
+        FileUtils.rm_f(candidate)
+      rescue Exception # rubocop:disable Lint/RescueException -- preserve the active exception
+        next
+      end
     end
   end
 
@@ -284,7 +297,11 @@ module Cybort
         @finalized = true
         artifact
       rescue Exception # rubocop:disable Lint/RescueException -- finalized files must not leak on shutdown exceptions
-        abort
+        begin
+          abort
+        rescue Exception # rubocop:disable Lint/RescueException -- preserve the active finalize exception
+          nil
+        end
         raise
       end
     end
@@ -293,11 +310,26 @@ module Cybort
       return nil if @closed && !@finalized
       return nil if @finalized
 
-      rollback_batch
-      close_database
-      FileUtils.rm_f(@path)
-      FileUtils.rm_f("#{@path}-journal")
+      cleanup_errors = []
+      begin
+        rollback_batch
+      rescue Exception => error # rubocop:disable Lint/RescueException -- cleanup must continue on shutdown exceptions
+        cleanup_errors << error
+      end
+      begin
+        close_database
+      rescue Exception => error # rubocop:disable Lint/RescueException -- cleanup must continue on shutdown exceptions
+        cleanup_errors << error
+      end
+      [@path, "#{@path}-journal"].each do |candidate|
+        begin
+          FileUtils.rm_f(candidate)
+        rescue Exception => error # rubocop:disable Lint/RescueException -- cleanup must continue on shutdown exceptions
+          cleanup_errors << error
+        end
+      end
       @closed = true
+      raise cleanup_errors.first unless cleanup_errors.empty?
       nil
     end
 
