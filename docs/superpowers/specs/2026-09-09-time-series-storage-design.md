@@ -157,7 +157,8 @@ Numeric values must be finite. Boolean, object, array, NaN, and infinite values
 are rejected. Categorical values are nonblank UTF-8 strings of at most 1,024
 bytes. `series_key`, `metric_key`, canonical unit, and `source_record_key` are
 limited to 256, 128, 64, and 512 UTF-8 bytes respectively and reject C0
-controls and DEL. Dimensions are a flat object of at most 32 entries with
+controls and DEL. An `import_key` is a nonblank UTF-8 string of at most 256
+bytes under the same control-character rule. Dimensions are a flat object of at most 32 entries with
 128-byte keys and scalar boolean, integer, finite-float, or strings of at most
 512 bytes; their encoded JSON is limited to 16 KiB. Observation, import, and
 receipt metadata use JSON-compatible values with at most eight container
@@ -173,7 +174,7 @@ Each canonical time-series commit records:
 - the instance ID;
 - import mode (`append` or `snapshot`);
 - source and completion timestamps;
-- observation and series counts;
+- imported and total stored observation and series counts;
 - the next connector synchronization state;
 - bounded diagnostic metadata; and
 - whether the corresponding main-database acknowledgement is pending or
@@ -183,6 +184,12 @@ The canonical database rejects reuse of an `import_key` with different
 contents. Reuse with the same content returns the existing receipt without
 rewriting observations. Import keys must therefore identify the acquired
 source version or page, not a random attempt.
+
+The time-series database also maintains one small instance-state row containing
+the latest import key and total stored series and observation counts. It is
+updated in the same transaction as every import, so planning and cached status
+do not scan a million-row observation table. Import receipts distinguish counts
+present in that import from total counts stored after it.
 
 ## Disposable spool
 
@@ -222,7 +229,7 @@ artifact = spool.finalize(
 
 The writer uses prepared statements and bounded transactions while parsing.
 Those transactions lock only the disposable spool. `finalize` validates the
-manifest, closes the database, computes a content digest, and returns an
+manifest stored inside the spool, closes the database, computes a content digest, and returns an
 immutable `TimeSeriesSpoolArtifact`. An aborted or failed fetch closes and
 deletes its spool. The orchestrator owns cleanup after an artifact is returned,
 including every success, failure, and shutdown path.
@@ -265,7 +272,7 @@ instance. In one time-series transaction, persistence:
 3. upserts its series definitions;
 4. upserts its observations;
 5. removes observations for the instance that are absent from the spool;
-6. removes now-unused series for the instance; and
+6. removes series for the instance that are absent from the spool; and
 7. records the durable import receipt.
 
 Readers in WAL mode see the previous committed snapshot until commit, then the
@@ -290,7 +297,10 @@ result kind of `items` or `time_series`; existing entries default to `items`.
 The registry injects a spool factory only into time-series adapters.
 
 At the start of a run that includes a time-series adapter, the orchestrator
-starts one dedicated time-series persistence worker. Source completion and
+starts one dedicated time-series persistence worker. The worker constructs and
+exclusively owns its writable SQLite connection inside its thread; planning and
+query code uses a separate read connection and never shares a connection object
+across threads. Source completion and
 time-series persistence receipts are represented as tagged events:
 
 ```text
@@ -304,8 +314,9 @@ existing main `Persistence` object. For a successful remote time-series result,
 the caller transfers its finalized artifact to the time-series writer and
 continues consuming other completion events. The writer serially imports
 artifacts and publishes a success or failure receipt. The orchestrator caller
-then performs the short main-database acknowledgement and reports that source's
-terminal status.
+then performs the short main-database acknowledgement, queues the advisory
+receipt marker back to the writer, and reports that source's terminal status
+after the marker completes.
 
 Cached time-series results do not create a spool or enqueue a write. They return
 a cached status using counts from the planning context or stored receipt.
@@ -335,18 +346,20 @@ A successful time-series fetch has two durable steps:
 2. the orchestrator caller transactionally updates the main adapter's
    `last_successful_fetch` and synchronization state, inserts one fetch-history
    row keyed by the import ID, and records that import ID as acknowledged;
-3. the time-series worker marks its receipt acknowledged. This final marker is
+3. the orchestrator submits an acknowledgement command to the time-series
+   worker, which marks its receipt acknowledged. This final marker is
    advisory cleanup state and is idempotent.
 
 The time-series commit must occur first. The main database must never advance a
 source cursor before the observations governed by that cursor are durable.
 
-At startup, before source planning, the orchestrator reconciles any pending
-time-series receipts. The main acknowledgement operation is idempotent by
-`(instance_id, import_key)`. If a crash occurs after step 1, reconciliation
-performs step 2. If a crash occurs after step 2 but before step 3,
-reconciliation observes the existing acknowledgement and only completes step
-3. No distributed rollback is attempted.
+At startup, before source planning, the orchestrator starts the time-series
+writer and reconciles any pending time-series receipts. The main
+acknowledgement operation is idempotent by `(instance_id, import_key)`. If a
+crash occurs after step 1, reconciliation performs step 2 and queues step 3 to
+the writer. If a crash occurs after step 2 but before step 3, reconciliation
+observes the existing acknowledgement and queues only step 3. No distributed
+rollback is attempted.
 
 The main schema therefore gains a small acknowledgement table instead of
 claiming that an attached multi-database WAL transaction is atomic.
@@ -395,10 +408,11 @@ the `items` table merely to make them visible to the existing CLI.
 The existing SQLite backup command covers only the main database and is not a
 complete installation backup after this feature. Before implementation is
 complete, backup and reset workflows must treat the two canonical database
-files as one logical installation. A consistent live backup acquires the
-application's two writer gates in a fixed order, checkpoints as needed, and
-uses SQLite backup operations for each file. It records a manifest so a user
-cannot mistake one file for a complete backup.
+files as one logical installation. The purge CLI requires collection to be
+stopped, then uses SQLite backup operations for each file and records both
+snapshot times in a manifest so a user cannot mistake one file for a complete
+backup. The two backups are adjacent durable snapshots, not a globally atomic
+cross-file snapshot.
 
 Purging a time-series instance deletes its observations, unused series, import
 receipts, and main acknowledgement/control rows. Because the files cannot share
@@ -409,6 +423,11 @@ Vacuuming and WAL checkpointing are maintenance operations, not part of every
 fetch. A large import must not force main-database checkpointing. Time-series
 checkpoint policy should be measured with representative fixtures before
 changing SQLite defaults.
+
+Lifecycle commands are explicit operational writers and may write the
+time-series database directly while normal collection is stopped. The
+dedicated-writer rule applies to a collection run, where adapter and main
+persistence activity is concurrent.
 
 ## Errors and diagnostics
 
