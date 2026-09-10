@@ -19,7 +19,8 @@ class InstallationBackupTest < Minitest::Test
       ).create(destination: destination)
 
       assert_equal destination, result
-      assert_equal %w[cybort-timeseries.sqlite3 cybort.sqlite3 manifest.json], Dir.children(destination).sort
+      assert_equal %w[cybort-timeseries.sqlite3 cybort.sqlite3 manifest.json].sort,
+                   Dir.children(destination).sort
       manifest = JSON.parse(File.read(File.join(destination, "manifest.json")))
       assert_equal 1, manifest.fetch("format_version")
       assert manifest.key?("installation_backup_started_at")
