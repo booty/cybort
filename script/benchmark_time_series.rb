@@ -3,6 +3,7 @@
 
 require "fileutils"
 require "json"
+require "open3"
 require "optparse"
 require "sqlite3"
 
@@ -261,8 +262,47 @@ module Cybort
     end
 
     def peak_rss_bytes
+      getrusage_rss_bytes || proc_peak_rss_bytes || ps_rss_bytes
+    end
+
+    # Returns a best-effort resident-set measurement in bytes.  getrusage is
+    # preferred when Ruby exposes it; Linux /proc supplies a true high-water
+    # mark, while ps supplies the current RSS on macOS and other POSIX hosts.
+    # Measurement is optional, so an unavailable or malformed value is nil and
+    # must not make the benchmark fail or add unbounded output.
+    def getrusage_rss_bytes
+      return unless Process.respond_to?(:getrusage)
+
       raw = Process.getrusage.maxrss
-      RUBY_PLATFORM.include?("darwin") ? raw : raw * 1024
+      return unless raw.is_a?(Numeric) && raw.finite? && raw >= 0
+
+      RUBY_PLATFORM.include?("darwin") ? raw.to_i : raw.to_i * 1024
+    rescue StandardError, NotImplementedError
+      nil
+    end
+
+    def proc_peak_rss_bytes
+      return unless File.file?("/proc/self/status")
+
+      File.foreach("/proc/self/status") do |line|
+        next unless line.start_with?("VmHWM:")
+
+        value, unit = line.split
+        return value.to_i * 1024 if value&.match?(/\A\d+\z/) && unit == "kB"
+      end
+      nil
+    rescue StandardError
+      nil
+    end
+
+    def ps_rss_bytes
+      output, status = Open3.capture2("ps", "-o", "rss=", "-p", Process.pid.to_s)
+      return unless status.success?
+
+      rss_kib = output.each_line.map(&:strip).find { |line| line.match?(/\A\d+\z/) }
+      rss_kib ? rss_kib.to_i * 1024 : nil
+    rescue StandardError
+      nil
     end
   end
 end
