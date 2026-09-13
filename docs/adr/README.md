@@ -14,7 +14,8 @@ supersedes the old one instead of silently rewriting it.
 | [0006](0006-reddit-rss-observed-ranking.md) | Accepted; implemented offline, live gates open | Separate public Reddit RSS adapter with bounded observed-pool ranking ([design](../superpowers/specs/2026-09-06-reddit-rss-design.md), [plan](../superpowers/plans/2026-09-06-reddit-rss.md)) | 2026-09-06 |
 | [0007](0007-lifecycle-expiry-and-instance-purge.md) | Accepted | Optional hard-expiry cleanup, planning-only contexts, and explicit instance purge | 2026-09-08 |
 | [0008](0008-independent-connector-completion.md) | Accepted; amended by [0009](0009-isolate-time-series-storage.md) | Completion-ordered, orchestrator-owned item persistence; disposable time-series spools remain outside canonical storage | 2026-09-08 |
-| [0009](0009-isolate-time-series-storage.md) | Accepted; implemented | A second canonical SQLite database and serialized writer isolate high-volume time-series imports ([design](../superpowers/specs/2026-09-09-time-series-storage-design.md), [plan](../superpowers/plans/2026-09-09-time-series-storage.md)) | 2026-09-09 |
+| [0009](0009-isolate-time-series-storage.md) | Accepted; implemented; amended by [0010](0010-append-only-time-series-import-results.md) | A second canonical SQLite database and serialized writer isolate high-volume time-series imports ([design](../superpowers/specs/2026-09-09-time-series-storage-design.md), [plan](../superpowers/plans/2026-09-09-time-series-storage.md)) | 2026-09-09 |
+| [0010](0010-append-only-time-series-import-results.md) | Accepted | Append-only import results, no-op-aware conflicts, and sanitized writer projections for local time-series imports ([design](../superpowers/specs/2026-09-11-apple-health-import-design.md), [plan](../superpowers/plans/2026-09-13-apple-health-import.md)) | 2026-09-13 |
 
 When adding an ADR:
 

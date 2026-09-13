@@ -1,6 +1,6 @@
 # ADR 0009: Isolate Time-Series Storage
 
-- Status: Accepted; implemented
+- Status: Accepted; implemented; amended by [ADR 0010](0010-append-only-time-series-import-results.md)
 - Date: 2026-09-09
 - Amends: [ADR 0008](0008-independent-connector-completion.md)
 

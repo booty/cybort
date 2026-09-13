@@ -1,3 +1,6 @@
+require "zip"
+require "nokogiri"
+
 module Cybort
   VERSION = "0.1.0"
 
