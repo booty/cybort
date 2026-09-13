@@ -36,6 +36,19 @@ class AdapterRegistryTest < Minitest::Test
     assert_raises(ArgumentError) { registry.register("unknown", ->(**_) {}, result_kind: :bogus) }
   end
 
+  def test_enforces_registered_instance_maximum_deterministically
+    registry = Cybort::AdapterRegistry.new
+    registry.register("limited", ->(spool_factory:, **_kwargs) { spool_factory },
+                      result_kind: :time_series, max_instances: 1)
+    instances = {
+      "z" => Instance.new(adapter: "limited"),
+      "a" => Instance.new(adapter: "limited")
+    }
+
+    error = assert_raises(Cybort::ConfigurationError) { registry.validate_configuration!(instances) }
+    assert_equal "limited: at most 1 instance allowed", error.message
+  end
+
   def test_builtin_adapters_are_item_result_kind
     registry = Cybort::AdapterRegistry.default
     %w[rss github reddit reddit_rss gmail].each do |name|

@@ -1,7 +1,8 @@
 module Cybort
   class AdapterRegistry
     RESULT_KINDS = %i[items time_series].freeze
-    Entry = Struct.new(:factory, :dependencies, :validator, :display_name, :item_noun, :result_kind, keyword_init: true)
+    Entry = Struct.new(:factory, :dependencies, :validator, :display_name, :item_noun,
+                       :result_kind, :max_instances, keyword_init: true)
 
     def self.default
       new.tap do |registry|
@@ -18,8 +19,11 @@ module Cybort
     end
 
     def register(name, adapter_factory, dependencies: [], validate_configuration: nil,
-                 display_name: nil, item_noun: "items", result_kind: :items)
+                 display_name: nil, item_noun: "items", result_kind: :items, max_instances: nil)
       raise ArgumentError, "invalid adapter result kind" unless RESULT_KINDS.include?(result_kind)
+      unless max_instances.nil? || (max_instances.is_a?(Integer) && max_instances.positive?)
+        raise ArgumentError, "max_instances must be a positive integer"
+      end
       if result_kind == :time_series && !accepts_keyword?(adapter_factory, :spool_factory)
         raise ArgumentError, "time-series adapter factory must accept spool_factory keyword"
       end
@@ -32,7 +36,8 @@ module Cybort
         validator: validator || ->(_instance) {},
         display_name: display_name,
         item_noun: item_noun,
-        result_kind: result_kind
+        result_kind: result_kind,
+        max_instances: max_instances
       )
     end
 
@@ -64,6 +69,15 @@ module Cybort
           rescue ConfigurationError => error
             messages << "#{id}: #{error.message}"
           end
+        end
+        @adapters.keys.sort.each do |adapter_name|
+          entry = @adapters.fetch(adapter_name)
+          next unless entry.max_instances
+
+          matching_count = instances.values.count { |instance| instance.adapter == adapter_name }
+          next unless matching_count > entry.max_instances
+
+          errors << "#{adapter_name}: at most #{entry.max_instances} instance#{entry.max_instances == 1 ? "" : "s"} allowed"
         end
         raise ConfigurationError, errors.join("\n") unless errors.empty?
         return
