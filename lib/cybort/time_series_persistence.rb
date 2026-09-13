@@ -10,7 +10,7 @@ module Cybort
     SPOOL_COLUMNS = {
       "spool_series" => %w[series_key metric_key value_type canonical_unit dimensions_json],
       "spool_observations" => %w[series_key source_record_key observed_at_us ended_at_us numeric_value categorical_value metadata_json],
-      "spool_manifest" => %w[singleton_id instance_id import_key import_mode series_count observation_count sync_state_json source_started_at_us source_finished_at_us metadata_json]
+      "spool_manifest" => %w[singleton_id instance_id import_key import_mode series_count observation_count sync_state_json source_started_at_us source_finished_at_us duplicate_observation_count metadata_json]
     }.freeze
     private_constant :SPOOL_COLUMNS
 
@@ -68,9 +68,16 @@ module Cybort
           validate_existing_series!(artifact.instance_id)
           committed_at_us = TimeSeriesSchema.microseconds(@clock.call)
           upsert_series(artifact.instance_id, committed_at_us)
-          upsert_observations(artifact.instance_id, committed_at_us)
-          replace_snapshot(artifact.instance_id) if artifact.import_mode == :snapshot
-          record_import(artifact, committed_at_us)
+          observation_counts = upsert_observations(artifact.instance_id, committed_at_us)
+          deleted_observation_count = if artifact.import_mode == :snapshot
+            replace_snapshot(artifact.instance_id)
+          else
+            0
+          end
+          record_import(
+            artifact, committed_at_us, observation_counts,
+            deleted_observation_count: deleted_observation_count
+          )
           receipt_for(artifact.instance_id, artifact.import_key)
         end
       rescue Exception => error # detach must also run for interrupts and shutdown
@@ -201,6 +208,7 @@ module Cybort
         "sync_state_json" => JSON.generate(artifact.sync_state),
         "source_started_at_us" => TimeSeriesSchema.microseconds(artifact.source_started_at),
         "source_finished_at_us" => TimeSeriesSchema.microseconds(artifact.source_finished_at),
+        "duplicate_observation_count" => artifact.duplicate_observation_count,
         "metadata_json" => JSON.generate(artifact.metadata)
       }
       rows = incoming.execute("SELECT * FROM spool_manifest LIMIT 2")
@@ -299,6 +307,29 @@ module Cybort
     end
 
     def upsert_observations(instance_id, committed_at_us)
+      counts = @database.get_first_row(<<~SQL, [instance_id, instance_id])
+        SELECT
+          COALESCE(SUM(CASE WHEN existing.series_id IS NULL THEN 1 ELSE 0 END), 0) AS inserted_count,
+          COALESCE(SUM(CASE WHEN existing.series_id IS NOT NULL AND
+            existing.observed_at_us IS incoming.observed_at_us AND
+            existing.ended_at_us IS incoming.ended_at_us AND
+            existing.numeric_value IS incoming.numeric_value AND
+            existing.categorical_value IS incoming.categorical_value AND
+            existing.metadata_json IS incoming.metadata_json THEN 1 ELSE 0 END), 0) AS unchanged_count,
+          COALESCE(SUM(CASE WHEN existing.series_id IS NOT NULL AND NOT (
+            existing.observed_at_us IS incoming.observed_at_us AND
+            existing.ended_at_us IS incoming.ended_at_us AND
+            existing.numeric_value IS incoming.numeric_value AND
+            existing.categorical_value IS incoming.categorical_value AND
+            existing.metadata_json IS incoming.metadata_json) THEN 1 ELSE 0 END), 0) AS changed_count
+        FROM incoming.spool_observations AS incoming
+        JOIN series AS stored
+          ON stored.series_key = incoming.series_key AND stored.adapter_instance_id = ?
+        LEFT JOIN observations AS existing
+          ON existing.series_id = stored.id
+         AND existing.source_record_key = incoming.source_record_key
+        WHERE stored.adapter_instance_id = ?
+      SQL
       @database.execute(<<~SQL, [committed_at_us, instance_id])
         INSERT INTO observations (series_id, source_record_key, observed_at_us, ended_at_us,
                                   numeric_value, categorical_value, ingested_at_us, metadata_json)
@@ -311,10 +342,32 @@ module Cybort
           observed_at_us = excluded.observed_at_us, ended_at_us = excluded.ended_at_us,
           numeric_value = excluded.numeric_value, categorical_value = excluded.categorical_value,
           ingested_at_us = excluded.ingested_at_us, metadata_json = excluded.metadata_json
+        WHERE observations.observed_at_us IS NOT excluded.observed_at_us
+           OR observations.ended_at_us IS NOT excluded.ended_at_us
+           OR observations.numeric_value IS NOT excluded.numeric_value
+           OR observations.categorical_value IS NOT excluded.categorical_value
+           OR observations.metadata_json IS NOT excluded.metadata_json
       SQL
+      {
+        inserted: counts.fetch("inserted_count").to_i,
+        unchanged: counts.fetch("unchanged_count").to_i,
+        changed: counts.fetch("changed_count").to_i
+      }
     end
 
     def replace_snapshot(instance_id)
+      deleted_observation_count = @database.get_first_value(<<~SQL, [instance_id])
+        SELECT COUNT(*)
+        FROM observations
+        JOIN series ON series.id = observations.series_id
+        WHERE series.adapter_instance_id = ?
+          AND NOT EXISTS (
+            SELECT 1 FROM incoming.spool_observations AS spool
+            JOIN series AS stored ON stored.series_key = spool.series_key
+            WHERE stored.id = observations.series_id
+              AND spool.source_record_key = observations.source_record_key
+          )
+      SQL
       @database.execute(<<~SQL, [instance_id])
         DELETE FROM observations
         WHERE series_id IN (SELECT id FROM series WHERE adapter_instance_id = ?)
@@ -329,9 +382,10 @@ module Cybort
         DELETE FROM series WHERE adapter_instance_id = ?
           AND NOT EXISTS (SELECT 1 FROM incoming.spool_series AS spool WHERE spool.series_key = series.series_key)
       SQL
+      deleted_observation_count.to_i
     end
 
-    def record_import(artifact, committed_at_us)
+    def record_import(artifact, committed_at_us, observation_counts, deleted_observation_count:)
       stored_series_count = @database.get_first_value("SELECT COUNT(*) FROM series WHERE adapter_instance_id = ?", [artifact.instance_id])
       stored_observation_count = @database.get_first_value(<<~SQL, [artifact.instance_id])
         SELECT COUNT(*) FROM observations
@@ -348,13 +402,19 @@ module Cybort
       SQL
       binds = [artifact.instance_id, artifact.import_key, artifact.digest, artifact.import_mode.to_s,
                TimeSeriesSchema.microseconds(artifact.source_started_at), TimeSeriesSchema.microseconds(artifact.source_finished_at),
-               committed_at_us, artifact.series_count, artifact.observation_count, stored_series_count,
-               stored_observation_count, JSON.generate(artifact.sync_state), JSON.generate(artifact.metadata)]
+               committed_at_us, artifact.series_count, artifact.observation_count,
+               observation_counts.fetch(:inserted), artifact.duplicate_observation_count,
+               observation_counts.fetch(:unchanged), observation_counts.fetch(:changed),
+               deleted_observation_count, stored_series_count, stored_observation_count,
+               JSON.generate(artifact.sync_state), JSON.generate(artifact.metadata)]
       @database.execute(<<~SQL, binds)
         INSERT INTO time_series_imports (adapter_instance_id, import_key, artifact_digest, import_mode,
           source_started_at_us, source_finished_at_us, committed_at_us, imported_series_count,
-          imported_observation_count, stored_series_count, stored_observation_count, sync_state_json, metadata_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          imported_observation_count, inserted_observation_count,
+          duplicate_observation_count, unchanged_observation_count,
+          changed_observation_count, deleted_observation_count,
+          stored_series_count, stored_observation_count, sync_state_json, metadata_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       SQL
     end
 

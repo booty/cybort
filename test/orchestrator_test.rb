@@ -172,7 +172,8 @@ class OrchestratorTest < Minitest::Test
       @event_queue << Cybort::TimeSeriesWriterEvent.new(
         command_id: command_id, phase: :import,
         instance_id: artifact.instance_id, import_key: artifact.import_key,
-        result: :success, receipt: receipt, error: nil
+        result: :success, receipt: receipt, error: nil,
+        projection: Cybort::TimeSeriesImportProjection.from_receipt(receipt)
       )
       command_id
     end

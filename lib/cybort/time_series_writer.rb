@@ -260,7 +260,8 @@ module Cybort
             import_key: command.import_key,
             result: :success,
             receipt: receipt,
-            error: nil
+            error: nil,
+            projection: TimeSeriesImportProjection.from_receipt(receipt)
           )
         rescue StandardError => error
           active_error = error
@@ -302,7 +303,8 @@ module Cybort
             import_key: command.import_key,
             result: :success,
             receipt: receipt,
-            error: nil
+            error: nil,
+            projection: nil
           )
         rescue StandardError => error
           event = failure_event(command, error)
@@ -328,7 +330,8 @@ module Cybort
             import_key: nil,
             result: :success,
             receipt: nil,
-            error: nil
+            error: nil,
+            projection: nil
           )
         rescue StandardError => error
           event = failure_event(command, error)
@@ -353,7 +356,8 @@ module Cybort
         import_key: command.import_key,
         result: :failure,
         receipt: nil,
-        error: error
+        error: error,
+        projection: nil
       )
     end
 
@@ -483,12 +487,12 @@ module Cybort
   # keeps invalid phase/correlation combinations from crossing a thread/event
   # boundary and makes every terminal event structurally self-describing.
   TimeSeriesWriterEvent = Data.define(
-    :command_id, :phase, :instance_id, :import_key, :result, :receipt, :error
+    :command_id, :phase, :instance_id, :import_key, :result, :receipt, :error, :projection
   ) do
     PHASES = %i[import acknowledgement purge].freeze
     RESULTS = %i[success failure].freeze
 
-    def initialize(command_id:, phase:, instance_id:, import_key:, result:, receipt:, error:)
+    def initialize(command_id:, phase:, instance_id:, import_key:, result:, receipt:, error:, projection: nil)
       validate_command_id!(command_id)
       raise ArgumentError, "invalid writer event phase" unless PHASES.include?(phase)
       validate_identifier!(instance_id, "instance_id", 256)
@@ -500,15 +504,22 @@ module Cybort
         raise ArgumentError, "successful writer event cannot carry an error" unless error.nil?
         if phase == :purge
           raise ArgumentError, "purge event cannot carry a receipt" unless receipt.nil?
+          raise ArgumentError, "purge event cannot carry a projection" unless projection.nil?
         else
           unless receipt.is_a?(TimeSeriesImportReceipt) &&
                  receipt.instance_id == instance_id && receipt.import_key == import_key
             raise ArgumentError, "writer receipt does not match event correlation"
           end
+          if phase == :import
+            raise ArgumentError, "import event requires a projection" unless projection.is_a?(TimeSeriesImportProjection)
+          else
+            raise ArgumentError, "acknowledgement event cannot carry a projection" unless projection.nil?
+          end
         end
       else
         raise ArgumentError, "failed writer event requires an error" unless error.is_a?(Exception)
         raise ArgumentError, "failed writer event cannot carry a receipt" unless receipt.nil?
+        raise ArgumentError, "failed writer event cannot carry a projection" unless projection.nil?
       end
 
       super

@@ -1,6 +1,6 @@
 module Cybort
   module TimeSeriesSchema
-    VERSION = 1
+    VERSION = 2
 
     DDL = <<~SQL
       CREATE TABLE IF NOT EXISTS time_series_schema_migrations (
@@ -60,6 +60,11 @@ module Cybort
         committed_at_us INTEGER NOT NULL,
         imported_series_count INTEGER NOT NULL,
         imported_observation_count INTEGER NOT NULL,
+        inserted_observation_count INTEGER NOT NULL DEFAULT 0,
+        duplicate_observation_count INTEGER NOT NULL DEFAULT 0,
+        unchanged_observation_count INTEGER NOT NULL DEFAULT 0,
+        changed_observation_count INTEGER NOT NULL DEFAULT 0,
+        deleted_observation_count INTEGER NOT NULL DEFAULT 0,
         stored_series_count INTEGER NOT NULL,
         stored_observation_count INTEGER NOT NULL,
         sync_state_json TEXT,
@@ -94,7 +99,21 @@ module Cybort
 
     def apply(database)
       database.execute_batch(DDL)
+      migrate_v1_to_v2(database)
       database.execute("INSERT OR IGNORE INTO time_series_schema_migrations (version) VALUES (?)", [VERSION])
+    end
+
+    def migrate_v1_to_v2(database)
+      columns = database.execute("PRAGMA table_info(time_series_imports)").map { |row| row.is_a?(Hash) ? row.fetch("name") : row.fetch(1) }
+      {
+        "inserted_observation_count" => "INTEGER NOT NULL DEFAULT 0",
+        "duplicate_observation_count" => "INTEGER NOT NULL DEFAULT 0",
+        "unchanged_observation_count" => "INTEGER NOT NULL DEFAULT 0",
+        "changed_observation_count" => "INTEGER NOT NULL DEFAULT 0",
+        "deleted_observation_count" => "INTEGER NOT NULL DEFAULT 0"
+      }.each do |name, definition|
+        database.execute("ALTER TABLE time_series_imports ADD COLUMN #{name} #{definition}") unless columns.include?(name)
+      end
     end
   end
 end

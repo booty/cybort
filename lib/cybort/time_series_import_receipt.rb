@@ -6,14 +6,20 @@ module Cybort
     attr_reader :instance_id, :import_key, :artifact_digest, :import_mode,
                 :source_started_at, :source_finished_at, :committed_at,
                 :acknowledged_at, :imported_series_count,
-                :imported_observation_count, :stored_series_count,
-                :stored_observation_count, :sync_state, :metadata
+                :imported_observation_count, :inserted_observation_count,
+                :duplicate_observation_count, :unchanged_observation_count,
+                :changed_observation_count, :deleted_observation_count,
+                :stored_series_count, :stored_observation_count, :sync_state,
+                :metadata
 
     def initialize(instance_id:, import_key:, artifact_digest:, import_mode:,
                    source_started_at:, source_finished_at:, committed_at:,
                    imported_series_count:, imported_observation_count:,
                    stored_series_count:, stored_observation_count:, sync_state:,
-                   metadata:, acknowledged_at: nil)
+                   metadata:, inserted_observation_count: nil,
+                   duplicate_observation_count: 0, unchanged_observation_count: 0,
+                   changed_observation_count: 0, deleted_observation_count: 0,
+                   acknowledged_at: nil)
       @instance_id = identifier(instance_id, "instance_id", 256)
       @import_key = identifier(import_key, "import_key", 256)
       unless artifact_digest.is_a?(String) && artifact_digest.match?(DIGEST_PATTERN)
@@ -29,12 +35,20 @@ module Cybort
       @committed_at = time(committed_at, "committed_at")
       @acknowledged_at = acknowledged_at.nil? ? nil : time(acknowledged_at, "acknowledged_at")
       raise ArgumentError, "source_finished_at precedes source_started_at" if @source_finished_at < @source_started_at
-      unless [imported_series_count, imported_observation_count,
+      inserted_observation_count ||= imported_observation_count
+      unless [imported_series_count, imported_observation_count, inserted_observation_count,
+              duplicate_observation_count, unchanged_observation_count,
+              changed_observation_count, deleted_observation_count,
               stored_series_count, stored_observation_count].all? { |count| count.is_a?(Integer) && count >= 0 }
         raise ArgumentError, "counts must be nonnegative integers"
       end
       @imported_series_count = imported_series_count
       @imported_observation_count = imported_observation_count
+      @inserted_observation_count = inserted_observation_count
+      @duplicate_observation_count = duplicate_observation_count
+      @unchanged_observation_count = unchanged_observation_count
+      @changed_observation_count = changed_observation_count
+      @deleted_observation_count = deleted_observation_count
       @stored_series_count = stored_series_count
       @stored_observation_count = stored_observation_count
       @sync_state = sync_state.nil? ? nil : TimeSeriesJSON.validate_metadata!(sync_state)
@@ -54,6 +68,11 @@ module Cybort
         acknowledged_at: TimeSeriesSchema.utc_time(row.fetch("acknowledged_at_us")),
         imported_series_count: row.fetch("imported_series_count"),
         imported_observation_count: row.fetch("imported_observation_count"),
+        inserted_observation_count: row.fetch("inserted_observation_count", row.fetch("imported_observation_count")),
+        duplicate_observation_count: row.fetch("duplicate_observation_count", 0),
+        unchanged_observation_count: row.fetch("unchanged_observation_count", 0),
+        changed_observation_count: row.fetch("changed_observation_count", 0),
+        deleted_observation_count: row.fetch("deleted_observation_count", 0),
         stored_series_count: row.fetch("stored_series_count"),
         stored_observation_count: row.fetch("stored_observation_count"),
         sync_state: row["sync_state_json"] && JSON.parse(row.fetch("sync_state_json")),

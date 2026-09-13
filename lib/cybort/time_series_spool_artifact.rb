@@ -4,11 +4,12 @@ module Cybort
     DIGEST_PATTERN = /\A[0-9a-f]{64}\z/.freeze
 
     attr_reader :path, :instance_id, :import_key, :import_mode, :digest,
-                :series_count, :observation_count, :sync_state,
+                :series_count, :observation_count, :duplicate_observation_count, :sync_state,
                 :source_started_at, :source_finished_at, :metadata
 
     def initialize(path:, instance_id:, import_key:, import_mode:, digest:, series_count:,
-                   observation_count:, sync_state:, source_started_at:, source_finished_at:, metadata:)
+                   observation_count:, duplicate_observation_count: 0, sync_state:,
+                   source_started_at:, source_finished_at:, metadata:)
       validate_path!(path)
       @path = path.dup.freeze
       @instance_id = validate_identifier(instance_id, "instance_id", 256)
@@ -19,6 +20,7 @@ module Cybort
       @digest = digest.dup.freeze
       @series_count = validate_count(series_count, "series_count")
       @observation_count = validate_count(observation_count, "observation_count")
+      @duplicate_observation_count = validate_count(duplicate_observation_count, "duplicate_observation_count")
       @sync_state = TimeSeriesJSON.validate_metadata!(sync_state)
       @source_started_at = validate_time(source_started_at, "source_started_at")
       @source_finished_at = validate_time(source_finished_at, "source_finished_at")

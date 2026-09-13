@@ -74,6 +74,8 @@ class TimeSeriesWriterTest < Minitest::Test
     assert_equal "batch-1", event.import_key
     assert event.receipt
     assert_nil event.error
+    assert_instance_of Cybort::TimeSeriesImportProjection, event.projection
+    assert_equal artifact.observation_count, event.projection.imported
     assert event.frozen?
     assert_equal [artifact], @persistence.imports
   end
@@ -93,6 +95,7 @@ class TimeSeriesWriterTest < Minitest::Test
     assert_equal purge_id, purge.command_id
     assert_equal :purge, purge.phase
     assert_equal :success, purge.result
+    assert_nil purge.projection
     assert_equal ["sensor"], @persistence.deletions
   end
 

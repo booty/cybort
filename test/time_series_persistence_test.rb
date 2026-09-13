@@ -20,14 +20,15 @@ class TimeSeriesPersistenceTest < Minitest::Test
 
   def artifact(instance_id: "sensor", import_key: "batch-1", mode: :append, value: 21.5,
                include_observation: true, key: "reading-1", source_finished_at: @finished,
-               dimensions: { "room" => "office" }, metric_key: "temperature", unit: "Cel")
+               observed_at: @finished, dimensions: { "room" => "office" },
+               metric_key: "temperature", unit: "Cel")
     writer = @factory.open(instance_id: instance_id, import_key: import_key,
                            import_mode: mode, source_started_at: @started)
     writer.register_series(series_key: "temperature", metric_key: metric_key,
                            value_type: :numeric, canonical_unit: unit, dimensions: dimensions)
     if include_observation
       writer.add_observation(series_key: "temperature", source_record_key: key,
-                             observed_at: @finished, numeric_value: value, metadata: {})
+                             observed_at: observed_at, numeric_value: value, metadata: {})
     end
     writer.finalize(sync_state: { "cursor" => import_key }, source_finished_at: source_finished_at,
                     metadata: { "fixture" => true })
@@ -59,14 +60,36 @@ class TimeSeriesPersistenceTest < Minitest::Test
   end
 
   def test_append_upserts_stable_observations_and_preserves_absent_rows
-    @persistence.import(artifact)
-    @persistence.import(artifact(import_key: "additional", key: "reading-2"))
+    first = @persistence.import(artifact)
+    second = @persistence.import(artifact(import_key: "additional", key: "reading-2"))
     replacement = artifact(import_key: "batch-2", value: 22.0, key: "reading-1")
-    @persistence.import(replacement)
+    changed = @persistence.import(replacement)
+    assert_equal [1, 0, 0, 0], [first.inserted_observation_count, first.unchanged_observation_count,
+                                first.changed_observation_count, first.deleted_observation_count]
+    assert_equal [1, 0, 0, 0], [second.inserted_observation_count, second.unchanged_observation_count,
+                                second.changed_observation_count, second.deleted_observation_count]
+    assert_equal [0, 0, 1, 0], [changed.inserted_observation_count, changed.unchanged_observation_count,
+                                changed.changed_observation_count, changed.deleted_observation_count]
     rows = reader.observations_for(series_ids: [series_id], started_at: @started,
                                    ended_at: @finished + 10, limit: 10)
     assert_equal %w[reading-1 reading-2], rows.map(&:source_record_key)
     assert_equal 22.0, rows.first.numeric_value
+  end
+
+  def test_identical_append_conflicts_are_noops_and_preserve_ingested_at
+    first = @persistence.import(artifact)
+    observation_time = @finished
+    before = reader.observations_for(series_ids: [series_id], started_at: @started,
+                                     ended_at: @finished, limit: 1).first.ingested_at
+    @finished += 60
+    second = @persistence.import(artifact(import_key: "same-content", observed_at: observation_time))
+    after = reader.observations_for(series_ids: [series_id], started_at: @started,
+                                    ended_at: @finished, limit: 1).first.ingested_at
+
+    assert_equal 1, first.inserted_observation_count
+    assert_equal 1, second.unchanged_observation_count
+    assert_equal 0, second.changed_observation_count
+    assert_equal before, after
   end
 
   def test_snapshot_replaces_only_the_instance_and_preserves_registered_empty_series

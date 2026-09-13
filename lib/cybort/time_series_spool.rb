@@ -19,6 +19,8 @@ module Cybort
       cleanup_orphans!
     end
 
+    attr_reader :directory
+
     def open(instance_id:, import_key:, import_mode:, source_started_at:)
       validate_identifier!(instance_id, "instance_id", 256)
       validate_identifier!(import_key, "import_key", 256)
@@ -162,6 +164,7 @@ module Cybort
         sync_state_json TEXT,
         source_started_at_us INTEGER NOT NULL,
         source_finished_at_us INTEGER NOT NULL,
+        duplicate_observation_count INTEGER NOT NULL,
         metadata_json TEXT NOT NULL
       );
     SQL
@@ -182,9 +185,11 @@ module Cybort
       @series_definitions = {}
       @series_count = 0
       @observation_count = 0
+      @duplicate_observation_count = 0
       @batch_writes = 0
       @batch_series_keys = []
       @batch_observation_count = 0
+      @batch_duplicate_observation_count = 0
       @in_batch = false
       @closed = false
       open_database!
@@ -255,17 +260,31 @@ module Cybort
         raise ArgumentError, "categorical series require categorical_value"
       end
 
+      values = [
+        series_key, source_record_key, utc_microseconds(observed_at),
+        ended_at && utc_microseconds(ended_at), numeric, categorical, JSON.generate(metadata)
+      ]
       write_started = false
       begin_batch
       write_started = true
-      execute_statement(@insert_observation, [
-        series_key, source_record_key, utc_microseconds(observed_at),
-        ended_at && utc_microseconds(ended_at), numeric, categorical, JSON.generate(metadata)
-      ])
-      @observation_count += 1
-      @batch_observation_count += 1
-      count_batch_write
-      nil
+      execute_statement(@insert_observation, values)
+      if @database.changes == 1
+        @observation_count += 1
+        @batch_observation_count += 1
+        count_batch_write
+        :inserted
+      elsif stored_observation(values) == values
+        @duplicate_observation_count += 1
+        @batch_duplicate_observation_count += 1
+        count_batch_write
+        :duplicate
+      else
+        # The insert was a no-op, so the current batch is still valid. Keep it
+        # open for the caller to abort or finalize without discarding earlier
+        # observations from the batch.
+        write_started = false
+        raise ArgumentError, "source record key maps to different normalized content"
+      end
     rescue SQLite3::ConstraintException => error
       rollback_batch if write_started
       raise ArgumentError, "duplicate source record key or observation constraint: #{error.message}"
@@ -296,6 +315,7 @@ module Cybort
           digest: digest,
           series_count: @series_count,
           observation_count: @observation_count,
+          duplicate_observation_count: @duplicate_observation_count,
           sync_state: sync_state,
           source_started_at: @source_started_at,
           source_finished_at: source_finished_at,
@@ -376,13 +396,14 @@ module Cybort
           series_key, source_record_key, observed_at_us, ended_at_us,
           numeric_value, categorical_value, metadata_json
         ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (series_key, source_record_key) DO NOTHING
       SQL
       @insert_manifest = prepare(<<~SQL)
         INSERT INTO spool_manifest (
           singleton_id, instance_id, import_key, import_mode, series_count,
           observation_count, sync_state_json, source_started_at_us,
-          source_finished_at_us, metadata_json
-        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          source_finished_at_us, duplicate_observation_count, metadata_json
+        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       SQL
     end
 
@@ -420,6 +441,7 @@ module Cybort
       @batch_writes = 0
       @batch_series_keys.clear
       @batch_observation_count = 0
+      @batch_duplicate_observation_count = 0
     end
 
     def rollback_batch
@@ -429,15 +451,28 @@ module Cybort
       @batch_series_keys.each { |series_key| @series_definitions.delete(series_key) }
       @series_count -= @batch_series_keys.length
       @observation_count -= @batch_observation_count
+      @duplicate_observation_count -= @batch_duplicate_observation_count
       @in_batch = false
       @batch_writes = 0
       @batch_series_keys.clear
       @batch_observation_count = 0
+      @batch_duplicate_observation_count = 0
     rescue SQLite3::Exception
       @in_batch = false
       @batch_writes = 0
       @batch_series_keys.clear
       @batch_observation_count = 0
+      @batch_duplicate_observation_count = 0
+    end
+
+    def stored_observation(values)
+      row = @database.get_first_row(<<~SQL, values.first(2))
+        SELECT series_key, source_record_key, observed_at_us, ended_at_us,
+               numeric_value, categorical_value, metadata_json
+        FROM spool_observations
+        WHERE series_key = ? AND source_record_key = ?
+      SQL
+      row
     end
 
     def execute_manifest(sync_state:, source_finished_at:, metadata:)
@@ -445,7 +480,7 @@ module Cybort
         execute_statement(@insert_manifest, [
           @instance_id, @import_key, @import_mode.to_s, @series_count, @observation_count,
           JSON.generate(sync_state), utc_microseconds(@source_started_at),
-          utc_microseconds(source_finished_at), JSON.generate(metadata)
+          utc_microseconds(source_finished_at), @duplicate_observation_count, JSON.generate(metadata)
         ])
       end
     end
@@ -453,13 +488,14 @@ module Cybort
     def validate_manifest!(sync_state:, source_finished_at:, metadata:)
       row = @database.get_first_row(
         "SELECT instance_id, import_key, import_mode, series_count, observation_count,
-                sync_state_json, source_started_at_us, source_finished_at_us, metadata_json
+                sync_state_json, source_started_at_us, source_finished_at_us,
+                duplicate_observation_count, metadata_json
            FROM spool_manifest WHERE singleton_id = 1"
       )
       expected = [
         @instance_id, @import_key, @import_mode.to_s, @series_count, @observation_count,
         JSON.generate(sync_state), utc_microseconds(@source_started_at),
-        utc_microseconds(source_finished_at), JSON.generate(metadata)
+        utc_microseconds(source_finished_at), @duplicate_observation_count, JSON.generate(metadata)
       ]
       raise ArgumentError, "spool manifest is invalid" unless row == expected
     end

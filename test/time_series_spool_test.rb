@@ -81,7 +81,7 @@ class TimeSeriesSpoolTest < Minitest::Test
     writer&.abort
   end
 
-  def test_observation_validation_rejects_unknown_duplicates_wrong_values_and_bad_interval
+  def test_observation_validation_rejects_unknown_wrong_values_and_bad_interval
     writer = open_writer
     register_numeric(writer)
     assert_raises(ArgumentError) { add_numeric(writer, key: "missing", value: 1, ended_at: @started) }
@@ -89,8 +89,9 @@ class TimeSeriesSpoolTest < Minitest::Test
       writer.add_observation(series_key: "unknown", source_record_key: "x", observed_at: @finished,
                             numeric_value: 1, metadata: {})
     end
-    add_numeric(writer)
-    assert_raises(ArgumentError) { add_numeric(writer) }
+    assert_equal :inserted, add_numeric(writer)
+    assert_equal :duplicate, add_numeric(writer)
+    assert_raises(ArgumentError) { add_numeric(writer, value: 22.0) }
     assert_raises(ArgumentError) { add_numeric(writer, ended_at: @started) }
     assert_raises(ArgumentError) do
       writer.add_observation(series_key: "office-temperature", source_record_key: "both",
@@ -101,6 +102,28 @@ class TimeSeriesSpoolTest < Minitest::Test
                             observed_at: @finished, metadata: {})
     end
   ensure
+    writer&.abort
+  end
+
+  def test_identical_observations_are_collapsed_and_conflicting_payloads_fail
+    writer = open_writer
+    register_numeric(writer)
+    first = add_numeric(writer)
+    duplicate = add_numeric(writer)
+
+    assert_equal :inserted, first
+    assert_equal :duplicate, duplicate
+    assert_raises(ArgumentError) { add_numeric(writer, value: 22.0) }
+
+    artifact = writer.finalize(sync_state: {}, source_finished_at: @finished, metadata: {})
+    assert_equal 1, artifact.observation_count
+    assert_equal 1, artifact.duplicate_observation_count
+
+    database = SQLite3::Database.new(artifact.path)
+    assert_equal 1, database.get_first_value("SELECT COUNT(*) FROM spool_observations")
+    assert_equal 1, database.get_first_value("SELECT duplicate_observation_count FROM spool_manifest")
+  ensure
+    database&.close
     writer&.abort
   end
 
