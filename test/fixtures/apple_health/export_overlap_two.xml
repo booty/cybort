@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<HealthData>
+  <ExportDate value="2026-09-12 12:00:00 -0400"/>
+  <Record type="HKQuantityTypeIdentifierStepCount" sourceName="Watch" creationDate="2026-09-10 09:00:00 -0400" startDate="2026-09-10 08:00:00 -0400" endDate="2026-09-10 08:01:00 -0400" value="10.0" unit="count"/>
+  <Record type="HKQuantityTypeIdentifierStepCount" sourceName="Watch" creationDate="2026-09-10 10:00:00 -0400" startDate="2026-09-10 09:00:00 -0400" endDate="2026-09-10 09:01:00 -0400" value="20" unit="count"/>
+</HealthData>

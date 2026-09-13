@@ -1,6 +1,7 @@
 source "https://rubygems.org"
 
 gem "sqlite3"
+gem "bigdecimal"
 gem "tomlrb"
 gem "racc"
 gem "rss"
