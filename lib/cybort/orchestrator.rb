@@ -56,7 +56,8 @@ module Cybort
                    command_runner: nil, dependency_checker: nil,
                    monotonic_clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) },
                    progress: nil, time_series_reader: nil,
-                   time_series_persistence_factory: nil, time_series_spool_factory: nil)
+                   time_series_persistence_factory: nil, time_series_spool_factory: nil,
+                   time_series_startup_error: nil)
       @configuration = configuration
       @persistence = persistence
       @registry = registry
@@ -69,6 +70,8 @@ module Cybort
       @time_series_reader = time_series_reader
       @time_series_persistence_factory = time_series_persistence_factory
       @time_series_spool_factory = time_series_spool_factory
+      @time_series_startup_error = time_series_startup_error
+      @diagnostic_output_error = nil
     end
 
     def run(force_fetch: false)
@@ -114,7 +117,7 @@ module Cybort
         else
           @persistence.context_for(instance_id: instance.id)
         end
-        if result_kinds.fetch(instance.id) == :time_series
+        if result_kinds.fetch(instance.id) == :time_series && !recovery.fetch(:errors).key?(instance.id)
           context.merge(time_series_context_for(instance.id))
         else
           context
@@ -315,11 +318,36 @@ module Cybort
       else
         []
       end
-      pending_receipt_rows = @time_series_reader ? Array(@time_series_reader.pending_receipts) : []
+      pending_receipt_error = nil
+      pending_receipt_rows = if @time_series_reader
+        begin
+          Array(@time_series_reader.pending_receipts)
+        rescue StandardError
+          # A partially initialized or unavailable time-series reader must not
+          # prevent item-only collection. Any durable pending work remains for
+          # the next run to reconcile after startup recovers.
+          pending_receipt_error = TimeSeriesStartupError.new
+          []
+        end
+      else
+        []
+      end
       recovery_instance_ids = (pending_purge_rows.filter_map { |row| recovery_instance_id(row) } +
         pending_receipt_rows.filter_map { |receipt| recovery_instance_id(receipt) }).uniq
       required = result_kinds.value?(:time_series) || !pending_purge_rows.empty? || !pending_receipt_rows.empty?
       return [nil, { blocked_instances: [], errors: {} }] unless required
+
+      if pending_receipt_error
+        return [nil, time_series_startup_recovery(
+          result_kinds, recovery_instance_ids, @time_series_startup_error || pending_receipt_error
+        )]
+      end
+
+      if @time_series_startup_error
+        return [nil, time_series_startup_recovery(
+          result_kinds, recovery_instance_ids, @time_series_startup_error
+        )]
+      end
 
       unless @time_series_reader && @time_series_persistence_factory
         raise ConfigurationError, "time-series collection or recovery requires a reader and persistence factory"
@@ -339,12 +367,24 @@ module Cybort
         return [writer, { blocked_instances: errors.keys.sort.freeze, errors: errors.freeze,
                           writer_failure: startup_error }]
       end
-      recovery = TimeSeriesReconciler.new(
-        main_persistence: @persistence, time_series_reader: @time_series_reader, writer: writer
-      ).run
+      recovery = begin
+        TimeSeriesReconciler.new(
+          main_persistence: @persistence, time_series_reader: @time_series_reader, writer: writer
+        ).run
+      rescue StandardError
+        # The reader is opened before source workers start, but reconciliation
+        # reads it again. A persistent read/decode failure must isolate the
+        # affected recovery and time-series instances just like other startup
+        # failures, while allowing item sources to continue.
+        startup_error = TimeSeriesStartupError.new
+        drain_time_series_recovery_events(completions)
+        return [writer, time_series_startup_recovery(
+          result_kinds, recovery_instance_ids, startup_error
+        )]
+      end
       # Recovery consumes command-specific waiters. Its terminal events are
       # already observed and must not be confused with new source commands.
-      completions.pop(true) until completions.empty?
+      drain_time_series_recovery_events(completions)
       [writer, recovery.merge(writer_failure: nil)]
     rescue Exception # rubocop:disable Lint/RescueException -- startup owns the writer until it returns
       begin
@@ -357,6 +397,21 @@ module Cybort
 
     def time_series_context_for(instance_id)
       @time_series_reader.context_for(instance_id: instance_id)
+    end
+
+    def drain_time_series_recovery_events(completions)
+      completions.pop(true) until completions.empty?
+    end
+
+    def time_series_startup_recovery(result_kinds, recovery_instance_ids, error)
+      blocked_ids = (result_kinds.filter_map do |instance_id, result_kind|
+        instance_id if result_kind == :time_series
+      end + recovery_instance_ids).uniq.sort
+      errors = blocked_ids.each_with_object({}) do |instance_id, blocked|
+        blocked[instance_id] = error
+      end
+      { blocked_instances: errors.keys.sort.freeze, errors: errors.freeze,
+        writer_failure: error }
     end
 
     def recovery_instance_id(value)
@@ -606,6 +661,11 @@ module Cybort
       progress_puts(progress_message(instance, run_status, result))
       run_status
     rescue StandardError => error
+      if error.equal?(@diagnostic_output_error)
+        @diagnostic_output_error = nil
+        raise
+      end
+
       cleanup_failures = if result.is_a?(TimeSeriesFetchResult) && result.artifact
         cleanup_time_series_artifact(result.artifact)
       else
@@ -643,6 +703,9 @@ module Cybort
 
     def progress_puts(message)
       @progress&.puts(message)
+    rescue StandardError => error
+      @diagnostic_output_error = error
+      raise
     end
 
     def cleanup_time_series_artifact(artifact)

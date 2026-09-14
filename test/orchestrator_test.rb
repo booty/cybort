@@ -88,6 +88,19 @@ class OrchestratorTest < Minitest::Test
     end
   end
 
+  class RaisingProgress
+    def initialize(error, raise_on_call: 2)
+      @error = error
+      @raise_on_call = raise_on_call
+      @calls = 0
+    end
+
+    def puts(_message)
+      @calls += 1
+      raise @error if @calls >= @raise_on_call
+    end
+  end
+
   class TimeSeriesMainSpy < PersistenceSpy
     attr_reader :acknowledgements
 
@@ -119,6 +132,31 @@ class OrchestratorTest < Minitest::Test
       {
         series_count: 2, observation_count: 7, last_successful_fetch: @last_successful_fetch,
         sync_state: { cursor: "stored" }
+      }
+    end
+  end
+
+  class FailingPendingReceiptReader
+    attr_reader :calls
+
+    def initialize(receipts:, error:, fail_on_call: 2)
+      @receipts = receipts
+      @error = error
+      @fail_on_call = fail_on_call
+      @calls = 0
+    end
+
+    def pending_receipts
+      @calls += 1
+      raise @error if @calls == @fail_on_call
+
+      @receipts
+    end
+
+    def context_for(instance_id:)
+      {
+        series_count: 0, observation_count: 0, last_successful_fetch: nil,
+        sync_state: nil
       }
     end
   end
@@ -617,6 +655,25 @@ class OrchestratorTest < Minitest::Test
     release_and_stop(run_thread, releases)
   end
 
+  def test_diagnostic_output_failure_after_success_does_not_record_fetch_failure
+    registry = Cybort::AdapterRegistry.new
+    registry.register("force", ->(**kwargs) { ForceRecordingAdapter.new(**kwargs, calls: []) })
+    configured = instance("output").tap { |value| value.adapter = "force" }
+    configuration = Struct.new(:instances).new({ "output" => configured })
+    persistence = PersistenceSpy.new
+    sink_error = RuntimeError.new("output sink failed")
+    orchestrator = Cybort::Orchestrator.new(
+      configuration: configuration, persistence: persistence, registry: registry,
+      http_client: nil, progress: RaisingProgress.new(sink_error)
+    )
+
+    raised = assert_raises(RuntimeError) { orchestrator.run(force_fetch: true) }
+
+    assert_equal 1, persistence.writes.length
+    assert_empty persistence.failures
+    assert_same sink_error, raised
+  end
+
   def test_preserves_launch_error_while_observing_an_earlier_failed_worker
     started = Queue.new
     worker_threads = Queue.new
@@ -1048,6 +1105,121 @@ class OrchestratorTest < Minitest::Test
     refute blocked_status.metadata.key?(:recovery)
   end
 
+  def test_time_series_receipt_reader_failure_isolated_from_item_sources
+    registry = Cybort::AdapterRegistry.new
+    item_calls = []
+    registry.register("force", ->(**kwargs) { ForceRecordingAdapter.new(**kwargs, calls: item_calls) })
+    registry.register("series", ->(spool_factory:, **) { raise "time-series adapter must not be built" }, result_kind: :time_series)
+    item = instance("item").tap { |value| value.adapter = "force" }
+    series = instance("series").tap { |value| value.adapter = "series" }
+    configuration = Struct.new(:instances).new({ item.id => item, series.id => series })
+    main = TimeSeriesMainSpy.new
+    reader_error = RuntimeError.new("pending receipt decode failed")
+    reader = FailingPendingReceiptReader.new(
+      receipts: [pending_receipt_for(series.id)], error: reader_error
+    )
+    canonical = TimeSeriesImportSpy.new(main: main)
+
+    run = Cybort::Orchestrator.new(
+      configuration: configuration,
+      persistence: main,
+      registry: registry,
+      http_client: nil,
+      time_series_reader: reader,
+      time_series_persistence_factory: -> { canonical },
+      time_series_spool_factory: Object.new
+    ).run(force_fetch: true)
+
+    assert_equal :success, run.instances.find { |status| status.instance_id == item.id }.status
+    series_status = run.instances.find { |status| status.instance_id == series.id }
+    assert_equal :failure, series_status.status
+    assert_instance_of Cybort::TimeSeriesStartupError, series_status.error
+    assert_equal [item.id], main.writes.map(&:instance_id)
+    assert_equal [series.id], main.failures.map(&:instance_id)
+    assert_equal [true], item_calls
+    assert_equal 2, reader.calls
+    assert canonical.closed
+  end
+
+  def test_time_series_recovery_drains_committed_purge_event_when_receipt_reread_fails
+    registry = Cybort::AdapterRegistry.new
+    item_calls = []
+    registry.register("force", ->(**kwargs) { ForceRecordingAdapter.new(**kwargs, calls: item_calls) })
+    registry.register("series", ->(**) { raise "time-series adapter must not be built" }, result_kind: :time_series)
+    item = instance("item").tap { |value| value.adapter = "force" }
+    series = instance("series").tap { |value| value.adapter = "series" }
+    configuration = Struct.new(:instances).new({ item.id => item, series.id => series })
+    main = Class.new(TimeSeriesMainSpy) do
+      def pending_time_series_purges
+        [{ "instance_id" => "series" }]
+      end
+
+      def finish_time_series_purge(instance_id:)
+        instance_id
+      end
+    end.new
+    reader = FailingPendingReceiptReader.new(
+      receipts: [], error: RuntimeError.new("second pending receipt decode failed")
+    )
+    canonical = TimeSeriesImportSpy.new(main: main)
+    canonical.define_singleton_method(:delete_instance) { |instance_id:| instance_id }
+
+    run = Cybort::Orchestrator.new(
+      configuration: configuration,
+      persistence: main,
+      registry: registry,
+      http_client: nil,
+      time_series_reader: reader,
+      time_series_persistence_factory: -> { canonical },
+      time_series_spool_factory: Object.new
+    ).run(force_fetch: true)
+
+    assert_equal :success, run.instances.find { |status| status.instance_id == item.id }.status
+    series_status = run.instances.find { |status| status.instance_id == series.id }
+    assert_equal :failure, series_status.status
+    assert_instance_of Cybort::TimeSeriesStartupError, series_status.error
+    assert_equal [item.id], main.writes.map(&:instance_id)
+    assert_equal [series.id], main.failures.map(&:instance_id)
+    assert_equal [true], item_calls
+    assert_equal 2, reader.calls
+    assert canonical.closed
+  end
+
+  def test_initial_time_series_receipt_reader_failure_isolated_from_item_sources
+    registry = Cybort::AdapterRegistry.new
+    item_calls = []
+    registry.register("force", ->(**kwargs) { ForceRecordingAdapter.new(**kwargs, calls: item_calls) })
+    registry.register("series", ->(spool_factory:, **) { raise "time-series adapter must not be built" }, result_kind: :time_series)
+    item = instance("item").tap { |value| value.adapter = "force" }
+    series = instance("series").tap { |value| value.adapter = "series" }
+    configuration = Struct.new(:instances).new({ item.id => item, series.id => series })
+    main = TimeSeriesMainSpy.new
+    reader = FailingPendingReceiptReader.new(
+      receipts: [pending_receipt_for(series.id)],
+      error: RuntimeError.new("initial pending receipt decode failed"),
+      fail_on_call: 1
+    )
+
+    run = Cybort::Orchestrator.new(
+      configuration: configuration,
+      persistence: main,
+      registry: registry,
+      http_client: nil,
+      time_series_reader: reader,
+      time_series_persistence_factory: -> { raise "time-series writer must not start" },
+      time_series_spool_factory: Object.new
+    ).run(force_fetch: true)
+
+    assert_equal :success, run.instances.find { |status| status.instance_id == item.id }.status
+    series_status = run.instances.find { |status| status.instance_id == series.id }
+    assert_equal :failure, series_status.status
+    assert_instance_of Cybort::TimeSeriesStartupError, series_status.error
+    assert_equal [item.id], main.writes.map(&:instance_id)
+    assert_equal [series.id], main.failures.map(&:instance_id)
+    assert_equal [true], item_calls
+    assert_equal 1, reader.calls
+  end
+
   def test_time_series_cache_and_failure_never_submit_imports
     now = Time.utc(2026, 9, 9, 12)
     results = [
@@ -1248,6 +1420,16 @@ class OrchestratorTest < Minitest::Test
       time_series_reader: TimeSeriesReaderSpy.new(last_successful_fetch: last_successful_fetch),
       time_series_persistence_factory: -> { canonical }, time_series_spool_factory: spool_factory
     ).run(force_fetch: force_fetch)
+  end
+
+  def pending_receipt_for(instance_id)
+    now = Time.utc(2026, 9, 9, 12)
+    Cybort::TimeSeriesImportReceipt.new(
+      instance_id: instance_id, import_key: "pending-1", artifact_digest: "0" * 64,
+      import_mode: :append, source_started_at: now, source_finished_at: now,
+      committed_at: now, imported_series_count: 0, imported_observation_count: 0,
+      stored_series_count: 0, stored_observation_count: 0, sync_state: {}, metadata: {}
+    )
   end
 
   def with_time_series_result(series_count: 0, observation_count: 0, result_metadata: {})

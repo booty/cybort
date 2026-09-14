@@ -74,6 +74,12 @@ class CliTest < Minitest::Test
     TOML
   end
 
+  def failing_time_series_persistence(error)
+    Class.new(Cybort::TimeSeriesPersistence) do
+      define_method(:setup!) { raise error }
+    end
+  end
+
   def test_missing_configuration_explains_how_to_initialize_cybort
     Dir.mktmpdir do |directory|
       output = StringIO.new
@@ -145,6 +151,71 @@ class CliTest < Minitest::Test
       refute_empty output.string
       refute_match(/\A\s*\{/, output.string)
       assert output.string.lines.all? { |line| line.end_with?("\n") }
+    end
+  end
+
+  def test_item_connectors_run_when_time_series_storage_is_unavailable
+    Dir.mktmpdir do |directory|
+      root = File.join(directory, ".cybort")
+      write_config(root)
+      output = StringIO.new
+      setup_error = RuntimeError.new("time-series setup unavailable")
+
+      status = with_cybort_constants(
+        TimeSeriesPersistence: failing_time_series_persistence(setup_error)
+      ) do
+        Cybort::CLI.start(
+          ["--force-fetch"], out: output, err: StringIO.new, home: directory,
+          http_client: StubHttpClient.new(RSS_BODY)
+        )
+      end
+
+      payload = JSON.parse(output.string)
+      assert_equal 0, status
+      assert_equal "success", payload.fetch("status")
+      assert_equal "CLI article", payload.fetch("instances").first.fetch("items").first.fetch("title")
+    end
+  end
+
+  def test_time_series_startup_failure_is_reported_without_blocking_item_sources
+    Dir.mktmpdir do |directory|
+      root = File.join(directory, ".cybort")
+      FileUtils.mkdir_p(root)
+      File.write(File.join(root, "cybort.toml"), <<~TOML)
+        schema_version = 1
+
+        [instances.cli_rss]
+        name = "CLI RSS"
+        adapter = "rss"
+        ttl_minutes = 30
+        num_items_to_fetch = 5
+        url = "https://example.test/feed.xml"
+
+        [instances.health]
+        name = "Health"
+        adapter = "apple_health"
+        ttl_minutes = 30
+        num_items_to_fetch = 1
+        directory = "~/Health Exports"
+      TOML
+      output = StringIO.new
+      setup_error = RuntimeError.new("time-series setup unavailable")
+
+      status = with_cybort_constants(
+        TimeSeriesPersistence: failing_time_series_persistence(setup_error)
+      ) do
+        Cybort::CLI.start(
+          ["--force-fetch"], out: output, err: StringIO.new, home: directory,
+          http_client: StubHttpClient.new(RSS_BODY)
+        )
+      end
+
+      payload = JSON.parse(output.string)
+      statuses = payload.fetch("instances").to_h { |instance| [instance.fetch("id"), instance] }
+      assert_equal 1, status
+      assert_equal "success", statuses.fetch("cli_rss").fetch("status")
+      assert_equal "failure", statuses.fetch("health").fetch("status")
+      refute_empty statuses.fetch("health").fetch("error").to_s
     end
   end
 

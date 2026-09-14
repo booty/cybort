@@ -37,6 +37,13 @@ class AppleHealthExportParserTest < Minitest::Test
     assert_equal :unsupported_export_schema, error.safe_metadata.fetch(:category)
   end
 
+  def test_accepts_internal_health_data_dtd
+    summary = parse_fixture("export_entities.xml")
+
+    assert_equal Time.new(2026, 9, 11, 12, 0, 0, "-0400"), summary.exported_at
+    assert_equal 0, summary.top_level_record_count
+  end
+
   def test_rejects_unknown_top_level_wrapper_and_malformed_xml
     schema_error = assert_raises(Cybort::AppleHealthError) { parse_fixture("export_schema_drift.xml") }
     malformed_error = assert_raises(Cybort::AppleHealthError) { parse_fixture("export_malformed.xml") }
@@ -83,6 +90,104 @@ class AppleHealthExportParserTest < Minitest::Test
     assert_equal 1, summary.family_counts.fetch(:specialized)
   end
 
+  def test_ignores_prolog_like_words_in_comments_and_dtd_values
+    xml = <<~XML
+      <?xml version="1.0" encoding="UTF-8"?>
+      <!-- SYSTEM PUBLIC ENTITY % are ordinary comment text -->
+        <!DOCTYPE HealthData [
+        <!ELEMENT HealthData ANY>
+        <!ATTLIST HealthData marker CDATA #IMPLIED>
+      ]>
+      <HealthData>
+        <ExportDate value="2026-09-12 12:00:00 +0000" note="SYSTEM PUBLIC ENTITY %"/>
+      </HealthData>
+    XML
+
+    summary = parse_xml_with_io(ChunkedIO.new(xml, 1))
+
+    assert_equal Time.utc(2026, 9, 12, 12), summary.exported_at
+    assert_equal 0, summary.top_level_record_count
+  end
+
+  def test_rejects_external_doctype_across_chunk_boundaries
+    xml = <<~XML
+      <?xml version="1.0" encoding="UTF-8"?>
+      <!DOCTYPE HealthData SYSTEM "file:///private/apple-health-secret">
+      <HealthData>
+        <ExportDate value="2026-09-12 12:00:00 +0000"/>
+      </HealthData>
+    XML
+
+    error = assert_raises(Cybort::AppleHealthError) do
+      parse_xml_with_io(ChunkedIO.new(xml, 1))
+    end
+
+    assert_equal :unsafe_xml, error.safe_metadata.fetch(:category)
+    refute_includes error.message, "apple-health-secret"
+  end
+
+  def test_rejects_entity_declaration_across_chunk_boundaries
+    xml = <<~XML
+      <?xml version="1.0" encoding="UTF-8"?>
+      <!DOCTYPE HealthData [<!ENTITY secret "unsafe">]>
+      <HealthData>
+        <ExportDate value="2026-09-12 12:00:00 +0000"/>
+      </HealthData>
+    XML
+
+    error = assert_raises(Cybort::AppleHealthError) do
+      parse_xml_with_io(ChunkedIO.new(xml, 2))
+    end
+
+    assert_equal :unsafe_xml, error.safe_metadata.fetch(:category)
+  end
+
+  def test_ignores_brackets_inside_dtd_comments
+    xml = <<~XML
+      <?xml version="1.0" encoding="UTF-8"?>
+      <!DOCTYPE HealthData [<!-- [ ] [ --><!ELEMENT HealthData ANY>]>
+      <HealthData>
+        <ExportDate value="2026-09-12 12:00:00 +0000"/>
+      </HealthData>
+    XML
+
+    summary = parse_xml_with_io(ChunkedIO.new(xml, 1))
+
+    assert_equal Time.utc(2026, 9, 12, 12), summary.exported_at
+  end
+
+  def test_rejects_entity_after_a_bracket_bearing_dtd_comment
+    xml = <<~XML
+      <?xml version="1.0" encoding="UTF-8"?>
+      <!DOCTYPE HealthData [<!-- [ ] [ --><!ENTITY secret "unsafe">]>
+      <HealthData>
+        <ExportDate value="2026-09-12 12:00:00 +0000"/>
+      </HealthData>
+    XML
+
+    error = assert_raises(Cybort::AppleHealthError) do
+      parse_xml_with_io(ChunkedIO.new(xml, 1))
+    end
+
+    assert_equal :unsafe_xml, error.safe_metadata.fetch(:category)
+  end
+
+  def test_rejects_unmatched_dtd_quote
+    xml = <<~XML
+      <?xml version="1.0" encoding="UTF-8"?>
+      <!DOCTYPE HealthData [<!ATTLIST HealthData marker CDATA "unterminated>]
+      <HealthData>
+        <ExportDate value="2026-09-12 12:00:00 +0000"/>
+      </HealthData>
+    XML
+
+    error = assert_raises(Cybort::AppleHealthError) do
+      parse_xml_with_io(ChunkedIO.new(xml, 2))
+    end
+
+    assert_equal :unsafe_xml, error.safe_metadata.fetch(:category)
+  end
+
   private
 
   def fixture(name)
@@ -100,11 +205,15 @@ class AppleHealthExportParserTest < Minitest::Test
   end
 
   def parse_xml(xml)
+    parse_xml_with_io(StringIO.new(xml))
+  end
+
+  def parse_xml_with_io(io)
     factory = Cybort::TimeSeriesSpoolFactory.new(directory: @spools)
     summary = nil
     factory.open(instance_id: "health", import_key: "inline", import_mode: :append,
                  source_started_at: Time.utc(2026, 9, 13, 12)) do |writer|
-      summary = @parser.parse(StringIO.new(xml), spool_writer: writer)
+      summary = @parser.parse(io, spool_writer: writer)
     end
     summary
   end
@@ -121,5 +230,27 @@ class AppleHealthExportParserTest < Minitest::Test
       artifact = writer.finalize(sync_state: {}, source_finished_at: Time.utc(2026, 9, 13, 12, 1), metadata: {})
     end
     [summary, artifact]
+  end
+
+  class ChunkedIO
+    def initialize(value, chunk_size)
+      @io = StringIO.new(value)
+      @chunk_size = chunk_size
+    end
+
+    def read(length = nil, outbuf = nil)
+      requested = [length || @chunk_size, @chunk_size].min
+      chunk = @io.read(requested)
+      if outbuf && chunk
+        outbuf.replace(chunk)
+        outbuf
+      else
+        chunk
+      end
+    end
+
+    def eof?
+      @io.eof?
+    end
   end
 end

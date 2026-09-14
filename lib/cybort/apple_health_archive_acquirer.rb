@@ -13,9 +13,11 @@ module Cybort
   class AppleHealthArchiveAcquirer
     ARCHIVE_PREFIX = "cybort-apple-health-archive-"
     HELPER_PATH = File.expand_path("../../script/apple_health_archive_copy_helper.rb", __dir__)
+    STALE_ORPHAN_AGE_SECONDS = 3600
     MAX_REQUEST_BYTES = 16 * 1024
     MAX_RESPONSE_BYTES = 16 * 1024
     MAX_COMPRESSED_BYTES = 4 * 1024 * 1024 * 1024
+    PROCESS_REAP_GRACE_SECONDS = 0.1
 
     def initialize(temp_directory:, wall_clock: -> { Time.now.utc },
                    monotonic_clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) },
@@ -30,6 +32,7 @@ module Cybort
       @destination_directories = {}
       validate_constructor!
       prepare_temp_directory!
+      cleanup_orphans!
     end
 
     def validate_directory(path)
@@ -180,16 +183,19 @@ module Cybort
     end
 
     def cleanup_orphans!
+      cutoff = wall_time - STALE_ORPHAN_AGE_SECONDS
       Dir.each_child(@temp_directory) do |name|
         next unless name.start_with?(ARCHIVE_PREFIX)
 
         path = File.join(@temp_directory, name)
         begin
           stat = File.lstat(path)
-          if stat.file? && !stat.symlink? && stat.uid == Process.uid && (stat.mode & 0o022).zero?
+          if stale_artifact?(stat, cutoff) && stat.file? && !stat.symlink? &&
+             stat.uid == Process.uid && (stat.mode & 0o022).zero?
             FileUtils.rm_f(path)
-          elsif stat.directory? && !stat.symlink? && stat.uid == Process.uid && (stat.mode & 0o077).zero?
-            cleanup_orphan_directory(path)
+          elsif stale_artifact?(stat, cutoff) && stat.directory? && !stat.symlink? &&
+                stat.uid == Process.uid && (stat.mode & 0o077).zero?
+            cleanup_orphan_directory(path, cutoff)
           end
         rescue Errno::ENOENT
           next
@@ -222,7 +228,7 @@ module Cybort
       request_writer.close
       response = wait_for_response(response_reader, pid, deadline, candidate_ordinal: candidate_ordinal)
       response_reader.close
-      _, status = wait_for_process(pid)
+      _, status = wait_for_process(pid, deadline: deadline)
       reaped = true
       ensure_before_deadline!(deadline, candidate_ordinal: candidate_ordinal)
       raise_error(:acquisition, :archive_changed_during_acquisition,
@@ -236,14 +242,22 @@ module Cybort
       request_writer&.close unless request_writer&.closed?
       response_reader&.close unless response_reader&.closed?
       response_writer&.close unless response_writer&.closed?
-      terminate_process(pid) unless reaped
+      terminate_process(pid, deadline: deadline) unless reaped
     end
 
     def run_injected_supervisor(source_path:, target_path:, captured_stat:, deadline:, candidate_ordinal:)
-      response = @process_supervisor.call(
-        source_path: source_path, target_path: target_path,
-        captured_stat: captured_stat, deadline: deadline
-      )
+      worker = Thread.new do
+        Thread.current.report_on_exception = false
+        @process_supervisor.call(
+          source_path: source_path, target_path: target_path,
+          captured_stat: captured_stat, deadline: deadline
+        )
+      end
+      remaining = deadline - monotonic_time
+      timeout! if remaining <= 0
+      worker.join(remaining)
+      timeout! if worker.alive?
+      response = worker.value
       unless response.is_a?(Hash)
         raise_error(:acquisition, :archive_changed_during_acquisition,
                     candidate_ordinal: candidate_ordinal)
@@ -257,6 +271,9 @@ module Cybort
     rescue StandardError
       raise_error(:acquisition, :archive_changed_during_acquisition,
                   candidate_ordinal: candidate_ordinal)
+    ensure
+      worker&.kill if worker&.alive?
+      worker&.join(0.01)
     end
 
     def wait_for_response(reader, _pid, deadline, candidate_ordinal:)
@@ -315,7 +332,6 @@ module Cybort
 
       write_all(io, [encoded.bytesize].pack("N"), deadline: deadline)
       write_all(io, encoded, deadline: deadline)
-      io.flush
     end
 
     def read_frame(io, maximum_bytes, deadline: nil)
@@ -335,7 +351,12 @@ module Cybort
       result = +"".b
       while result.bytesize < length
         wait_for_io(io, deadline)
-        chunk = io.read(length - result.bytesize)
+        chunk = if io.respond_to?(:read_nonblock)
+                  io.read_nonblock(length - result.bytesize, exception: false)
+                else
+                  io.read(length - result.bytesize)
+                end
+        next if chunk == :wait_readable
         raise EOFError unless chunk && !chunk.empty?
 
         result << chunk
@@ -347,7 +368,13 @@ module Cybort
       offset = 0
       while offset < payload.bytesize
         wait_for_writable(io, deadline)
-        written = io.write(payload.byteslice(offset, payload.bytesize - offset))
+        chunk = payload.byteslice(offset, payload.bytesize - offset)
+        written = if io.respond_to?(:write_nonblock)
+                    io.write_nonblock(chunk, exception: false)
+                  else
+                    io.write(chunk)
+                  end
+        next if written == :wait_writable
         raise IOError unless written.is_a?(Integer) && written.positive?
 
         offset += written
@@ -447,14 +474,15 @@ module Cybort
       end
     end
 
-    def cleanup_orphan_directory(directory)
+    def cleanup_orphan_directory(directory, cutoff)
       Dir.each_child(directory) do |name|
         next unless name.start_with?(ARCHIVE_PREFIX)
 
         path = File.join(directory, name)
         begin
           stat = File.lstat(path)
-          FileUtils.rm_f(path) if stat.file? && !stat.symlink? && stat.uid == Process.uid && (stat.mode & 0o022).zero?
+          FileUtils.rm_f(path) if stale_artifact?(stat, cutoff) && stat.file? && !stat.symlink? &&
+                                  stat.uid == Process.uid && (stat.mode & 0o022).zero?
         rescue Errno::ENOENT
           next
         end
@@ -462,6 +490,10 @@ module Cybort
       Dir.rmdir(directory)
     rescue Errno::ENOTEMPTY, Errno::ENOENT
       nil
+    end
+
+    def stale_artifact?(stat, cutoff)
+      stat.mtime <= cutoff
     end
 
     def prepare_temp_directory!
@@ -547,9 +579,16 @@ module Cybort
       raise Timeout::Error
     end
 
-    def wait_for_process(pid)
+    def wait_for_process(pid, deadline: nil)
       loop do
-        return Process.wait2(pid)
+        return Process.wait2(pid) if deadline.nil?
+
+        result = Process.waitpid2(pid, Process::WNOHANG)
+        return result if result
+
+        remaining = deadline - monotonic_time
+        timeout! if remaining <= 0
+        IO.select([], [], [], [remaining, 0.01].min)
       rescue Errno::EINTR
         next
       end
@@ -557,7 +596,7 @@ module Cybort
       raise IOError, "helper process was not waitable"
     end
 
-    def terminate_process(pid)
+    def terminate_process(pid, deadline: nil)
       return unless pid
 
       begin
@@ -565,12 +604,31 @@ module Cybort
       rescue Errno::ESRCH
         nil
       end
-      begin
-        Process.waitpid(pid)
-      rescue Errno::EINTR
-        retry
-      rescue Errno::ECHILD
-        nil
+      reap_deadline = if deadline
+                        [deadline, monotonic_time + PROCESS_REAP_GRACE_SECONDS].min
+                      else
+                        monotonic_time + PROCESS_REAP_GRACE_SECONDS
+                      end
+      loop do
+        begin
+          return if Process.waitpid(pid, Process::WNOHANG)
+        rescue Errno::EINTR
+          next
+        rescue Errno::ECHILD
+          return
+        end
+
+        remaining = reap_deadline - monotonic_time
+        if remaining <= 0
+          begin
+            Process.detach(pid)
+          rescue Errno::ECHILD, Errno::ESRCH
+            nil
+          end
+          return
+        end
+
+        IO.select([], [], [], [remaining, 0.01].min)
       end
     end
 

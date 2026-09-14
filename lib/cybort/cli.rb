@@ -37,22 +37,32 @@ module Cybort
         time_series_path = File.join(root, "cybort-timeseries.sqlite3")
         time_series_bootstrap = nil
         time_series_reader = nil
+        time_series_persistence_factory = nil
+        time_series_spool_factory = nil
+        time_series_startup_error = nil
         begin
           persistence = Persistence.new(File.join(root, "cybort.sqlite3"), clock: clock)
           persistence.setup!
-          time_series_bootstrap = TimeSeriesPersistence.new(time_series_path, clock: clock)
-          time_series_bootstrap.setup!
-          time_series_reader = TimeSeriesReader.new(time_series_path)
-          # The bootstrap handle only creates the schema. Close it before the
-          # writer opens its own writable connection, while retaining the reader
-          # constructed from the initialized database for planning.
-          time_series_bootstrap.close
-          time_series_bootstrap = nil
-          time_series_spool_factory = TimeSeriesSpoolFactory.new(
-            directory: File.join(root, "tmp"), clock: clock
-          )
-          time_series_persistence_factory = lambda do
-            TimeSeriesPersistence.new(time_series_path, clock: clock).tap(&:setup!)
+          begin
+            time_series_bootstrap = TimeSeriesPersistence.new(time_series_path, clock: clock)
+            time_series_bootstrap.setup!
+            time_series_reader = TimeSeriesReader.new(time_series_path)
+            # The bootstrap handle only creates the schema. Close it before the
+            # writer opens its own writable connection, while retaining the reader
+            # constructed from the initialized database for planning.
+            time_series_bootstrap.close
+            time_series_bootstrap = nil
+            time_series_spool_factory = TimeSeriesSpoolFactory.new(
+              directory: File.join(root, "tmp"), clock: clock
+            )
+            time_series_persistence_factory = lambda do
+              TimeSeriesPersistence.new(time_series_path, clock: clock).tap(&:setup!)
+            end
+          rescue StandardError
+            # Time-series storage is an optional pillar for item-only runs. A
+            # typed startup error lets the orchestrator block only time-series
+            # work while retaining pending recovery rows for a later run.
+            time_series_startup_error = TimeSeriesStartupError.new
           end
           command_runner ||= CommandRunner.new(monotonic_clock: monotonic_clock)
           dependency_checker ||= DependencyChecker.new(command_runner: command_runner)
@@ -68,7 +78,8 @@ module Cybort
             progress: options.fetch(:output_mode) == :diagnostic ? out : nil,
             time_series_reader: time_series_reader,
             time_series_persistence_factory: time_series_persistence_factory,
-            time_series_spool_factory: time_series_spool_factory
+            time_series_spool_factory: time_series_spool_factory,
+            time_series_startup_error: time_series_startup_error
           ).run(force_fetch: options.fetch(:force_fetch))
 
           if options.fetch(:output_mode) == :json

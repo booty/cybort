@@ -15,20 +15,20 @@ class RssAdapterTest < Minitest::Test
     end
   end
 
-  def instance(num_items_to_fetch: 2)
+  def instance(num_items_to_fetch: 2, url: "https://example.test/feed.xml")
     Cybort::Configuration::Instance.new(
       id: "rss",
       name: "RSS",
       adapter: "rss",
       ttl_minutes: 30,
       num_items_to_fetch: num_items_to_fetch,
-      options: { url: "https://example.test/feed.xml" }
+      options: { url: url }
     )
   end
 
-  def adapter(body, num_items_to_fetch: 2)
+  def adapter(body, num_items_to_fetch: 2, url: "https://example.test/feed.xml")
     Cybort::Adapters::RSS.new(
-      instance: instance(num_items_to_fetch: num_items_to_fetch),
+      instance: instance(num_items_to_fetch: num_items_to_fetch, url: url),
       context: { items: [], last_successful_fetch: nil, sync_state: nil },
       http_client: StubHttpClient.new(body),
       clock: -> { Time.utc(2026, 8, 16, 12) }
@@ -83,10 +83,34 @@ class RssAdapterTest < Minitest::Test
     assert_equal "Example Atom Feed", item.info.fetch(:feed_title)
   end
 
+  def test_uses_atom_id_before_link_for_canonical_identity
+    body = <<~XML
+      <?xml version="1.0" encoding="UTF-8"?>
+      <feed xmlns="http://www.w3.org/2005/Atom">
+        <title>Example Atom Feed</title>
+        <entry>
+          <id>tag:example.test,2026:stable-entry</id>
+          <title>Edited article</title>
+          <link href="https://example.test/edited-link"/>
+          <updated>2026-08-16T11:00:00Z</updated>
+        </entry>
+      </feed>
+    XML
+
+    result = adapter(body).fetch
+
+    assert result.success?
+    assert_equal "tag:example.test,2026:stable-entry", result.items.first.canonical_id
+  end
+
   def test_malformed_feed_is_a_failure
-    result = adapter("<rss><channel>").fetch
+    secret = "token=super-secret"
+    result = adapter("<rss><channel>#{secret}", url: "https://user:password@example.test/feed?#{secret}").fetch
 
     refute result.success?
-    assert_instance_of RSS::NotWellFormedError, result.error
+    assert_instance_of Cybort::RSSParseError, result.error
+    refute_includes result.error.message, secret
+    refute_includes result.metadata.to_s, secret
+    refute_includes result.metadata.to_s, "password"
   end
 end

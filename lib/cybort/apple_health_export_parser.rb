@@ -74,13 +74,17 @@ module Cybort
 
     def parse_reader(reader, handler)
       parser = Nokogiri::XML::SAX::Parser.new(handler)
-      parser.parse_io(PrologGuard.new(reader)) do |context|
+      guard = PrologGuard.new(reader)
+      handler.prolog_guard = guard
+      parser.parse_io(guard) do |context|
         context.recovery = false
         context.replace_entities = false
       end
+      raise_guard_error(guard.guard_error) if guard.guard_error
       handler.finish_probe! if handler.probe_mode?
       handler
     rescue AppleHealthError
+      raise_guard_error(guard.guard_error) if guard&.guard_error
       raise
     rescue ProbeComplete
       raise
@@ -92,6 +96,12 @@ module Cybort
       raise AppleHealthError.new(phase: :parse, category: :malformed_xml)
     rescue StandardError
       raise AppleHealthError.new(phase: :parse, category: :malformed_xml)
+    end
+
+    def raise_guard_error(error)
+      raise AppleHealthError.new(
+        phase: :parse, category: error.category, limit_name: error.limit_name
+      )
     end
 
     class CountingIO
@@ -120,6 +130,8 @@ module Cybort
     end
 
     class PrologGuard
+      attr_reader :guard_error
+
       GuardError = Class.new(StandardError) do
         attr_reader :category, :limit_name
 
@@ -132,22 +144,33 @@ module Cybort
       def initialize(io)
         @io = io
         @before_export_date = true
-        @buffer = +"".b
+        @pre_export_bytes = 0
         @doctype_seen = false
         @dtd_declaration_count = 0
         @dtd_bytes = 0
+        reset_markup
       end
 
       def read(length = nil, outbuf = nil)
         chunk = if length.nil?
                    @io.read
-                 elsif outbuf.nil?
-                   @io.read(length)
                  else
-                   @io.read(length, outbuf)
+                   read_up_to(length)
                  end
         inspect_chunk(chunk) if chunk && !chunk.empty?
-        chunk
+        finish! if chunk.nil?
+        if outbuf && chunk
+          outbuf.replace(chunk)
+          outbuf
+        else
+          chunk
+        end
+      rescue GuardError => error
+        # Nokogiri treats exceptions raised by an IO callback as a generic
+        # parser error and may swallow the original exception. Retain the
+        # typed guard failure so parse_reader can restore the safe category.
+        @guard_error ||= error
+        nil
       end
 
       def eof?
@@ -156,45 +179,229 @@ module Cybort
 
       private
 
+      def read_up_to(length)
+        result = +"".b
+        while result.bytesize < length
+          chunk = @io.read(length - result.bytesize)
+          break if chunk.nil? || chunk.empty?
+
+          result << chunk
+        end
+        result.empty? ? nil : result
+      end
+
       def inspect_chunk(chunk)
         return unless @before_export_date
 
-        @buffer << chunk
-        if @buffer.bytesize > MAX_PRE_EXPORT_BYTES
-          raise GuardError.new(:record_resource_limit, :pre_export_date_bytes)
-        end
-        reject_forbidden_prolog!
-        if export_date_marker?
-          @before_export_date = false
-          @buffer.clear
+        chunk.each_byte do |byte|
+          @pre_export_bytes += 1
+          if @pre_export_bytes > MAX_PRE_EXPORT_BYTES
+            raise GuardError.new(:record_resource_limit, :pre_export_date_bytes)
+          end
+
+          inspect_byte(byte)
+          break unless @before_export_date
         end
       end
 
-      def reject_forbidden_prolog!
-        return unless @before_export_date
-
-        if @buffer.scan(/<!DOCTYPE\b/i).length > 1
-          raise GuardError.new(:unsafe_xml)
+      def inspect_byte(byte)
+        if @markup_state.nil?
+          start_markup if byte == 60 # <
+          return
         end
-        raise GuardError.new(:unsafe_xml) if @buffer.match?(/<!DOCTYPE\s+(?!HealthData\b)/i)
-        raise GuardError.new(:unsafe_xml) if @buffer.match?(/\b(?:SYSTEM|PUBLIC|ENTITY)\b|%/i)
-        raise GuardError.new(:unsafe_xml) if @buffer.match?(/<\?xml-stylesheet\b|<\?xinclude\b/i)
-        doctype = @buffer.match(/<!DOCTYPE\s+HealthData(?:\s*\[[\s\S]*?\]\s*)?>/im)
-        return unless doctype
 
-        return if @doctype_seen
+        @markup << byte.chr
+        case @markup_state
+        when :unknown
+          classify_markup
+        when :bang
+          classify_bang_markup
+        when :comment
+          reset_markup if @markup.end_with?("-->")
+        when :cdata
+          reset_markup if @markup.end_with?("]]>")
+        when :processing_instruction
+          reset_markup if @markup.end_with?("?>")
+        when :doctype
+          inspect_doctype_byte(byte)
+        when :declaration
+          finish_declaration if declaration_closed?
+        when :tag
+          inspect_tag_byte(byte)
+        end
+      end
 
-        body = doctype[0]
-        @doctype_seen = true
-        declarations = body.scan(/<!\s*([A-Za-z][A-Za-z0-9_-]*)/)
+      def start_markup
+        @markup = +"<".b
+        @markup_state = :unknown
+        @tag_name = +"".b
+        @tag_quote = nil
+        @doctype_bracket_depth = 0
+        @doctype_quote = nil
+        @doctype_comment = false
+        @doctype_marker = +"".b
+      end
+
+      def reset_markup
+        @markup = nil
+        @markup_state = nil
+        @tag_name = nil
+        @tag_quote = nil
+        @doctype_bracket_depth = 0
+        @doctype_quote = nil
+        @doctype_comment = false
+        @doctype_marker = nil
+      end
+
+      def classify_markup
+        return unless @markup.bytesize >= 2
+
+        case @markup.getbyte(1)
+        when 33 # !
+          @markup_state = :bang
+          classify_bang_markup
+        when 63 # ?
+          @markup_state = :processing_instruction
+        else
+          @markup_state = :tag
+          @tag_name = @markup.getbyte(1).chr
+        end
+      end
+
+      def classify_bang_markup
+        if @markup.start_with?("<!--")
+          @markup_state = :comment
+        elsif @markup.start_with?("<![CDATA[")
+          @markup_state = :cdata
+        elsif @markup.downcase.start_with?("<!doctype")
+          raise GuardError.new(:unsafe_xml) if @doctype_seen
+
+          @doctype_seen = true
+          @markup_state = :doctype
+          @dtd_bytes += @markup.bytesize
+        elsif possible_markup_prefix?("<!--") || possible_markup_prefix?("<![CDATA[") ||
+              possible_markup_prefix?("<!DOCTYPE")
+          # Keep collecting until the markup kind is unambiguous. This is
+          # deliberately scoped to markup beginning with "<!"; text and
+          # attribute values are never inspected as prolog declarations.
+        else
+          @markup_state = :declaration
+          finish_declaration if declaration_closed?
+        end
+      end
+
+      def possible_markup_prefix?(token)
+        token.downcase.start_with?(@markup.downcase)
+      end
+
+      def inspect_doctype_byte(byte)
+        account_dtd_byte!
+
+        if @doctype_comment
+          append_doctype_marker(byte)
+          if @doctype_marker.end_with?("-->")
+            @doctype_comment = false
+            @doctype_marker.clear
+          end
+          return
+        end
+
+        if @doctype_quote
+          @doctype_quote = nil if byte == @doctype_quote
+          @doctype_marker.clear
+          return
+        end
+
+        if QUOTE_BYTES.include?(byte)
+          @doctype_quote = byte
+          @doctype_marker.clear
+        else
+          append_doctype_marker(byte)
+          if @doctype_marker.end_with?("<!--")
+            @doctype_comment = true
+            @doctype_marker.clear
+            return
+          end
+        end
+
+        unless @doctype_quote
+          if byte == 91 # [
+            @doctype_bracket_depth += 1
+          elsif byte == 93 # ]
+            @doctype_bracket_depth -= 1 if @doctype_bracket_depth.positive?
+          elsif byte == 62 && @doctype_bracket_depth.zero? # >
+            validate_doctype!(@markup)
+            reset_markup
+            return
+          end
+        end
+      end
+
+      def append_doctype_marker(byte)
+        @doctype_marker << byte.chr
+        @doctype_marker = @doctype_marker.byteslice(-4, 4) if @doctype_marker.bytesize > 4
+      end
+
+      def account_dtd_byte!
+        @dtd_bytes += 1
+        raise GuardError.new(:record_resource_limit, :dtd_bytes) if @dtd_bytes > MAX_DTD_BYTES
+      end
+
+      def finish!
+        return unless @markup_state == :doctype
+
+        # A DOCTYPE that never reached its closing delimiter is unsafe even if
+        # Nokogiri later reports it as merely malformed. In particular, do not
+        # let an unfinished quote or comment suppress DTD validation.
+        raise GuardError.new(:unsafe_xml)
+      end
+
+      def inspect_tag_byte(byte)
+        if @tag_quote
+          @tag_quote = nil if byte == @tag_quote
+          return
+        end
+        if QUOTE_BYTES.include?(byte)
+          @tag_quote = byte
+          return
+        end
+
+        if @tag_name && @tag_name.bytesize.positive? && @tag_name.bytesize < MAX_NAME_BYTES &&
+           ![9, 10, 13, 32, 47, 62].include?(byte)
+          @tag_name << byte.chr
+          return
+        end
+
+        if @tag_name == EXPORT_DATE_NAME && [9, 10, 13, 32, 47, 62].include?(byte)
+          @before_export_date = false
+          reset_markup
+          return
+        end
+        reset_markup if byte == 62 # >
+      end
+
+      def declaration_closed?
+        @markup.end_with?(">")
+      end
+
+      def finish_declaration
+        return unless declaration_closed?
+        raise GuardError.new(:unsafe_xml) if @markup.match?(/\A<!\s*ENTITY\b/i)
+
+        reset_markup
+      end
+
+      def validate_doctype!(body)
+        clean = strip_quoted_and_comments(body)
+        match = clean.match(/\A<!DOCTYPE\s+([A-Za-z_:][A-Za-z0-9_.:-]*)([\s\S]*)>\z/i)
+        raise GuardError.new(:unsafe_xml) unless match && match[1].casecmp?(ROOT_NAME)
+        raise GuardError.new(:unsafe_xml) if clean.match?(/\b(?:SYSTEM|PUBLIC|ENTITY)\b|%/i)
+
+        declarations = clean.scan(/<!\s*([A-Za-z][A-Za-z0-9_-]*)/)
         declarations = declarations.reject { |declaration| declaration.fetch(0).casecmp?("DOCTYPE") }
         @dtd_declaration_count += declarations.length
-        @dtd_bytes += body.bytesize
         if @dtd_declaration_count > MAX_DTD_DECLARATIONS
           raise GuardError.new(:record_resource_limit, :dtd_declarations)
-        end
-        if @dtd_bytes > MAX_DTD_BYTES
-          raise GuardError.new(:record_resource_limit, :dtd_bytes)
         end
         declarations.each do |declaration|
           next if SAFE_DTD_DECLARATION_NAMES.include?(declaration.fetch(0).upcase)
@@ -203,67 +410,31 @@ module Cybort
         end
       end
 
-      def export_date_marker?
+      def strip_quoted_and_comments(body)
+        result = +"".b
         index = 0
-        length = @buffer.bytesize
-        while index < length
-          if starts_with_at?("<!--", index)
-            closing = @buffer.index("-->", index + 4)
-            return false unless closing
+        quote = nil
+        while index < body.bytesize
+          if quote
+            quote = nil if body.getbyte(index) == quote
+            result << 32
+            index += 1
+          elsif body.byteslice(index, 4) == "<!--"
+            closing = body.index("-->", index + 4)
+            raise GuardError.new(:unsafe_xml) unless closing
+
+            (closing + 3 - index).times { result << 32 }
             index = closing + 3
-          elsif starts_with_at?("<![CDATA[", index)
-            closing = @buffer.index("]]>", index + 9)
-            return false unless closing
-            index = closing + 3
-          elsif starts_with_at?("<?", index)
-            closing = @buffer.index("?>", index + 2)
-            return false unless closing
-            index = closing + 2
-          elsif starts_with_at?("<!DOCTYPE", index) || starts_with_at?("<!doctype", index)
-            closing = doctype_end(index)
-            return false unless closing
-            index = closing + 1
-          elsif QUOTE_BYTES.include?(@buffer.getbyte(index))
-            quote = @buffer.getbyte(index)
-            closing = index + 1
-            closing += 1 while closing < length && @buffer.getbyte(closing) != quote
-            return false if closing >= length
-            index = closing + 1
-          elsif starts_with_at?("<ExportDate", index)
-            following = @buffer.getbyte(index + 11)
-            return true if following.nil? || [9, 10, 13, 32, 47, 62].include?(following)
+          elsif QUOTE_BYTES.include?(body.getbyte(index))
+            quote = body.getbyte(index)
+            result << 32
             index += 1
           else
+            result << body.getbyte(index)
             index += 1
           end
         end
-        false
-      end
-
-      def starts_with_at?(text, index)
-        @buffer.byteslice(index, text.bytesize) == text
-      end
-
-      def doctype_end(index)
-        cursor = index + 2
-        bracket_depth = 0
-        quote = nil
-        while cursor < @buffer.bytesize
-          byte = @buffer.getbyte(cursor)
-          if quote
-            quote = nil if byte == quote
-          elsif byte == 34 || byte == 39
-            quote = byte
-          elsif byte == 91
-            bracket_depth += 1
-          elsif byte == 93
-            bracket_depth -= 1 if bracket_depth.positive?
-          elsif byte == 62 && bracket_depth.zero?
-            return cursor
-          end
-          cursor += 1
-        end
-        nil
+        result.force_encoding(Encoding::UTF_8)
       end
     end
 
@@ -273,6 +444,7 @@ module Cybort
     class Handler < Nokogiri::XML::SAX::Document
       attr_reader :exported_at, :top_level_record_count, :imported_record_count,
                   :duplicate_record_count, :distinct_series_count, :family_counts
+      attr_writer :prolog_guard
 
       def initialize(mode:, spool_writer: nil)
         @mode = mode
@@ -367,15 +539,15 @@ module Cybort
       end
 
       def warning(*_args)
-        raise_error(:malformed_xml)
+        raise_parser_error(:malformed_xml)
       end
 
       def error(*_args)
-        raise_error(:malformed_xml)
+        raise_parser_error(:malformed_xml)
       end
 
       def fatal_error(*_args)
-        raise_error(:malformed_xml)
+        raise_parser_error(:malformed_xml)
       end
 
       def finish_probe!
@@ -570,6 +742,15 @@ module Cybort
       def raise_error(category, limit_name = nil)
         phase = category == :invalid_record ? :normalize : :parse
         raise AppleHealthError.new(phase: phase, category: category, limit_name: limit_name)
+      end
+
+      def raise_parser_error(category)
+        guard_error = @prolog_guard&.guard_error
+        if guard_error
+          raise_error(guard_error.category, guard_error.limit_name)
+        else
+          raise_error(category)
+        end
       end
     end
   end

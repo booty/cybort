@@ -1,4 +1,5 @@
 require "bigdecimal"
+require "date"
 require "digest"
 require "time"
 
@@ -27,7 +28,9 @@ module Cybort
       raise ArgumentError, "invalid #{field}" unless match
 
       year, month, day, hour, minute, second = match.captures.first(6).map(&:to_i)
-      raise InvalidTimestampError, "invalid #{field}" if hour >= 24 || minute >= 60 || second >= 60
+      unless Date.valid_date?(year, month, day) && hour < 24 && minute < 60 && second < 60
+        raise InvalidTimestampError, "invalid #{field}"
+      end
       fraction = match[7].to_s
       nanoseconds = fraction.empty? ? 0 : fraction.ljust(9, "0").to_i
       offset = match[8]

@@ -4,6 +4,31 @@ This file records dated implementation discoveries and gotchas that are not
 architectural decisions. Each entry should include evidence and a status so a
 future agent can distinguish observed behavior from an open follow-up.
 
+## 2026-09-14 — Source-boundary failures stay typed, bounded, and isolated
+
+**Status:** Implemented and offline-verified.
+
+**Observation:** Apple Health prolog inspection must track actual markup across
+input boundaries, while archive startup cleanup removes only stale,
+reserved-prefix regular artifacts. Archive IPC reads, writes, injected helper
+calls, and helper reaping now honor the acquisition deadline. RSS/GitHub parser
+failures are typed without retaining raw parser causes, diagnostic sink failures
+cannot be mistaken for failed persistence, and time-series startup or repeated
+pending-receipt reader failures block only time-series/recovery work while item
+connectors continue.
+
+**Evidence:** Focused parser, archive, adapter, orchestrator, CLI,
+configuration, canonical, and persistence tests; `bundle exec rake test` passed
+with 565 runs, 3,213 assertions, 0 failures, 0 errors, and 0 skips.
+
+**Impact:** Ordinary source values and fresh temporary artifacts remain usable;
+unsafe declarations, stale leftovers, malformed responses, blocking helpers,
+and unavailable time-series storage fail within their typed boundaries without
+leaking source content or creating contradictory fetch history.
+
+**Next action:** Keep Apple Health and authenticated connector live smoke gates
+separate from these offline guarantees.
+
 ## 2026-09-14 — Lifecycle reset identity and private installation modes
 
 **Status:** Implemented and offline-verified in focused lifecycle tests.

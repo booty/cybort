@@ -34,6 +34,44 @@ module Cybort
     end
   end
 
+  class RSSParseError < SourceError
+    CATEGORIES = %i[invalid_feed invalid_shape].freeze
+
+    attr_reader :safe_metadata
+
+    def initialize(category:)
+      category = category.to_sym if category.respond_to?(:to_sym)
+      raise ArgumentError, "unsupported RSS parse error category" unless CATEGORIES.include?(category)
+
+      @safe_metadata = { source: :rss, category: category }.freeze
+      super("RSS feed could not be processed")
+    end
+  end
+  RssParseError = RSSParseError
+
+  class GitHubApiError < SourceError
+    CATEGORIES = %i[invalid_json invalid_shape].freeze
+
+    attr_reader :safe_metadata
+
+    def initialize(category:)
+      category = category.to_sym if category.respond_to?(:to_sym)
+      raise ArgumentError, "unsupported GitHub API error category" unless CATEGORIES.include?(category)
+
+      @safe_metadata = { source: :github_api, category: category }.freeze
+      super("GitHub response could not be processed")
+    end
+  end
+
+  class TimeSeriesStartupError < SourceError
+    attr_reader :safe_metadata
+
+    def initialize
+      @safe_metadata = { source: :time_series, category: :startup_unavailable }.freeze
+      super("time-series storage is unavailable")
+    end
+  end
+
   class GmailApiError < SourceError
     OPERATIONS = %i[credentials token list get].freeze
     HINTS = {

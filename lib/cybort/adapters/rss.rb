@@ -21,17 +21,27 @@ module Cybort
       def fetch_from_source
         url = instance.options.fetch(:url)
         response = http_client.get(url)
-        feed = ::RSS::Parser.parse(response.body, false)
-        items = feed.items.first(instance.num_items_to_fetch).map { |entry| item_from(entry, feed, url) }
+        feed = parse_feed(response.body)
+        items = begin
+          feed.items.first(instance.num_items_to_fetch).map { |entry| item_from(entry, feed) }
+        rescue StandardError
+          raise RSSParseError.new(category: :invalid_shape), cause: nil
+        end
 
         {
           items: items,
           sync_state: {},
-          metadata: { url: url, status: response.status }
+          metadata: { status: response.status }
         }
       end
 
-      def item_from(entry, feed, url)
+      def parse_feed(body)
+        ::RSS::Parser.parse(body, false)
+      rescue StandardError
+        raise RSSParseError.new(category: :invalid_feed), cause: nil
+      end
+
+      def item_from(entry, feed)
         title = text_value(entry.title).to_s
         link = entry_link(entry)
         remote_created_at = entry_date(entry)
@@ -45,7 +55,7 @@ module Cybort
           remote_created_at: remote_created_at,
           title: title,
           body: entry_body(entry),
-          info: { feed_title: feed_title(feed), feed_url: url }
+          info: { feed_title: feed_title(feed) }
         )
       end
 
@@ -92,15 +102,16 @@ module Cybort
       end
 
       def entry_guid(entry)
-        guid = if entry.respond_to?(:guid)
-                 entry.guid
-               elsif entry.respond_to?(:about)
-                 entry.about
-               elsif entry.respond_to?(:dc_identifier)
-                 entry.dc_identifier
-               end
-        value = guid.respond_to?(:content) ? guid.content : guid
-        value.to_s unless value.nil? || value.to_s.empty?
+        values = []
+        values << entry.id if entry.respond_to?(:id)
+        values << entry.guid if entry.respond_to?(:guid)
+        values << entry.about if entry.respond_to?(:about)
+        values << entry.dc_identifier if entry.respond_to?(:dc_identifier)
+        values.each do |candidate|
+          value = candidate.respond_to?(:content) ? candidate.content : candidate
+          return value.to_s unless value.nil? || value.to_s.empty?
+        end
+        nil
       end
     end
   end

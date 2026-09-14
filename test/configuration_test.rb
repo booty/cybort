@@ -172,4 +172,50 @@ class ConfigurationTest < Minitest::Test
       assert_includes error.message, "ttl_minutes"
     end
   end
+
+  def test_malformed_instance_tables_raise_validation_error
+    malformed = [
+      { schema_version: 1, instances: [] },
+      { schema_version: 1, instances: { example: "not a table" } }
+    ]
+
+    malformed.each do |data|
+      assert_raises(Cybort::ValidationError) { Cybort::Configuration.new(data) }
+    end
+  end
+
+  def test_rejects_non_finite_ttl_values
+    data = {
+      schema_version: 1,
+      instances: {
+        example: {
+          name: "Example", adapter: "rss", ttl_minutes: Float::INFINITY,
+          num_items_to_fetch: 1, url: "https://example.test/feed.xml"
+        }
+      }
+    }
+
+    assert_raises(Cybort::ValidationError) { Cybort::Configuration.new(data) }
+  end
+
+  def test_rejects_unsafe_instance_ids_names_and_adapters
+    fields = [
+      ["bad/id", { name: "Example", adapter: "rss" }],
+      ["example", { name: "bad/name", adapter: "rss" }],
+      ["example", { name: "Example", adapter: "rss\n" }]
+    ]
+
+    fields.each do |id, values|
+      data = {
+        schema_version: 1,
+        instances: {
+          id => values.merge(
+            ttl_minutes: 30, num_items_to_fetch: 1, url: "https://example.test/feed.xml"
+          )
+        }
+      }
+
+      assert_raises(Cybort::ValidationError) { Cybort::Configuration.new(data) }
+    end
+  end
 end

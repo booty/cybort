@@ -79,5 +79,15 @@ class GithubAdapterTest < Minitest::Test
     assert_includes result.error.message, "GitHub unavailable"
     assert_empty result.items
   end
-end
 
+  def test_invalid_json_is_a_sanitized_typed_failure
+    secret = "token=super-secret"
+    result = adapter(body: "#{secret} not json").fetch
+
+    refute result.success?
+    assert_instance_of Cybort::GitHubApiError, result.error
+    assert_equal :invalid_json, result.error.safe_metadata.fetch(:category)
+    refute_includes result.error.message, secret
+    refute_includes result.metadata.to_s, secret
+  end
+end

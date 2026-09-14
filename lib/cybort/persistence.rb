@@ -369,7 +369,7 @@ module Cybort
     end
 
     def update_instance_state(result, last_successful_fetch:, updated_at:)
-      changes = @database.execute(
+      @database.execute(
         <<~SQL,
           UPDATE adapter_instances
           SET last_successful_fetch = ?, sync_state_json = ?, updated_at = ?
@@ -380,7 +380,7 @@ module Cybort
          timestamp(updated_at),
          result.instance_id]
       )
-      raise ValidationError, "unknown adapter instance: #{result.instance_id}" if changes == 0
+      raise ValidationError, "unknown adapter instance: #{result.instance_id}" if @database.changes.zero?
     end
 
     def update_time_series_instance_state(receipt, last_successful_fetch:, updated_at:)

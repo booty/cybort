@@ -45,5 +45,8 @@ class AppleHealthCanonicalTest < Minitest::Test
   def test_invalid_decimal_and_timestamp_are_rejected
     assert_raises(ArgumentError) { Cybort::AppleHealthCanonical.parse_decimal("NaN") }
     assert_raises(ArgumentError) { Cybort::AppleHealthCanonical.parse_timestamp("2026-01-01T00:00:00", field: :start_date) }
+    assert_raises(Cybort::AppleHealthCanonical::InvalidTimestampError) do
+      Cybort::AppleHealthCanonical.parse_timestamp("2026-02-30T00:00:00Z", field: :start_date)
+    end
   end
 end

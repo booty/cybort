@@ -35,8 +35,12 @@ module Cybort
             "Authorization" => "Bearer #{token}"
           }
         )
-        notifications = JSON.parse(response.body)
-        items = notifications.first(instance.num_items_to_fetch).map { |notification| item_from(notification) }
+        notifications = parse_notifications(response.body)
+        items = begin
+          notifications.first(instance.num_items_to_fetch).map { |notification| item_from(notification) }
+        rescue StandardError
+          raise GitHubApiError.new(category: :invalid_shape), cause: nil
+        end
 
         {
           items: items,
@@ -47,6 +51,17 @@ module Cybort
 
       def token
         instance.options.fetch(:token, "").to_s
+      end
+
+      def parse_notifications(body)
+        notifications = JSON.parse(body)
+        raise TypeError unless notifications.is_a?(Array)
+
+        notifications
+      rescue JSON::ParserError, TypeError
+        raise GitHubApiError.new(category: :invalid_json), cause: nil
+      rescue StandardError
+        raise GitHubApiError.new(category: :invalid_shape), cause: nil
       end
 
       def item_from(notification)
