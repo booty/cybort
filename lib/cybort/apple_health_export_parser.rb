@@ -24,6 +24,8 @@ module Cybort
     MAX_DTD_DECLARATIONS = 10_000
     MAX_DTD_BYTES = 1 * 1024 * 1024
     MAX_DISTINCT_SERIES = 100_000
+    SAFE_DTD_DECLARATION_NAMES = %w[DOCTYPE ELEMENT ATTLIST].freeze
+    QUOTE_BYTES = [34, 39].freeze
     ALLOWED_TOP_LEVEL = %w[
       ExportDate Me Record Correlation Workout ActivitySummary ClinicalRecord
       Electrocardiogram Audiogram VisionPrescription WorkoutRoute ClinicalDocument
@@ -195,7 +197,7 @@ module Cybort
           raise GuardError.new(:record_resource_limit, :dtd_bytes)
         end
         declarations.each do |declaration|
-          next if %w[DOCTYPE ELEMENT ATTLIST].include?(declaration.fetch(0).upcase)
+          next if SAFE_DTD_DECLARATION_NAMES.include?(declaration.fetch(0).upcase)
 
           raise GuardError.new(:unsafe_xml)
         end
@@ -221,7 +223,7 @@ module Cybort
             closing = doctype_end(index)
             return false unless closing
             index = closing + 1
-          elsif [34, 39].include?(@buffer.getbyte(index))
+          elsif QUOTE_BYTES.include?(@buffer.getbyte(index))
             quote = @buffer.getbyte(index)
             closing = index + 1
             closing += 1 while closing < length && @buffer.getbyte(closing) != quote

@@ -259,9 +259,9 @@ module Cybort
                   candidate_ordinal: candidate_ordinal)
     end
 
-    def wait_for_response(reader, pid, deadline, candidate_ordinal:)
+    def wait_for_response(reader, _pid, deadline, candidate_ordinal:)
       read_frame(reader, MAX_RESPONSE_BYTES, deadline: deadline)
-    rescue JSON::ParserError, EOFError, IOError
+    rescue JSON::ParserError, IOError
       raise_error(:acquisition, :archive_changed_during_acquisition,
                   candidate_ordinal: candidate_ordinal)
     end
@@ -298,7 +298,7 @@ module Cybort
       projections = [response["opened_stat"], response["finished_stat"], response["path_stat"]]
       expected = stat_projection(captured_stat)
       target_projection = response["target_stat"]
-      unless stat.file? && !stat.symlink? && projections.all? { |projection| projection == expected } &&
+      unless stat.file? && !stat.symlink? && projections.all?(expected) &&
              target_projection == stat_projection(stat) &&
              destination_bytes == bytes && destination_digest == expected_digest
         raise_error(:acquisition, :archive_changed_during_acquisition,

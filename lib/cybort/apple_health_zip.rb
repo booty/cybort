@@ -60,7 +60,7 @@ module Cybort
       raise
     rescue CountingStream::ResourceLimitExceeded
       raise_error(:zip, :zip_resource_limit, limit_name: :export_xml_bytes)
-    rescue Zip::Error, Zlib::Error, EOFError, IOError, SystemCallError, ArgumentError, EncodingError
+    rescue Zip::Error, Zlib::Error, IOError, SystemCallError, ArgumentError, EncodingError
       raise_error(:zip, :invalid_zip)
     end
 
@@ -99,7 +99,7 @@ module Cybort
       raise
     rescue CountingStream::ResourceLimitExceeded
       raise_error(:zip, :zip_resource_limit, limit_name: :export_xml_bytes)
-    rescue Zip::Error, Zlib::Error, EOFError, IOError, SystemCallError, ArgumentError, EncodingError
+    rescue Zip::Error, Zlib::Error, IOError, SystemCallError, ArgumentError, EncodingError
       raise_error(:zip, :invalid_zip)
     end
 
@@ -248,7 +248,7 @@ module Cybort
       raw = name.to_s
       raw = raw.dup.force_encoding(Encoding::UTF_8)
       invalid_name(ordinal) unless raw.valid_encoding? && raw.bytesize <= @limits.fetch(:entry_name_bytes)
-      invalid_name(ordinal) if raw.include?("\0") || raw.include?("\\") || raw.match?(%r{\A/}) || raw.match?(/\A[A-Za-z]:/)
+      invalid_name(ordinal) if raw.include?("\0") || raw.include?("\\") || raw.start_with?('/') || raw.match?(/\A[A-Za-z]:/)
       parts = raw.split("/", -1)
       if parts.last == "" && directory
         parts.pop

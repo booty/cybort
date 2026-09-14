@@ -16,7 +16,7 @@ module Cybort
         directory = options[:directory]
         unless directory.is_a?(String) && directory.valid_encoding? &&
                directory.bytesize.between?(3, 4_096) &&
-               (directory.start_with?("/") || directory.start_with?("~/")) &&
+               (directory.start_with?("/", "~/")) &&
                !directory.match?(/[\x00-\x1f\x7f$`*?\[\]{}]/)
           raise ConfigurationError, "apple_health directory must be an absolute or ~/ path"
         end

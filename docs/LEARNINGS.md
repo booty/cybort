@@ -201,3 +201,72 @@ direct-API smoke test when an authorized account is available. Verify token,
 list, and metadata get behavior, granted scope, unchanged read/unread labels,
 cache behavior, and absence of executable dependencies. Record only sanitized
 results.
+
+## 2026-09-13 — Apple Health streaming benchmark is offline-verified at scale
+
+**Status:** Implemented and offline-verified; live export gates open
+
+**Observation:** The synthetic Apple Health benchmark writes XML records directly
+into a ZIP stream, parses with the bounded SAX pipeline, spools into a private
+SQLite database, and appends into canonical SQLite twice. A 99%-overlap append
+produced delta-scale writes with zero changed/deleted observations and stable
+ingestion timestamps for sampled overlap identities. The benchmark reports
+high-water/current RSS separately and records `unavailable` when the host does
+not expose either measurement.
+
+**Evidence:** `bundle exec ruby -Itest test/system/apple_health_system_test.rb`
+passed (1 run, 36 assertions). The 100,000-record command completed with Ruby
+4.0.1, SQLite 3.53.2, rubyzip 3.6.0, Nokogiri 1.19.4, and schema 2: four
+series; 100,002 final observations; first/second archive SHA-256 values
+`8a8302f8a45f6aca68123dfe3126c6876464826576ed3649067b385350c88ed5` and
+`8c602c1ca41f1bf69a486e3ec0004c7a20599b00a73917b6c97cfa091c1e0449`; first/
+second archives of 1,272,403 and 1,259,814 compressed bytes; first/second
+spools of 53,936,128 and 53,444,608
+bytes; final database/WAL of 58,568,704/58,957,232 bytes; SAX/spool durations
+14.7507s/14.6303s; canonical import durations 1.6152s/1.0735s; early/late
+queries 0.001118s/0.008990s; both plans used
+`idx_observations_series_time` (with a temporary B-tree for ordering); RSS was
+unavailable. The second import was 99,002 imported (2 inserted, 99,000
+unchanged, 1 duplicate, 0 changed, 0 deleted), with 99,000 stable, 999
+omitted, 1 corrected, and 1 synthetic insertion case.
+
+The required 1,500,000-record command completed with the same dependency
+versions: four series; 1,500,002 final observations; first/second archive
+SHA-256 values `37d760b3a763bec2de00e5a342bfdf9510dd9a73abaaf4042dd95d596fb6e20c`
+and `aca6aa4e5842b5016060a222967009178262ace5c96ff80df61d6100b37e819a`;
+first/second archives of 19,075,271 and 18,884,680 compressed bytes; XML payloads of 410,501,366 and
+406,397,040 bytes; first/second spools of 807,837,696 and 799,596,544 bytes;
+final database/WAL of 883,720,192/888,943,592 bytes; SAX/spool durations
+312.6768s/263.7063s; canonical import durations 74.3789s/21.7514s; early/late
+queries 0.005152s/0.017604s; both plans used
+`idx_observations_series_time` (with a temporary B-tree for ordering); RSS was
+unavailable. The second import was 1,485,002 imported (2 inserted, 1,485,000
+unchanged, 1 duplicate, 0 changed, 0 deleted), with 1,485,000 stable, 14,999
+omitted, 1 corrected, and 1 synthetic insertion case. The independent generic
+substrate command
+`bundle exec ruby script/benchmark_time_series.rb --observations 1500000
+--output /tmp/cybort-time-series-benchmark-apple-gate-final` also completed:
+spool 197,853,184 bytes, canonical database 278,700,032 bytes, WAL
+280,378,392 bytes, canonical import 6.8970s, and early/late queries
+0.000383s/0.003240s.
+
+The offline release gates `bundle exec rake test` (527 runs, 3,029 assertions)
+and `bundle-audit check --update` (no vulnerabilities) passed. The staged
+`rake quality` task now scans the Apple Health production files and reports 13
+behavior-sensitive pre-existing offenses (broad cleanup rescues, scheduler
+compatibility, duplicate rescue branches, and intentionally non-super
+constructors); those were not autocorrected. The 10 mechanical offenses were
+autocorrected or safely extracted, and the new benchmark/test files have no
+remaining Task 9 quality findings.
+
+**Impact:** Apple-scale imports are demonstrably append-only and indexed in the
+offline synthetic path without imposing duration or memory thresholds. The
+benchmark keeps generated records out of arrays/DOMs and writes temporary
+spools under its private output directory; production imports continue to use
+the configured non-iCloud temporary directory.
+
+**Next action:** Run a permitted live export gate. Confirm the real export’s
+record families, repeated-export identity behavior, archive acquisition, and
+whether its pretty-print whitespace stays within the parser’s 1 MiB cumulative
+non-record-text limit. Do not treat synthetic timings or unavailable RSS as
+production guarantees.

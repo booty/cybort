@@ -41,7 +41,7 @@ module Cybort
                          hours = hours.to_i
                          minutes = minutes.to_i
                          raise ArgumentError, "invalid #{field}" if hours >= 24 || minutes >= 60
-                         sign * (hours * 60 + minutes)
+                         sign * ((hours * 60) + minutes)
                        end
       local = Time.new(year, month, day, hour, minute,
                        second + Rational(nanoseconds, 1_000_000_000), offset_minutes * 60)

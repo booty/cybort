@@ -219,7 +219,10 @@ module Cybort
           )
           plans << {
             "name" => window.fetch(:name),
-            "details" => plan_rows.map { |row| row.fetch(3).to_s.byteslice(0, 256) }
+            "details" => plan_rows.map { |row| row.fetch(3).to_s.byteslice(0, 256) },
+            "uses_series_time_index" => plan_rows.any? do |row|
+              row.fetch(3).to_s.include?("idx_observations_series_time")
+            end
           }
         end
         { results: results, plans: plans, sqlite_version: sqlite_version }
