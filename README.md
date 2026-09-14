@@ -55,9 +55,19 @@ databases. Reset choices also operate on both databases. Collection, reset,
 backup, and purge use one installation lock, so a lifecycle command exits when
 another operation is active instead of guessing whether the files are idle.
 
-Existing installations require an explicit choice before they are reset. The
-backup options create a timestamped `.tar.gz` archive containing the complete
-installation first; a reset without a backup requires a second confirmation.
+Existing Cybort installations require an explicit choice before they are reset.
+For safety, a nonempty directory is recognized only when it contains a valid
+Cybort control database (`cybort.sqlite3` with the Cybort schema); an unrelated
+directory, including one selected through a symlink, is refused and left
+untouched. Older installations with only the original control database remain
+eligible for the lifecycle flow, and a missing time-series database is repaired
+when a lifecycle command initializes it.
+
+The backup options create a timestamped `.tar.gz` archive containing the
+complete installation first; the archive is mode `0600`. A reset without a
+backup requires a second confirmation. Option 2 preserves the existing
+configuration; options 3 and 4 replace it with a fresh editable
+`schema_version = 1` file.
 
 ### Installation files
 
@@ -65,12 +75,18 @@ The default installation has this layout:
 
 ```text
 ~/.cybort/
-  cybort.toml                  configuration
-  cybort.sqlite3               items, source state, and fetch history
-  cybort-timeseries.sqlite3    series, observations, and import receipts
+  cybort.toml                  configuration (mode 0600)
+  cybort.sqlite3               items, source state, and fetch history (0600)
+  cybort-timeseries.sqlite3    series, observations, and import receipts (0600)
   tmp/                         disposable time-series spools
-~/.cybort.lock                 lifecycle lock (sibling file)
+~/.cybort.lock                 lifecycle lock (sibling file, mode 0600)
 ```
+
+The installation directory is mode `0700`, and Cybort applies these modes
+explicitly so a permissive process umask cannot expose new data. Lifecycle
+commands repair modes on existing regular installation files for compatibility;
+they refuse symlinked canonical files rather than changing permissions outside
+the installation.
 
 The two SQLite files are one logical installation but do not provide a globally
 atomic cross-file snapshot. Version-one time-series observations are retained

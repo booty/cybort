@@ -28,6 +28,9 @@ module Cybort
                 "Run `bundle exec bin/cybort init` to create it, then edit the config file and run Cybort again."
         end
 
+        InstallationPermissions.ensure_directory!(root)
+        InstallationPermissions.ensure_private_file!(configuration_path)
+
         configuration = Configuration.load(configuration_path)
         adapter_registry = registry || AdapterRegistry.default
         persistence = nil
@@ -100,7 +103,7 @@ module Cybort
           raise cleanup_error if active_error.nil? && cleanup_error
         end
       end
-    rescue ConfigurationError, OptionParser::ParseError, SystemCallError => error
+    rescue ConfigurationError, ValidationError, OptionParser::ParseError, SystemCallError => error
       err.puts error.message
       2
     end
@@ -146,6 +149,8 @@ module Cybort
 
       lock = InstallationLock.new(root)
       lock.synchronize do
+        InstallationPermissions.ensure_directory!(root)
+        InstallationPermissions.ensure_private_file!(File.join(root, "cybort.toml"), allow_missing: true)
         persistence = nil
         time_series_persistence = nil
         begin

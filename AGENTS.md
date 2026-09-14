@@ -16,6 +16,11 @@ invariants and workflow rules here, not session-by-session narration.
 - The default configuration is `~/.cybort/cybort.toml`. A configured source
   instance has a stable ID, display name, adapter type, TTL, and
   `num_items_to_fetch`.
+- The installation root is mode `0700`; its configuration, canonical databases,
+  and reset backup artifacts are mode `0600` regardless of umask. Existing
+  regular installation files are repaired in place, while symlinked canonical
+  files are refused so permission repair cannot modify data outside the
+  installation.
 - `.cybort.example.toml` is the canonical repository template for user
   configuration. When adding or changing a connector, update its commented
   example, placeholders, limits, and authentication caveats in the same

@@ -123,6 +123,10 @@ class CliTest < Minitest::Test
       assert_equal 0, status
       assert_equal "CLI article", JSON.parse(output.string).fetch("instances").first.fetch("items").first.fetch("title")
       assert_path_exists File.join(root, "cybort.sqlite3")
+      assert_equal 0o700, File.stat(root).mode & 0o777
+      assert_equal 0o600, File.stat(File.join(root, "cybort.toml")).mode & 0o777
+      assert_equal 0o600, File.stat(File.join(root, "cybort.sqlite3")).mode & 0o777
+      assert_equal 0o600, File.stat(File.join(root, "cybort-timeseries.sqlite3")).mode & 0o777
     end
   end
 

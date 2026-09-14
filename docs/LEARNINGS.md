@@ -4,6 +4,32 @@ This file records dated implementation discoveries and gotchas that are not
 architectural decisions. Each entry should include evidence and a status so a
 future agent can distinguish observed behavior from an open follow-up.
 
+## 2026-09-14 — Lifecycle reset identity and private installation modes
+
+**Status:** Implemented and offline-verified in focused lifecycle tests.
+
+**Observation:** A nonempty path is eligible for destructive initialization
+only when its regular `cybort.sqlite3` contains the Cybort control schema. This
+preserves older one-database installations while refusing unrelated
+directories, including symlink aliases. Installation roots, configuration,
+canonical databases, and reset tar artifacts are explicitly chmod'd to private
+modes instead of relying on umask. Existing regular files are repaired in
+place; symlinked canonical files are rejected. Full reset choices write a fresh
+editable configuration, while the retain-config choice preserves its bytes.
+
+**Evidence:** `test/installer_test.rb` covers unrelated directories and
+symlinked aliases, reset configuration recreation, mode repair, and mode
+creation under `umask(0)`; `lib/cybort/installation_permissions.rb` centralizes
+the filesystem boundary.
+
+**Impact:** `cybort init` no longer recursively deletes arbitrary nonempty
+directories, and existing installations remain usable after migration to the
+private-mode policy. A missing time-series database remains compatible and is
+created by the normal lifecycle path.
+
+**Next action:** Keep lifecycle mode assertions in the full offline suite when
+future storage files or backup formats are added.
+
 ## 2026-09-10 — Time-series substrate benchmark is streaming at Apple-Health scale
 
 **Status:** Measured; high-water RSS unavailable in this Ruby runtime.

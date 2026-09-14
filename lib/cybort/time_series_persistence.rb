@@ -18,11 +18,12 @@ module Cybort
       @owner_thread = Thread.current
       @path = File.expand_path(path.to_s)
       @clock = clock
+      InstallationPermissions.ensure_private_file!(@path, allow_missing: true)
       @database = SQLite3::Database.new(
         @path, flags: SQLite3::Constants::Open::READWRITE |
                       SQLite3::Constants::Open::CREATE | SQLite3::Constants::Open::URI
       )
-      File.chmod(0o600, @path)
+      InstallationPermissions.ensure_private_file!(@path)
       @database.results_as_hash = true
       @database.busy_timeout(5_000)
       # Canonicalize bounded, flat dimensions during the set-oriented upsert.

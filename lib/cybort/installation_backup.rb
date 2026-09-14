@@ -34,6 +34,10 @@ module Cybort
 
     def create_locked(destination)
       refuse_existing_destination!(destination)
+      if File.directory?(@root)
+        InstallationPermissions.ensure_directory!(@root)
+        InstallationPermissions.ensure_private_file!(File.join(@root, "cybort.toml"), allow_missing: true)
+      end
       FileUtils.mkdir_p(File.dirname(destination))
       temporary = temporary_directory(destination)
       owned_services = []

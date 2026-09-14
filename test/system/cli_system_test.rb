@@ -572,6 +572,25 @@ class CliSystemTest < Minitest::Test
     end
   end
 
+  def test_init_refuses_to_reset_an_unrelated_nonempty_directory
+    Dir.mktmpdir do |directory|
+      path = File.join(directory, "unrelated")
+      FileUtils.mkdir_p(path)
+      marker = File.join(path, "important.txt")
+      File.write(marker, "do not delete")
+      error = StringIO.new
+
+      status = Cybort::CLI.start(
+        ["init", path], out: StringIO.new, err: error, home: directory,
+        input: StringIO.new("4\nRESET\n")
+      )
+
+      assert_equal 2, status
+      assert_equal "do not delete", File.read(marker)
+      assert_includes error.string, "Refusing to reset"
+    end
+  end
+
   def test_one_source_run_returns_json_and_persists_item
     Dir.mktmpdir do |directory|
       write_config(File.join(directory, ".cybort"))

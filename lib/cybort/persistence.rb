@@ -9,9 +9,14 @@ module Cybort
     def initialize(path, clock: -> { Time.now.utc })
       @owner_thread = Thread.current
       @path = File.expand_path(path.to_s)
+      InstallationPermissions.ensure_private_file!(@path, allow_missing: true)
       @database = SQLite3::Database.new(@path)
+      InstallationPermissions.ensure_private_file!(@path)
       @database.busy_timeout(5_000)
       @clock = clock
+    rescue Exception
+      @database&.close
+      raise
     end
 
     def setup!
@@ -116,10 +121,11 @@ module Cybort
     def backup_to(path)
       ensure_owner!
       destination = File.expand_path(path.to_s)
-      raise ValidationError, "backup destination already exists" if File.exist?(destination)
+      raise ValidationError, "backup destination already exists" if File.exist?(destination) || File.symlink?(destination)
 
       FileUtils.mkdir_p(File.dirname(destination))
       @database.execute("VACUUM INTO ?", [destination])
+      InstallationPermissions.ensure_private_file!(destination)
       destination
     end
 
