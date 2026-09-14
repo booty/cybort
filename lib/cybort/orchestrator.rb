@@ -392,9 +392,14 @@ module Cybort
       if result.failure?
         return record_time_series_failure(instance, result, result.error)
       end
-      unless result.source_fetched
+      if result.cached?
         return time_series_status(instance, result, status: :cached)
       end
+      if result.unchanged?
+        @persistence.record_time_series_unchanged(result)
+        return time_series_status(instance, result, status: :success)
+      end
+      raise ValidationError, "expected an imported time-series result" unless result.imported?
 
       command_id = writer.submit_import(result.artifact)
       pending_writer_commands[command_id] = {
@@ -416,11 +421,13 @@ module Cybort
       instance = instances.fetch(command.fetch(:instance_id))
       result = command.fetch(:result)
       if event.phase == :acknowledgement
+        projection = command.fetch(:projection)
         metadata = merge_time_series_cleanup_metadata(
-          result.metadata, time_series_writer, command.fetch(:import_command_id)
+          merge_time_series_projection_metadata(result.metadata, projection),
+          time_series_writer, command.fetch(:import_command_id)
         )
         metadata = metadata.merge(receipt_acknowledgement_pending: true) if event.result == :failure
-        return time_series_status(instance, result, status: :success, metadata: metadata)
+        return time_series_status(instance, result, status: :success, metadata: metadata, projection: projection)
       end
       if event.result == :failure
         return record_time_series_failure(
@@ -432,6 +439,14 @@ module Cybort
       end
 
       begin
+        projection = event.projection
+        unless projection.is_a?(TimeSeriesImportProjection)
+          raise ValidationError, "time-series import event is missing its projection"
+        end
+        if instance.adapter == "apple_health" && (projection.changed.positive? || projection.deleted.positive?)
+          raise ValidationError, "Apple Health append unexpectedly changed or deleted observations"
+        end
+        command = command.merge(projection: projection)
         @persistence.acknowledge_time_series_import(event.receipt)
       rescue StandardError => error
         return record_time_series_failure(
@@ -451,8 +466,9 @@ module Cybort
         return time_series_status(
           instance, result, status: :success,
           metadata: merge_time_series_cleanup_metadata(
-            result.metadata, time_series_writer, command.fetch(:import_command_id)
-          ).merge(receipt_acknowledgement_pending: true)
+            merge_time_series_projection_metadata(result.metadata, command.fetch(:projection)), time_series_writer,
+            command.fetch(:import_command_id)
+          ).merge(receipt_acknowledgement_pending: true), projection: command.fetch(:projection)
         )
       end
       nil
@@ -469,6 +485,11 @@ module Cybort
       merge_time_series_cleanup_metadata(
         metadata, writer, import_command_id, error: error, cleanup_failures: cleanup_failures
       )
+    end
+
+    def merge_time_series_projection_metadata(metadata, projection)
+      projection_names = projection.to_h.keys.map(&:to_s)
+      metadata.reject { |key, _value| projection_names.include?(key.to_s) }.merge(projection.to_h)
     end
 
     def merge_time_series_cleanup_metadata(metadata, writer, import_command_id, error: nil, cleanup_failures: [])
@@ -507,11 +528,12 @@ module Cybort
       status
     end
 
-    def time_series_status(instance, result, status:, metadata: result.metadata)
+    def time_series_status(instance, result, status:, metadata: result.metadata, projection: nil)
       run_status = InstanceRunStatus.new(
         instance_id: instance.id, status: status, source_fetched: result.source_fetched,
-        item_count: 0, series_count: result.series_count,
-        observation_count: result.observation_count, metadata: metadata
+        item_count: 0, series_count: projection ? projection.stored_series : result.series_count,
+        observation_count: projection ? projection.stored_observations : result.observation_count,
+        metadata: metadata
       )
       progress_puts(progress_message(instance, run_status, result))
       run_status

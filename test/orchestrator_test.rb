@@ -27,7 +27,8 @@ class OrchestratorTest < Minitest::Test
 
   class PersistenceSpy
     attr_reader :writes, :failures, :registered, :retention_writes,
-                :planning_context_calls, :hydrated_context_calls, :expiry_calls
+                :planning_context_calls, :hydrated_context_calls, :expiry_calls,
+                :unchanged
 
     def initialize
       @writes = []
@@ -37,6 +38,7 @@ class OrchestratorTest < Minitest::Test
       @planning_context_calls = []
       @hydrated_context_calls = []
       @expiry_calls = []
+      @unchanged = []
     end
 
     def register_instance(instance)
@@ -66,6 +68,11 @@ class OrchestratorTest < Minitest::Test
 
     def record_fetch_failure(result)
       @failures << result
+    end
+
+    def record_time_series_unchanged(result)
+      @unchanged << result
+      true
     end
   end
 
@@ -119,9 +126,10 @@ class OrchestratorTest < Minitest::Test
   class TimeSeriesImportSpy
     attr_reader :imports, :markers, :closed
 
-    def initialize(main:, marker_error: nil)
+    def initialize(main:, marker_error: nil, receipt_counts: {})
       @main = main
       @marker_error = marker_error
+      @receipt_counts = receipt_counts
       @imports = []
       @markers = []
     end
@@ -133,9 +141,14 @@ class OrchestratorTest < Minitest::Test
         artifact_digest: artifact.digest, import_mode: artifact.import_mode,
         source_started_at: artifact.source_started_at, source_finished_at: artifact.source_finished_at,
         committed_at: artifact.source_finished_at, imported_series_count: artifact.series_count,
-        imported_observation_count: artifact.observation_count, stored_series_count: artifact.series_count,
-        stored_observation_count: artifact.observation_count, sync_state: artifact.sync_state,
-        metadata: artifact.metadata
+        imported_observation_count: artifact.observation_count,
+        inserted_observation_count: @receipt_counts.fetch(:inserted, artifact.observation_count),
+        duplicate_observation_count: @receipt_counts.fetch(:duplicate, 0),
+        unchanged_observation_count: @receipt_counts.fetch(:unchanged, 0),
+        changed_observation_count: @receipt_counts.fetch(:changed, 0),
+        deleted_observation_count: @receipt_counts.fetch(:deleted, 0),
+        stored_series_count: artifact.series_count, stored_observation_count: artifact.observation_count,
+        sync_state: artifact.sync_state, metadata: artifact.metadata
       )
     end
 
@@ -1066,6 +1079,65 @@ class OrchestratorTest < Minitest::Test
     end
   end
 
+  def test_time_series_unchanged_records_success_without_writer_commands
+    now = Time.utc(2026, 9, 9, 12)
+    source_result = Cybort::TimeSeriesFetchResult.unchanged(
+      instance_id: "sensor", started_at: now, finished_at: now,
+      metadata: { "candidate_count" => 1 }, series_count: 2, observation_count: 7
+    )
+    main = TimeSeriesMainSpy.new
+    canonical = TimeSeriesImportSpy.new(main: main)
+
+    run = run_time_series_result(source_result, main, canonical)
+
+    assert_equal :success, run.overall_status
+    assert_equal [source_result], main.unchanged
+    assert_empty canonical.imports
+    assert_empty canonical.markers
+    assert_equal 2, run.instances.first.series_count
+    assert_equal 7, run.instances.first.observation_count
+    assert canonical.closed
+  end
+
+  def test_time_series_import_projection_reaches_status_metadata_and_counts
+    with_time_series_result(
+      series_count: 3, observation_count: 5, result_metadata: { "inserted" => 999, "custom" => "ok" }
+    ) do |source_result|
+      main = TimeSeriesMainSpy.new
+      canonical = TimeSeriesImportSpy.new(main: main)
+
+      run = run_time_series_result(source_result, main, canonical)
+
+      status = run.instances.first
+      assert_equal :success, status.status
+      assert_equal 3, status.series_count
+      assert_equal 5, status.observation_count
+      assert_equal 5, status.metadata.fetch(:imported)
+      assert_equal 5, status.metadata.fetch(:inserted)
+      assert_equal 0, status.metadata.fetch(:changed)
+      assert_equal 0, status.metadata.fetch(:deleted)
+      serialized = JSON.parse(JSON.generate(status.to_h))
+      assert_equal 5, serialized.fetch("metadata").fetch("inserted")
+      assert_equal "ok", serialized.fetch("metadata").fetch("custom")
+    end
+  end
+
+  def test_apple_health_rejects_changed_or_deleted_import_projections
+    %i[changed deleted].each do |counter|
+      with_time_series_result(observation_count: counter == :changed ? 1 : 0) do |source_result|
+        main = TimeSeriesMainSpy.new
+        canonical = TimeSeriesImportSpy.new(main: main, receipt_counts: { counter => 1, inserted: 0 })
+
+        run = run_time_series_result(source_result, main, canonical, adapter: "apple_health")
+
+        assert_equal :failure, run.overall_status
+        assert_instance_of Cybort::ValidationError, run.instances.first.error
+        assert_empty main.acknowledgements
+        assert_equal 1, canonical.imports.length
+      end
+    end
+  end
+
   def test_time_series_import_acknowledges_on_caller_before_writer_marker
     with_time_series_result do |source_result|
       main = TimeSeriesMainSpy.new
@@ -1158,16 +1230,17 @@ class OrchestratorTest < Minitest::Test
 
   private
 
-  def run_time_series_result(source_result, main, canonical, force_fetch: true, last_successful_fetch: nil)
+  def run_time_series_result(source_result, main, canonical, force_fetch: true, last_successful_fetch: nil,
+                             adapter: "series_fixture")
     registry = Cybort::AdapterRegistry.new
     spool_factory = Object.new
-    registry.register("series_fixture", ->(context:, spool_factory:, **) {
+    registry.register(adapter, ->(context:, spool_factory:, **) {
       assert_equal 7, context.fetch(:observation_count)
       assert_equal({ cursor: "stored" }, context.fetch(:sync_state))
       refute_nil spool_factory
       FixedResultAdapter.new(result: source_result)
     }, result_kind: :time_series)
-    configured = instance("sensor").tap { |value| value.adapter = "series_fixture" }
+    configured = instance("sensor").tap { |value| value.adapter = adapter }
     Cybort::Orchestrator.new(
       configuration: Struct.new(:instances).new({ "sensor" => configured }),
       persistence: main, registry: registry, http_client: nil,
@@ -1177,18 +1250,19 @@ class OrchestratorTest < Minitest::Test
     ).run(force_fetch: force_fetch)
   end
 
-  def with_time_series_result
+  def with_time_series_result(series_count: 0, observation_count: 0, result_metadata: {})
     Tempfile.create(["cybort-orchestrator-spool", ".sqlite3"]) do |file|
       file.close
       now = Time.utc(2026, 9, 9, 12)
       artifact = Cybort::TimeSeriesSpoolArtifact.new(
         path: file.path, instance_id: "sensor", import_key: "batch-1", import_mode: :append,
-        digest: Digest::SHA256.file(file.path).hexdigest, series_count: 0, observation_count: 0,
+        digest: Digest::SHA256.file(file.path).hexdigest, series_count: series_count,
+        observation_count: observation_count,
         sync_state: {}, source_started_at: now, source_finished_at: now, metadata: {}
       )
       yield Cybort::TimeSeriesFetchResult.success(
         instance_id: "sensor", artifact: artifact, sync_state: {},
-        started_at: now, finished_at: now, source_fetched: true
+        started_at: now, finished_at: now, metadata: result_metadata, source_fetched: true
       )
     end
   end

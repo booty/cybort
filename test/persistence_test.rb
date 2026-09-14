@@ -81,6 +81,16 @@ class PersistenceTest < Minitest::Test
     )
   end
 
+  def unchanged_time_series_result(instance_id: "rss", started_at: Time.utc(2026, 8, 16, 13),
+                                   finished_at: Time.utc(2026, 8, 16, 13, 1),
+                                   series_count: 2, observation_count: 5)
+    Cybort::TimeSeriesFetchResult.unchanged(
+      instance_id: instance_id, started_at: started_at, finished_at: finished_at,
+      metadata: { "candidate_count" => 2, "unchanged" => true },
+      series_count: series_count, observation_count: observation_count
+    )
+  end
+
   def test_setup_creates_schema_and_is_idempotent
     with_database do |path|
       persistence = Cybort::Persistence.new(path)
@@ -217,6 +227,40 @@ class PersistenceTest < Minitest::Test
 
       refute persistence.acknowledge_time_series_import(receipt)
       assert_equal 1, persistence.fetch_runs_for(instance_id: "rss").length
+    end
+  end
+
+  def test_record_time_series_unchanged_preserves_state_and_records_main_history
+    with_database do |path|
+      now = Time.utc(2026, 8, 16, 14)
+      persistence = Cybort::Persistence.new(path, clock: -> { now })
+      persistence.setup!
+      persistence.register_instance(instance)
+      persistence.acknowledge_time_series_import(time_series_receipt(sync_state: { "cursor" => "old" }))
+
+      result = unchanged_time_series_result(finished_at: Time.utc(2026, 8, 16, 15))
+      assert persistence.record_time_series_unchanged(result)
+      assert_equal({ cursor: "old" }, persistence.context_for(instance_id: "rss").fetch(:sync_state))
+      assert_equal now, persistence.context_for(instance_id: "rss").fetch(:last_successful_fetch)
+      run = persistence.fetch_runs_for(instance_id: "rss").last
+      assert_equal ["successful", 0], run.values_at("status", "item_count")
+      metadata = JSON.parse(run.fetch("metadata_json"))
+      assert_equal "time_series", metadata.fetch("result_kind")
+      assert_equal "unchanged", metadata.fetch("outcome")
+      assert_equal 2, persistence.fetch_runs_for(instance_id: "rss").length
+    end
+  end
+
+  def test_record_time_series_unchanged_rejects_other_result_kinds
+    with_database do |path|
+      persistence = Cybort::Persistence.new(path).setup!
+      persistence.register_instance(instance)
+      cached = Cybort::TimeSeriesFetchResult.cached(
+        instance_id: "rss", sync_state: {}, started_at: Time.now.utc,
+        finished_at: Time.now.utc, observation_count: 0
+      )
+      assert_raises(Cybort::ValidationError) { persistence.record_time_series_unchanged(cached) }
+      assert_raises(Cybort::ValidationError) { persistence.record_time_series_unchanged(unchanged_time_series_result(instance_id: "missing")) }
     end
   end
 

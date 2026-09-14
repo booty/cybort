@@ -112,8 +112,25 @@ module Cybort
         "changed_observation_count" => "INTEGER NOT NULL DEFAULT 0",
         "deleted_observation_count" => "INTEGER NOT NULL DEFAULT 0"
       }.each do |name, definition|
-        database.execute("ALTER TABLE time_series_imports ADD COLUMN #{name} #{definition}") unless columns.include?(name)
+        next if columns.include?(name)
+
+        database.execute("ALTER TABLE time_series_imports ADD COLUMN #{name} #{definition}")
       end
+      # Task 2 shipped the v2 columns while the migration marker still read
+      # v1.  Such databases already have every column, but their old rows have
+      # zeroed counters.  A valid v2 row with imported observations cannot have
+      # all five counters at zero, so this predicate safely identifies only
+      # those legacy rows without overwriting real v2 accounting.
+      database.execute(<<~SQL)
+        UPDATE time_series_imports
+        SET inserted_observation_count = imported_observation_count
+        WHERE imported_observation_count > 0
+          AND inserted_observation_count = 0
+          AND duplicate_observation_count = 0
+          AND unchanged_observation_count = 0
+          AND changed_observation_count = 0
+          AND deleted_observation_count = 0
+      SQL
     end
   end
 end

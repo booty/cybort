@@ -20,7 +20,7 @@ class TimeSeriesPersistenceTest < Minitest::Test
 
   def artifact(instance_id: "sensor", import_key: "batch-1", mode: :append, value: 21.5,
                include_observation: true, key: "reading-1", source_finished_at: @finished,
-               observed_at: @finished, dimensions: { "room" => "office" },
+               observed_at: @finished, dimensions: { "room" => "office" }, metadata: { "fixture" => true },
                metric_key: "temperature", unit: "Cel")
     writer = @factory.open(instance_id: instance_id, import_key: import_key,
                            import_mode: mode, source_started_at: @started)
@@ -31,7 +31,7 @@ class TimeSeriesPersistenceTest < Minitest::Test
                              observed_at: observed_at, numeric_value: value, metadata: {})
     end
     writer.finalize(sync_state: { "cursor" => import_key }, source_finished_at: source_finished_at,
-                    metadata: { "fixture" => true })
+                    metadata: metadata)
   end
 
   def second_series_artifact(import_key:, mode: :snapshot)
@@ -55,6 +55,52 @@ class TimeSeriesPersistenceTest < Minitest::Test
     assert_equal 5_000, writer_database.get_first_value("PRAGMA busy_timeout")
     assert_equal 1, writer_database.get_first_value("PRAGMA foreign_keys")
     assert_equal 0o600, File.stat(@path).mode & 0o777
+  ensure
+    database&.close
+  end
+
+  def test_schema_migration_backfills_legacy_zeroed_counters
+    database = SQLite3::Database.new(File.join(@directory, "legacy.sqlite3"))
+    database.execute(<<~SQL)
+      CREATE TABLE time_series_imports (
+        adapter_instance_id TEXT NOT NULL,
+        import_key TEXT NOT NULL,
+        artifact_digest TEXT NOT NULL,
+        import_mode TEXT NOT NULL,
+        source_started_at_us INTEGER NOT NULL,
+        source_finished_at_us INTEGER NOT NULL,
+        committed_at_us INTEGER NOT NULL,
+        imported_series_count INTEGER NOT NULL,
+        imported_observation_count INTEGER NOT NULL,
+        inserted_observation_count INTEGER NOT NULL DEFAULT 0,
+        duplicate_observation_count INTEGER NOT NULL DEFAULT 0,
+        unchanged_observation_count INTEGER NOT NULL DEFAULT 0,
+        changed_observation_count INTEGER NOT NULL DEFAULT 0,
+        deleted_observation_count INTEGER NOT NULL DEFAULT 0,
+        stored_series_count INTEGER NOT NULL,
+        stored_observation_count INTEGER NOT NULL,
+        sync_state_json TEXT,
+        metadata_json TEXT NOT NULL,
+        acknowledged_at_us INTEGER,
+        PRIMARY KEY (adapter_instance_id, import_key)
+      )
+    SQL
+    database.execute(<<~SQL, ["sensor", "legacy", "a" * 64, 3, 3])
+      INSERT INTO time_series_imports (
+        adapter_instance_id, import_key, artifact_digest, import_mode,
+        source_started_at_us, source_finished_at_us, committed_at_us,
+        imported_series_count, imported_observation_count,
+        stored_series_count, stored_observation_count, metadata_json
+      ) VALUES (?, ?, ?, 'append', 1, 2, 2, 1, ?, 1, ?, '{}')
+    SQL
+
+    Cybort::TimeSeriesSchema.migrate_v1_to_v2(database)
+
+    assert_equal [3, 0, 0, 0, 0], database.get_first_row(
+      "SELECT inserted_observation_count, duplicate_observation_count,
+              unchanged_observation_count, changed_observation_count,
+              deleted_observation_count FROM time_series_imports"
+    )
   ensure
     database&.close
   end
@@ -198,6 +244,31 @@ class TimeSeriesPersistenceTest < Minitest::Test
     assert receipt.frozen?
     assert receipt.sync_state.frozen?
     assert_equal({ "cursor" => "next" }, reader.context_for(instance_id: "sensor")[:sync_state])
+  end
+
+  def test_main_history_projects_receipt_counts_without_private_metadata
+    receipt = @persistence.import(artifact(metadata: {
+      "archive_path" => "/private/export.zip", "archive_sha256" => "secret-digest"
+    }))
+    main = Cybort::Persistence.new(File.join(@directory, "main.sqlite3"), clock: @clock)
+    main.setup!
+    main.register_instance(
+      Cybort::Configuration::Instance.new(
+        id: "sensor", name: "Sensor", adapter: "apple_health", ttl_minutes: 30,
+        num_items_to_fetch: 5, options: {}
+      )
+    )
+
+    assert main.acknowledge_time_series_import(receipt)
+    metadata = JSON.parse(main.fetch_runs_for(instance_id: "sensor").last.fetch("metadata_json"))
+    assert_equal({
+      "imported" => 1, "inserted" => 1, "duplicate" => 0, "unchanged" => 0,
+      "changed" => 0, "deleted" => 0, "stored_series" => 1, "stored_observations" => 1
+    }, metadata.fetch("projection"))
+    refute_includes metadata.to_s, "archive_path"
+    refute_includes metadata.to_s, "secret-digest"
+  ensure
+    main&.close
   end
 
   def test_only_changed_normalized_dimensions_advance_series_update_time

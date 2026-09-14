@@ -180,6 +180,40 @@ module Cybort
       end
     end
 
+    def record_time_series_unchanged(result)
+      ensure_owner!
+      unless result.is_a?(TimeSeriesFetchResult) && result.unchanged?
+        raise ValidationError, "expected an unchanged time-series result"
+      end
+
+      persistence_now = @clock.call
+      successful_fetch_at = [result.finished_at, persistence_now].min
+      @database.transaction do
+        @database.execute(
+          <<~SQL,
+            UPDATE adapter_instances
+            SET last_successful_fetch = ?, updated_at = ?
+            WHERE id = ?
+          SQL
+          [timestamp(successful_fetch_at), timestamp(persistence_now), result.instance_id]
+        )
+        raise ValidationError, "unknown adapter instance: #{result.instance_id}" if @database.changes.zero?
+
+        metadata = result.metadata.merge("result_kind" => "time_series", "outcome" => "unchanged")
+        @database.execute(
+          <<~SQL,
+            INSERT INTO fetch_runs (
+              instance_id, status, started_at, finished_at, item_count,
+              error_message, metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+          SQL
+          [result.instance_id, "successful", timestamp(result.started_at),
+           timestamp(successful_fetch_at), 0, nil, JSON.generate(metadata)]
+        )
+      end
+      true
+    end
+
     def time_series_import_acknowledged?(instance_id:, import_key:)
       ensure_owner!
       !@database.get_first_value(
@@ -364,7 +398,11 @@ module Cybort
     end
 
     def insert_time_series_fetch_run(receipt, finished_at:)
-      metadata = receipt.metadata.merge("result_kind" => "time_series")
+      projection = TimeSeriesImportProjection.from_receipt(receipt)
+      metadata = {
+        "result_kind" => "time_series", "outcome" => "imported",
+        "projection" => projection.to_h.transform_keys(&:to_s)
+      }
       @database.execute(
         <<~SQL,
           INSERT INTO fetch_runs (
