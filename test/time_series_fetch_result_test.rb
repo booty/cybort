@@ -25,6 +25,8 @@ class TimeSeriesFetchResultTest < Minitest::Test
       started_at: @started, finished_at: @finished, metadata: {}, source_fetched: true
     )
     assert result.success?
+    assert result.imported?
+    assert_equal :imported, result.kind
     assert_same @artifact, result.artifact
     assert_equal 2, result.observation_count
     assert result.frozen?
@@ -38,6 +40,7 @@ class TimeSeriesFetchResultTest < Minitest::Test
     cached = Cybort::TimeSeriesFetchResult.cached(instance_id: "sensor", sync_state: {},
       started_at: @started, finished_at: @finished, observation_count: 2, series_count: 1)
     assert cached.success?
+    assert cached.cached?
     assert_equal 2, cached.observation_count
     assert_equal 1, cached.series_count
   end
@@ -46,6 +49,7 @@ class TimeSeriesFetchResultTest < Minitest::Test
     failure = Cybort::TimeSeriesFetchResult.failure(instance_id: "sensor", error: StandardError.new("x"),
       started_at: @started, finished_at: @finished)
     assert failure.failure?
+    assert_equal :failure, failure.kind
     assert_equal 0, failure.observation_count
     assert_equal 0, failure.series_count
     assert_nil failure.sync_state
@@ -53,6 +57,37 @@ class TimeSeriesFetchResultTest < Minitest::Test
       Cybort::TimeSeriesFetchResult.new(instance_id: "sensor", artifact: @artifact, sync_state: nil,
         started_at: @started, finished_at: @finished, metadata: {}, source_fetched: false,
         error: StandardError.new("x"), series_count: 0, observation_count: 0)
+    end
+  end
+
+  def test_unchanged_constructor_is_source_fetched_without_artifact_or_state
+    unchanged = Cybort::TimeSeriesFetchResult.unchanged(
+      instance_id: "sensor", started_at: @started, finished_at: @finished,
+      metadata: { "archive_unchanged" => true }, series_count: 1, observation_count: 2
+    )
+    assert unchanged.success?
+    assert unchanged.unchanged?
+    assert unchanged.source_fetched
+    assert_nil unchanged.artifact
+    assert_nil unchanged.sync_state
+  end
+
+  def test_result_kind_rejects_inconsistent_shapes
+    assert_raises(ArgumentError) do
+      Cybort::TimeSeriesFetchResult.new(
+        instance_id: "sensor", artifact: nil, sync_state: {},
+        started_at: @started, finished_at: @finished, metadata: {},
+        source_fetched: true, error: nil, series_count: 0, observation_count: 0,
+        kind: :unchanged
+      )
+    end
+    assert_raises(ArgumentError) do
+      Cybort::TimeSeriesFetchResult.new(
+        instance_id: "sensor", artifact: nil, sync_state: nil,
+        started_at: @started, finished_at: @finished, metadata: {},
+        source_fetched: false, error: nil, series_count: 0, observation_count: 0,
+        kind: :imported
+      )
     end
   end
 

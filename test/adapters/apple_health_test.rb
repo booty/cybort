@@ -32,6 +32,8 @@ class AppleHealthAdapterTest < Minitest::Test
       monotonic_clock: -> { 0.0 }, spool_factory: spool
     )
     assert_same spool, adapter.spool_factory
-    assert_raises(NotImplementedError) { adapter.fetch }
+    result = adapter.fetch(fetch_mode: :cached)
+    assert result.cached?
+    assert_equal :cached, result.kind
   end
 end

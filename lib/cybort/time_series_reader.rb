@@ -36,10 +36,19 @@ module Cybort
          AND receipt.import_key = state.latest_import_key
         WHERE state.adapter_instance_id = ?
       SQL
+      import_keys = @database.execute(<<~SQL, [instance_id]).map do |import_row|
+        SELECT import_key
+        FROM time_series_imports
+        WHERE adapter_instance_id = ?
+        ORDER BY import_key
+      SQL
+        import_row.fetch("import_key").dup.freeze
+      end.freeze
       TimeSeriesJSON.deep_freeze(
         series_count: row ? row.fetch("stored_series_count") : 0,
         observation_count: row ? row.fetch("stored_observation_count") : 0,
-        sync_state: row && row["sync_state_json"] && JSON.parse(row.fetch("sync_state_json"))
+        sync_state: row && row["sync_state_json"] && JSON.parse(row.fetch("sync_state_json")),
+        import_keys: import_keys
       )
     end
 

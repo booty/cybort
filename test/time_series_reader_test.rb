@@ -98,7 +98,8 @@ class TimeSeriesReaderTest < Minitest::Test
     assert_empty @reader.series_for(after_id: first.id, limit: 1)
     assert_empty @reader.series_for(instance_id: "other", limit: 1)
     assert_empty @reader.series_for(metric_key: "other", limit: 1)
-    assert_equal({ series_count: 0, observation_count: 0, sync_state: nil }, @reader.context_for(instance_id: "missing"))
+    assert_equal({ series_count: 0, observation_count: 0, sync_state: nil, import_keys: [] }, @reader.context_for(instance_id: "missing"))
+    assert_equal ["batch-1"], @reader.context_for(instance_id: "sensor").fetch(:import_keys)
   end
 
   def test_read_only_open_does_not_create_a_missing_database
