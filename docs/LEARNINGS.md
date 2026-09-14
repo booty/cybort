@@ -265,8 +265,10 @@ benchmark keeps generated records out of arrays/DOMs and writes temporary
 spools under its private output directory; production imports continue to use
 the configured non-iCloud temporary directory.
 
-**Next action:** Run a permitted live export gate. Confirm the real export’s
-record families, repeated-export identity behavior, archive acquisition, and
-whether its pretty-print whitespace stays within the parser’s 1 MiB cumulative
-non-record-text limit. Do not treat synthetic timings or unavailable RSS as
-production guarantees.
+**Next action:** Run the permitted live-export shape, repeat-import, and
+operational gates with a legitimate export. Confirm the real export’s record
+families, repeated-export identity behavior, archive acquisition, and whether
+its pretty-print whitespace stays within the parser’s 1 MiB cumulative
+non-record-text limit. Also exercise source replacement/disappearance,
+interruption, disk-space, backup, purge, and reconciliation recovery. Do not
+treat synthetic timings or unavailable RSS as production guarantees.

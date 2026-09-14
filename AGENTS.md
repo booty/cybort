@@ -92,6 +92,17 @@ invariants and workflow rules here, not session-by-session narration.
   resolved before outbound subreddit calls. A real authenticated Reddit smoke
   test remains a release gate for token scopes, response shapes, rate headers,
   documented paths, and unchanged qualifying unread state with `mark=false`.
+  `apple_health` is a separate experimental append-only time-series adapter
+  limited to one instance per installation and one person's dedicated
+  immediate-child ZIP directory. Archive fingerprints identify imports and
+  normalized content-derived keys identify observations; omitted or corrected
+  records never trigger snapshot deletion, and only explicit purge deletes
+  canonical observations. Archive copies, ZIP/XML streaming, and disposable
+  spools stay under the local installation `tmp/` directory rather than an
+  iCloud-backed source directory. Source, device, profile, and free-form
+  metadata values are identity-only and never readable provenance. Keep the
+  adapter experimental until sanitized real-export shape, repeat-import, and
+  operational gates pass.
   Scheduling, dashboards, and analysis/LLM workflows are not currently
   implemented or architected.
 - The collector CLI supports `init`, a normal fetch, and `--force-fetch`.

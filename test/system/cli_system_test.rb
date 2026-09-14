@@ -1,4 +1,5 @@
 require "test_helper"
+require_relative "../support/apple_health_fixture"
 require "support/gmail_http_fixture"
 
 class CliSystemTest < Minitest::Test
@@ -257,6 +258,32 @@ class CliSystemTest < Minitest::Test
       num_items_to_fetch = 5
       url = "#{RSS_URL}"
     TOML
+  end
+
+  def write_apple_health_config(root, source_directory)
+    FileUtils.mkdir_p(root)
+    File.write(File.join(root, "cybort.toml"), <<~TOML)
+      schema_version = 1
+
+      [instances.personal_apple_health]
+      name = "Personal Apple Health"
+      adapter = "apple_health"
+      ttl_minutes = 1440
+      num_items_to_fetch = 1
+      directory = #{JSON.generate(source_directory)}
+    TOML
+  end
+
+  def apple_health_fixture_xml
+    <<~XML
+      <?xml version="1.0" encoding="UTF-8"?>
+      <HealthData>
+        <ExportDate value="2026-09-12 12:00:00 +0000"/>
+        <Record type="HKQuantityTypeIdentifierHeartRate" value="72" unit="count/min" creationDate="2026-09-12 11:59:00 +0000" startDate="2026-09-12 11:59:00 +0000" endDate="2026-09-12 12:00:00 +0000" sourceName="FIXTURE_SOURCE" device="FIXTURE_DEVICE">
+          <MetadataEntry key="fixture" value="FIXTURE_METADATA"/>
+        </Record>
+      </HealthData>
+    XML
   end
 
   def write_gmail_config(root, credentials_file: nil, include_credentials_file: true,
@@ -556,6 +583,58 @@ class CliSystemTest < Minitest::Test
       assert_equal 0, status
       assert_equal "success", payload.fetch("status")
       assert_equal "First article", payload.fetch("instances").first.fetch("items").first.fetch("title")
+    end
+  end
+
+  def test_apple_health_cli_reports_import_unchanged_and_cached_without_items_or_secrets
+    Dir.mktmpdir do |directory|
+      root = File.join(directory, ".cybort")
+      source_directory = File.join(directory, "health-exports")
+      FileUtils.mkdir_p(source_directory)
+      File.chmod(0o700, source_directory)
+      archive_path = File.join(source_directory, "export.zip")
+      Cybort::AppleHealthFixture.write_zip(path: archive_path, entries: [], export_xml: apple_health_fixture_xml)
+      File.chmod(0o600, archive_path)
+      write_apple_health_config(root, source_directory)
+
+      now = [Time.utc(2026, 9, 13, 13)]
+      clock = -> { now.fetch(0) }
+      run = lambda do |arguments|
+        output = StringIO.new
+        status = Cybort::CLI.start(
+          arguments, out: output, err: StringIO.new, home: directory, clock: clock,
+          http_client: nil
+        )
+        [status, output.string, JSON.parse(output.string)]
+      end
+
+      first_status, first_output, first = run.call(["--json", "--force-fetch"])
+      now[0] += 60
+      second_status, second_output, second = run.call(["--json", "--force-fetch"])
+      FileUtils.rm_f(archive_path)
+      now[0] += 60
+      third_status, third_output, third = run.call(["--json"])
+
+      first_instance = first.fetch("instances").fetch(0)
+      second_instance = second.fetch("instances").fetch(0)
+      third_instance = third.fetch("instances").fetch(0)
+      [first, second, third].each do |payload|
+        instance = payload.fetch("instances").fetch(0)
+        assert_equal "personal_apple_health", instance.fetch("id")
+        assert_empty instance.fetch("items")
+        refute_includes JSON.generate(payload), "FIXTURE_"
+      end
+
+      assert_equal [0, 0, 0], [first_status, second_status, third_status]
+      assert_equal "success", first_instance.fetch("status")
+      assert_equal "success", second_instance.fetch("status")
+      assert_equal "cached", third_instance.fetch("status")
+      assert_equal 1, first_instance.fetch("metadata").fetch("imported")
+      assert_equal 1, first_instance.fetch("metadata").fetch("inserted")
+      assert_equal true, second_instance.fetch("metadata").fetch("unchanged")
+      assert_equal 1, second_instance.fetch("metadata").fetch("candidate_count")
+      assert_equal 1, third_instance.fetch("observation_count")
+      [first_output, second_output, third_output].each { |output| assert_equal 1, output.lines.length }
     end
   end
 

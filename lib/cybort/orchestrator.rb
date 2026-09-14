@@ -714,7 +714,13 @@ module Cybort
         return "#{instance.name}: Error: #{single_line(status.error)}"
       end
       if result.is_a?(TimeSeriesFetchResult)
-        action = status.status == :cached ? "Using cached data" : "Fetched"
+        action = if status.status == :cached
+          "Using cached data"
+        elsif result.unchanged?
+          "No changes found"
+        else
+          "Fetched"
+        end
         return "#{instance.name}: #{action} (#{status.series_count} series, #{status.observation_count} observations)."
       end
       return "#{instance.name}: Using cached data (#{status.item_count} items)." if status.status == :cached

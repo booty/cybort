@@ -11,6 +11,10 @@ module Cybort
         registry.register("reddit", Adapters::Reddit, display_name: "Reddit", item_noun: "items")
         registry.register("reddit_rss", Adapters::RedditRSS, display_name: "Reddit RSS", item_noun: "posts")
         registry.register("gmail", Adapters::Gmail, display_name: "Gmail", item_noun: "messages")
+        registry.register(
+          "apple_health", Adapters::AppleHealth, display_name: "Apple Health", item_noun: "observations",
+          result_kind: :time_series, max_instances: 1
+        )
       end
     end
 

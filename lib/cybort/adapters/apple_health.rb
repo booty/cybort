@@ -111,11 +111,18 @@ module Cybort
       private
 
       def archive_acquirer
-        @archive_acquirer || raise(ArgumentError, "Apple Health archive acquirer is required")
+        return @archive_acquirer if @archive_acquirer
+
+        temp_directory = @spool_factory.respond_to?(:directory) ? @spool_factory.directory : nil
+        raise ArgumentError, "Apple Health archive acquirer is required" unless temp_directory
+
+        @archive_acquirer = AppleHealthArchiveAcquirer.new(temp_directory: temp_directory,
+                                                            wall_clock: clock,
+                                                            monotonic_clock: monotonic_clock)
       end
 
       def zip_inspector
-        @zip_inspector || raise(ArgumentError, "Apple Health ZIP inspector is required")
+        @zip_inspector ||= AppleHealthZipInspector.new(parser_factory: -> { AppleHealthExportParser.new })
       end
 
       def parser

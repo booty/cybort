@@ -156,7 +156,7 @@ Use status `Accepted`, date `2026-09-13`, and these explicit decisions:
 
 - Status: Accepted
 - Date: 2026-09-13
-- Amends: [ADR 0009](0009-isolate-time-series-storage.md)
+- Amends: [ADR 0009](../../adr/0009-isolate-time-series-storage.md)
 
 ## Decision
 

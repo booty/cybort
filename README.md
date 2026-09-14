@@ -5,8 +5,8 @@ separate pillars:
 
 - Collection fetches configured source instances, normalizes and caches their
   item data in `cybort.sqlite3` and prunes it according to the configured item
-  retention policy. A separate `cybort-timeseries.sqlite3` stores generic
-  time-series observations for future connectors.
+  retention policy. A separate `cybort-timeseries.sqlite3` stores time-series
+  observations from the experimental Apple Health connector and future sources.
 - Dashboards will present that collected data through CLI and web views in a
   future phase; dashboard design has not started yet.
 
@@ -119,10 +119,54 @@ the backup step completes. Purge removes the instance's items, observations,
 sync state, fetch history, and time-series import state while holding the same
 installation lock as collection and reset.
 
-No currently registered connector emits time-series results, and no Apple
-Health connector is implemented. The time-series database and disposable spool
-API are storage infrastructure for a future connector; do not add a
-time-series configuration block to the connector template yet.
+### Apple Health connector (experimental)
+
+The `apple_health` adapter imports one person's manually exported Apple Health
+ZIP archives from a dedicated local directory. Only one instance is allowed
+per installation, and the directory should contain only that person's
+immediate-child ZIP exports. Use the exact commented shape in the
+[configuration template](.cybort.example.toml); `directory` must be an
+absolute or `~/...` path, owned by the current user, and protected as a private
+directory (normally mode `0700`). If the directory is backed by iCloud Drive,
+ensure each intended ZIP is fully hydrated locally before collection; Cybort
+does not ask iCloud to download placeholders.
+
+`num_items_to_fetch = 1` means one complete full-history archive is published
+per stale or forced run, not one record. Every immediate-child candidate is
+still inspected so the newest unseen archive can be selected. A fresh cache
+hit opens neither the directory nor an archive. A stale or forced run acquires
+and hashes all candidates; an already imported fingerprint reports a successful
+unchanged scan without parsing the XML. Repackaged ZIP bytes are parsed again,
+but content-derived observation identities deduplicate normalized records.
+
+Imports are append-only. Stable archive and normalized-record identities retain
+omitted records and corrections; no absence-based snapshot deletion occurs, and
+only the explicit `purge` workflow deletes canonical observations. Supported
+ordinary quantity and category records become numeric or categorical points or
+intervals. Workout/workout-event/statistics, activity summaries, correlations,
+nested instantaneous-beat or other specialized series, clinical records and
+CDA files, ECG CSVs, workout-route GPX, audiograms, vision prescriptions, and
+unknown artifact or XML families are inventoried or counted as unsupported
+rather than imported. Source
+and device strings, `<Me>`, and free-form metadata may contribute to a one-way
+identity when required for deduplication, but are never retained as readable
+provenance.
+
+Archive copies, ZIP entry streaming, and parser spools stay beneath the
+installation's local `tmp/` directory, never inside an iCloud-backed source
+directory. Acquisition has a 600-second monotonic timeout; the implementation
+also enforces the published ZIP, XML expansion, entry, and series ceilings.
+Health data is highly sensitive: mode `0600` protects files from ordinary local
+access but is not encryption. Purge is logical, not forensic; SQLite pages and
+WAL files, source directories, iCloud history, backups, and filesystem
+snapshots may retain data.
+
+The connector makes no network requests and is experimental until sanitized
+evidence closes the real-export shape, repeat-import, and operational gates.
+See the approved [Apple Health design](docs/superpowers/specs/2026-09-11-apple-health-import-design.md),
+[time-series isolation ADR](docs/adr/0009-isolate-time-series-storage.md),
+[append-only import ADR](docs/adr/0010-append-only-time-series-import-results.md),
+and [implementation plan](docs/superpowers/plans/2026-09-13-apple-health-import.md).
 
 ### Reddit connector
 

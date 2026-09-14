@@ -68,6 +68,18 @@
 # query = "in:anywhere"
 # include_spam_trash = true # optional; default false
 
+# Apple Health (experimental): imports one complete archive per stale run.
+# Keep this directory dedicated to one person's immediate-child ZIP exports.
+# Imports append only; omitted/corrected records never delete earlier observations.
+# [instances.personal_apple_health]
+# name = "Personal Apple Health"
+# adapter = "apple_health"
+# ttl_minutes = 1440
+# num_items_to_fetch = 1 # one full-history archive per run, not one record
+# directory = "~/Library/Mobile Documents/com~apple~CloudDocs/Health Exports"
+# Health data is sensitive; see README for local permissions, temporary-file,
+# lifecycle, and live-export gate details. No network credentials are used.
+
 # Reddit: fetch unread legacy inbox messages and activity-ranked threads.
 # Obtain an approved OAuth refresh token outside Cybort. Chat is not included
 # in V1. The user-agent must identify your application and Reddit user.

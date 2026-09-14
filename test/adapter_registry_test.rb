@@ -56,6 +56,59 @@ class AdapterRegistryTest < Minitest::Test
     end
   end
 
+  def test_default_registry_registers_apple_health_as_single_time_series_source
+    registry = Cybort::AdapterRegistry.default
+    instance = Cybort::Configuration::Instance.new(
+      id: "health", name: "Health", adapter: "apple_health", ttl_minutes: 1_440,
+      num_items_to_fetch: 1, options: { directory: "/tmp/apple-health" }
+    )
+
+    registry.validate_configuration!(instance)
+
+    assert_equal :time_series, registry.result_kind_for(instance)
+    assert_equal "Apple Health", registry.display_name_for(instance)
+    assert_equal "observations", registry.item_noun_for(instance)
+    assert_empty registry.dependencies_for(instance)
+  end
+
+  def test_default_registry_limits_apple_health_to_one_instance
+    registry = Cybort::AdapterRegistry.default
+    instances = {
+      "first" => Cybort::Configuration::Instance.new(
+        id: "first", name: "First", adapter: "apple_health", ttl_minutes: 1_440,
+        num_items_to_fetch: 1, options: { directory: "/tmp/apple-health" }
+      ),
+      "second" => Cybort::Configuration::Instance.new(
+        id: "second", name: "Second", adapter: "apple_health", ttl_minutes: 1_440,
+        num_items_to_fetch: 1, options: { directory: "/tmp/apple-health-2" }
+      )
+    }
+
+    error = assert_raises(Cybort::ConfigurationError) { registry.validate_configuration!(instances) }
+
+    assert_equal "apple_health: at most 1 instance allowed", error.message
+  end
+
+  def test_example_template_publishes_only_the_commented_apple_health_shape
+    template = File.read(File.expand_path("../.cybort.example.toml", __dir__))
+    block = <<~TEMPLATE
+      # Apple Health (experimental): imports one complete archive per stale run.
+      # Keep this directory dedicated to one person's immediate-child ZIP exports.
+      # Imports append only; omitted/corrected records never delete earlier observations.
+      # [instances.personal_apple_health]
+      # name = "Personal Apple Health"
+      # adapter = "apple_health"
+      # ttl_minutes = 1440
+      # num_items_to_fetch = 1 # one full-history archive per run, not one record
+      # directory = "~/Library/Mobile Documents/com~apple~CloudDocs/Health Exports"
+    TEMPLATE
+
+    assert_includes template, block
+    assert_includes template, "# Health data is sensitive; see README for local permissions, temporary-file,"
+    refute_includes block, "retention_ttl_minutes"
+    refute_includes block, "hard_expiry_ttl_minutes"
+  end
+
   def test_aggregates_configuration_errors_in_instance_order
     registry = Cybort::AdapterRegistry.new
     registry.register("fake", ->(**_kwargs) { Object.new }, validate_configuration: lambda do |instance|
