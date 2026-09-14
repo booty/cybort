@@ -268,7 +268,45 @@ the configured non-iCloud temporary directory.
 **Next action:** Run the permitted live-export shape, repeat-import, and
 operational gates with a legitimate export. Confirm the real export’s record
 families, repeated-export identity behavior, archive acquisition, and whether
-its pretty-print whitespace stays within the parser’s 1 MiB cumulative
-non-record-text limit. Also exercise source replacement/disappearance,
+meaningful non-record text stays within the parser’s 1 MiB cumulative limit.
+Also exercise source replacement/disappearance,
 interruption, disk-space, backup, purge, and reconciliation recovery. Do not
 treat synthetic timings or unavailable RSS as production guarantees.
+
+## 2026-09-14 — First legitimate Apple Health export passes the local gate
+
+**Status:** First real-export shape verified; distinct second export and some
+operational gates remain open
+
+**Observation:** A private local copy of the supplied Apple Health ZIP imported
+successfully after two compatibility fixes: structural XML whitespace outside
+records is no longer charged against the meaningful non-record-text ceiling,
+and `HeartRateVariabilityMetadataList` is classified as a specialized nested
+series rather than an unknown schema. The source contained 1,344,204 ordinary
+top-level `Record` elements plus 149 `Workout` and 1,195 `ActivitySummary`
+elements; no profile or record values were recorded.
+
+**Evidence:** The forced import produced 39 series and 1,339,719 stored
+observations, with 1,339,719 supported/imported observations, 5,829
+unsupported records/artifacts, zero duplicates, unchanged rows, changed rows,
+or deletions, and no error. A second forced run over the same archive returned
+successful `unchanged` with zero import/write counts. A subsequent normal run
+returned `cached` with the same 39-series/1,339,719-observation totals. A
+forced run with the local source temporarily unavailable returned
+`missing_export_xml` while preserving those totals. Backup and explicit purge
+of the disposable installation both succeeded; the temporary local source,
+installation, and backup directories were removed afterward. The original
+iCloud archive was not modified.
+
+**Impact:** The parser now covers the observed export’s formatting and HRV
+nested-series shape without importing specialized data or weakening record,
+ZIP, or XML resource ceilings. The core append, unchanged, cache, failure
+preservation, backup, and purge paths have sanitized evidence on one legitimate
+export.
+
+**Next action:** Obtain a distinct newer legitimate export to verify append,
+correction, omission-retention, and repackaged-archive behavior. Separately
+exercise source replacement during acquisition and a deliberately constrained
+temporary volume before removing the experimental label. Do not record health
+values, profile fields, paths, filenames, source/device strings, raw metadata,
+or raw parser/library messages.

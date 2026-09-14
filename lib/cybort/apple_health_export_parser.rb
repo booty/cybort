@@ -38,7 +38,7 @@ module Cybort
       "ClinicalDocument" => :clinical_document
     }.freeze
     SPECIALIZED_RECORD_CHILDREN = %w[
-      HeartRateMotionContext WorkoutEvent WorkoutStatistics InstantaneousBeats
+      HeartRateMotionContext HeartRateVariabilityMetadataList WorkoutEvent WorkoutStatistics InstantaneousBeats
       Electrocardiogram Audiogram ClinicalRecord
     ].freeze
 
@@ -557,7 +557,12 @@ module Cybort
         if @record && @unsupported_depth.zero?
           account_record_bytes!(bytes)
         elsif @record.nil?
-          @non_record_text_bytes += bytes
+          # Apple exports pretty-print a small amount of indentation around
+          # every top-level element. Bound meaningful free text here without
+          # rejecting that structural whitespace at Apple-scale record counts.
+          @non_record_text_bytes += text.each_byte.count do |byte|
+            byte != 9 && byte != 10 && byte != 13 && byte != 32
+          end
           raise_error(:record_resource_limit, :non_record_text_bytes) if @non_record_text_bytes > AppleHealthExportParser::MAX_NON_RECORD_TEXT_BYTES
         end
       end

@@ -44,6 +44,45 @@ class AppleHealthExportParserTest < Minitest::Test
     assert_equal :malformed_xml, malformed_error.safe_metadata.fetch(:category)
   end
 
+  def test_ignores_structural_whitespace_between_top_level_elements
+    xml = <<~XML
+      <?xml version="1.0" encoding="UTF-8"?>
+      <HealthData>
+        <ExportDate value="2026-09-12 12:00:00 +0000"/>
+    XML
+    xml << (" \n" * 600_000)
+    xml << <<~XML
+        <Record type="HKQuantityTypeIdentifierHeartRate" value="72" unit="count/min" creationDate="2026-09-12 11:59:00 +0000" startDate="2026-09-12 11:59:00 +0000" endDate="2026-09-12 12:00:00 +0000"/>
+      </HealthData>
+    XML
+
+    summary = parse_xml(xml)
+
+    assert_equal 1, summary.imported_record_count
+    assert_equal 1, summary.top_level_record_count
+  end
+
+  def test_skips_heart_rate_variability_nested_series_as_specialized
+    xml = <<~XML
+      <?xml version="1.0" encoding="UTF-8"?>
+      <HealthData>
+        <ExportDate value="2026-09-12 12:00:00 +0000"/>
+        <Record type="HKQuantityTypeIdentifierHeartRate" value="72" unit="count/min" creationDate="2026-09-12 11:59:00 +0000" startDate="2026-09-12 11:59:00 +0000" endDate="2026-09-12 12:00:00 +0000">
+          <HeartRateVariabilityMetadataList>
+            <InstantaneousBeatsPerMinute value="72" time="2026-09-12 11:59:30 +0000"/>
+          </HeartRateVariabilityMetadataList>
+        </Record>
+        <Record type="HKQuantityTypeIdentifierHeartRate" value="73" unit="count/min" creationDate="2026-09-12 12:00:00 +0000" startDate="2026-09-12 12:00:00 +0000" endDate="2026-09-12 12:01:00 +0000"/>
+      </HealthData>
+    XML
+
+    summary = parse_xml(xml)
+
+    assert_equal 2, summary.top_level_record_count
+    assert_equal 1, summary.imported_record_count
+    assert_equal 1, summary.family_counts.fetch(:specialized)
+  end
+
   private
 
   def fixture(name)
@@ -56,6 +95,16 @@ class AppleHealthExportParserTest < Minitest::Test
     factory.open(instance_id: "health", import_key: "test-#{name}", import_mode: :append,
                  source_started_at: Time.utc(2026, 9, 13, 12)) do |writer|
       File.open(fixture(name), "rb") { |io| summary = @parser.parse(io, spool_writer: writer) }
+    end
+    summary
+  end
+
+  def parse_xml(xml)
+    factory = Cybort::TimeSeriesSpoolFactory.new(directory: @spools)
+    summary = nil
+    factory.open(instance_id: "health", import_key: "inline", import_mode: :append,
+                 source_started_at: Time.utc(2026, 9, 13, 12)) do |writer|
+      summary = @parser.parse(StringIO.new(xml), spool_writer: writer)
     end
     summary
   end
