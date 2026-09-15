@@ -163,10 +163,6 @@ module Cybort
         [candidate_seen?(candidate) ? 0 : 1, candidate.exported_at.utc.to_r, archive_sha256(candidate)]
       end
 
-      def select_candidate(candidates)
-        Array(candidates).max_by { |candidate| candidate_priority(candidate) }
-      end
-
       def archive_sha256(candidate)
         archive = candidate.respond_to?(:acquired_archive) ? candidate.acquired_archive : candidate
         archive.archive_sha256

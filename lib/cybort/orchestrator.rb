@@ -49,9 +49,6 @@ module Cybort
   end
 
   class Orchestrator
-    CLEANUP_FAILURE_LIMIT = 8
-    CLEANUP_FAILURE_FIELD_BYTES = 128
-
     def initialize(configuration:, persistence:, registry:, http_client:, clock: -> { Time.now.utc },
                    command_runner: nil, dependency_checker: nil,
                    monotonic_clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) },
@@ -313,115 +310,16 @@ module Cybort
     end
 
     def prepare_time_series(result_kinds, completions)
-      pending_purge_rows = if @persistence.respond_to?(:pending_time_series_purges)
-        Array(@persistence.pending_time_series_purges)
-      else
-        []
-      end
-      pending_receipt_error = nil
-      pending_receipt_rows = if @time_series_reader
-        begin
-          Array(@time_series_reader.pending_receipts)
-        rescue StandardError
-          # A partially initialized or unavailable time-series reader must not
-          # prevent item-only collection. Any durable pending work remains for
-          # the next run to reconcile after startup recovers.
-          pending_receipt_error = TimeSeriesStartupError.new
-          []
-        end
-      else
-        []
-      end
-      recovery_instance_ids = (pending_purge_rows.filter_map { |row| recovery_instance_id(row) } +
-        pending_receipt_rows.filter_map { |receipt| recovery_instance_id(receipt) }).uniq
-      required = result_kinds.value?(:time_series) || !pending_purge_rows.empty? || !pending_receipt_rows.empty?
-      return [nil, { blocked_instances: [], errors: {} }] unless required
-
-      if pending_receipt_error
-        return [nil, time_series_startup_recovery(
-          result_kinds, recovery_instance_ids, @time_series_startup_error || pending_receipt_error
-        )]
-      end
-
-      if @time_series_startup_error
-        return [nil, time_series_startup_recovery(
-          result_kinds, recovery_instance_ids, @time_series_startup_error
-        )]
-      end
-
-      unless @time_series_reader && @time_series_persistence_factory
-        raise ConfigurationError, "time-series collection or recovery requires a reader and persistence factory"
-      end
-
-      writer = TimeSeriesWriter.new(
-        time_series_persistence_factory: @time_series_persistence_factory,
-        event_queue: completions
-      ).start
-      if (startup_error = writer.wait_until_ready)
-        blocked_ids = (result_kinds.filter_map do |instance_id, result_kind|
-          instance_id if result_kind == :time_series
-        end + recovery_instance_ids).uniq.sort
-        errors = blocked_ids.each_with_object({}) do |instance_id, blocked|
-          blocked[instance_id] = startup_error
-        end
-        return [writer, { blocked_instances: errors.keys.sort.freeze, errors: errors.freeze,
-                          writer_failure: startup_error }]
-      end
-      recovery = begin
-        TimeSeriesReconciler.new(
-          main_persistence: @persistence, time_series_reader: @time_series_reader, writer: writer
-        ).run
-      rescue StandardError
-        # The reader is opened before source workers start, but reconciliation
-        # reads it again. A persistent read/decode failure must isolate the
-        # affected recovery and time-series instances just like other startup
-        # failures, while allowing item sources to continue.
-        startup_error = TimeSeriesStartupError.new
-        drain_time_series_recovery_events(completions)
-        return [writer, time_series_startup_recovery(
-          result_kinds, recovery_instance_ids, startup_error
-        )]
-      end
-      # Recovery consumes command-specific waiters. Its terminal events are
-      # already observed and must not be confused with new source commands.
-      drain_time_series_recovery_events(completions)
-      [writer, recovery.merge(writer_failure: nil)]
-    rescue Exception # rubocop:disable Lint/RescueException -- startup owns the writer until it returns
-      begin
-        writer&.close_and_join
-      rescue Exception # preserve the startup error
-        nil
-      end
-      raise
+      TimeSeriesStartupCoordinator.new(
+        persistence: @persistence,
+        reader: @time_series_reader,
+        persistence_factory: @time_series_persistence_factory,
+        startup_error: @time_series_startup_error
+      ).prepare(result_kinds: result_kinds, completions: completions)
     end
 
     def time_series_context_for(instance_id)
       @time_series_reader.context_for(instance_id: instance_id)
-    end
-
-    def drain_time_series_recovery_events(completions)
-      completions.pop(true) until completions.empty?
-    end
-
-    def time_series_startup_recovery(result_kinds, recovery_instance_ids, error)
-      blocked_ids = (result_kinds.filter_map do |instance_id, result_kind|
-        instance_id if result_kind == :time_series
-      end + recovery_instance_ids).uniq.sort
-      errors = blocked_ids.each_with_object({}) do |instance_id, blocked|
-        blocked[instance_id] = error
-      end
-      { blocked_instances: errors.keys.sort.freeze, errors: errors.freeze,
-        writer_failure: error }
-    end
-
-    def recovery_instance_id(value)
-      if value.respond_to?(:key?) && value.key?(:instance_id)
-        value[:instance_id]
-      elsif value.respond_to?(:key?) && value.key?("instance_id")
-        value["instance_id"]
-      elsif value.respond_to?(:instance_id)
-        value.instance_id
-      end
     end
 
     def failure_result(result_kind:, **attributes)
@@ -556,7 +454,7 @@ module Cybort
       failures.concat(Array(cleanup_failures))
       return metadata if failures.empty?
 
-      bounded_failures = bounded_cleanup_failures(failures)
+      bounded_failures = CleanupFailureMetadata.bound(failures)
       return metadata if bounded_failures.empty?
 
       (metadata || {}).merge(cleanup_failures: bounded_failures)
@@ -713,44 +611,9 @@ module Cybort
       [artifact.path, "#{artifact.path}-journal", "#{artifact.path}-wal", "#{artifact.path}-shm"].each do |path|
         FileUtils.rm_f(path)
       rescue Exception => error # rubocop:disable Lint/RescueException -- cleanup must not mask the primary result error
-        failures.concat(cleanup_failure_details(error, phase: "artifact_cleanup"))
+        failures << CleanupFailureMetadata.detail(error, phase: "artifact_cleanup")
       end
-      bounded_cleanup_failures(failures)
-    end
-
-    def cleanup_failure_details(error, phase:)
-      [{
-        phase: cleanup_failure_field(phase),
-        error_class: cleanup_failure_field(error.class.name.to_s)
-      }.freeze]
-    end
-
-    def bounded_cleanup_failures(failures)
-      Array(failures).first(CLEANUP_FAILURE_LIMIT).filter_map do |failure|
-        next unless failure.respond_to?(:key?)
-
-        phase = cleanup_failure_field(failure[:phase] || failure["phase"])
-        error_class = cleanup_failure_field(failure[:error_class] || failure["error_class"])
-        next unless phase && error_class
-
-        { phase: phase, error_class: error_class }.freeze
-      end.freeze
-    end
-
-    def cleanup_failure_field(value)
-      return unless value.is_a?(String)
-
-      field = value.dup.force_encoding(Encoding::UTF_8)
-      return unless field.valid_encoding?
-
-      bounded = +""
-      field.each_char do |character|
-        candidate = bounded + character
-        break if candidate.bytesize > CLEANUP_FAILURE_FIELD_BYTES
-
-        bounded << character
-      end
-      bounded.freeze
+      CleanupFailureMetadata.bound(failures)
     end
 
     def expiry_metadata(metadata, count)
