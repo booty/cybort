@@ -496,3 +496,4 @@ external services or invoke `gws`.
 - [Reddit snapshot replacement ADR](docs/adr/0004-current-snapshot-item-replacement.md)
 - [Reddit integration implementation plan](docs/superpowers/plans/2026-09-05-reddit-integration.md)
 - [Deferred quality follow-ups](docs/quality-followups.md)
+- [Live connector release gates](docs/LIVE_GATES.md)

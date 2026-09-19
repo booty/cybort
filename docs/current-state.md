@@ -71,6 +71,7 @@ and the [Apple Health plan](superpowers/plans/2026-09-13-apple-health-import.md)
 ## Release posture
 
 Gmail, Reddit, Reddit RSS, and Apple Health remain experimental until their
-specific live gates are recorded as passed in `docs/LIVE_GATES.md`. Offline
-fixtures and the local test suite do not prove external permission, response
-availability, or authenticated token behavior.
+specific live gates are recorded as passed in
+[`LIVE_GATES.md`](LIVE_GATES.md). Offline fixtures and the local test suite do
+not prove external permission, response availability, or authenticated token
+behavior.
