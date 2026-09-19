@@ -1,260 +1,143 @@
 # Cybort Agent Guide
 
-This file is the durable entry point for agents working in this repository.
-Read it before changing code or documentation, then read the project documents
-relevant to the task. Keep this file short and high-signal: record stable
-invariants and workflow rules here, not session-by-session narration.
+This is the durable entry point for agents working in this repository. Keep it
+short and high-signal: record cross-cutting invariants and workflow rules here,
+not connector-specific session history. Read the relevant project documents
+before changing code or documentation.
 
-## Project invariants
+## Stable invariants
 
 - Cybort is a local, single-user personal-information collector.
-- The canonical datastore is exactly two SQLite databases. The default
-  locations are `~/.cybort/cybort.sqlite3` for control-plane/item data and
+- The canonical datastore is exactly two SQLite databases:
+  `~/.cybort/cybort.sqlite3` for control/item data and
   `~/.cybort/cybort-timeseries.sqlite3` for series, observations, and durable
-  import receipts. JSON is a presentation/export format, not the primary
-  mutable datastore.
-- The default configuration is `~/.cybort/cybort.toml`. A configured source
-  instance has a stable ID, display name, adapter type, TTL, and
-  `num_items_to_fetch`.
-- The installation root is mode `0700`; its configuration, canonical databases,
-  and reset backup artifacts are mode `0600` regardless of umask. Existing
-  regular installation files are repaired in place, while symlinked canonical
-  files are refused so permission repair cannot modify data outside the
-  installation.
-- `.cybort.example.toml` is the canonical repository template for user
-  configuration. When adding or changing a connector, update its commented
-  example, placeholders, limits, and authentication caveats in the same
-  change; keep README configuration guidance linked to the template rather
-  than duplicating TOML blocks.
-- `num_items_to_fetch` limits one source fetch. It is not a retention policy.
-- A configured source instance may define `retention_ttl_minutes`. Omission
-  means retain items forever. When configured, a successful remote fetch
-  prunes items for that instance whose local `fetched_at` is at or before the
-  retention cutoff in the same transaction as the result upsert. Persistence
-  validates the policy independently and clamps the result completion time to
-  one reading of its own clock for both that cutoff and durable cache
-  freshness. Fetch history retains the raw completion timestamp. Cache hits and
-  failed fetches do not prune.
-- A configured source instance may separately define
-  `hard_expiry_ttl_minutes`. At the start of every collection run, persistence
-  deletes that instance's items older than the hard-expiry cutoff before source
-  planning, even if the source later fails. The explicit `purge INSTANCE_ID`
-  CLI workflow transactionally removes an instance's items, sync state, and
-  fetch history, optionally after a SQLite backup.
-- Version one retains time-series observations forever and has no time-series
-  retention, rollup, downsampling, or compaction policy. Time-series adapters
-  stream normalized values into disposable, persistence-owned SQLite spools;
-  they remain canonical-SQL-free and never write either canonical database.
-- Adapter threads fetch, validate, and normalize source data. They do not own
-  SQLite schema details, SQL, transactions, or persistence writes.
-- The orchestrator snapshots each validated instance's retention policy before
-  adapter planning, starts one adapter thread per eligible configured instance,
-  waits for terminal completion events, and persists each completed result
-  sequentially on the orchestrator caller thread without waiting for slower
-  adapters. Final run aggregation still waits for every configured instance.
-  The configured instance ID is authoritative: mismatched adapter result IDs
-  become failures recorded only for the configured ID.
-- A collection run that includes time-series work starts exactly one dedicated
-  time-series writer. It is the only writer for `cybort-timeseries.sqlite3`,
-  while the orchestrator caller remains the only writer for
-  `cybort.sqlite3`; those two writers may commit concurrently because they
-  lock different files. Existing item-only runs do not start that worker.
-- Persistence owns SQLite access, upserts, synchronization state, and fetch
-  history. Each successful adapter result has its own transaction; there is no
-  transaction spanning all adapter instances.
+  import receipts. JSON is a presentation/export format.
+- The default configuration is `~/.cybort/cybort.toml`. A source instance has
+  a stable ID, display name, adapter type, TTL, and `num_items_to_fetch`.
+- `.cybort.example.toml` is the canonical configuration template. Connector
+  changes update its examples, placeholders, limits, and auth caveats in the
+  same change; README guidance links to the template instead of duplicating
+  TOML blocks.
+- `num_items_to_fetch` limits one source fetch; it is not retention.
+- `retention_ttl_minutes` is optional item retention after a successful remote
+  fetch. Omission retains items forever. `hard_expiry_ttl_minutes` is a
+  separate run-start expiry that applies even when a source fails. Explicit
+  `purge INSTANCE_ID` removes that instance's item/time-series state and fetch
+  history, optionally after a SQLite backup.
+- Version-one time-series observations are retained forever. Adapters stream
+  normalized values into disposable, persistence-owned SQLite spools and do
+  not own canonical SQL, transactions, or persistence writes.
+- Adapter threads fetch, validate, and normalize. The orchestrator owns
+  planning, completion ordering, and result handoff. Item results persist one
+  instance at a time as each completes; a slow source does not delay faster
+  sources. A dedicated time-series writer is the only writer for the separate
+  time-series database, while the orchestrator writes the item database.
+- Persistence owns SQLite access, upserts, sync state, fetch history, and
+  transactions. No transaction spans all instances or both databases.
 - Collection, initialization/reset, backup, and purge share one nonblocking
-  exclusive installation `flock` on a mode-`0600` sibling lock file. A busy
-  lock aborts the lifecycle operation; the pair of canonical database files is
-  treated as one logical installation, not as a globally atomic transaction.
+  exclusive installation lock. The two databases are one logical installation,
+  not a globally atomic snapshot.
 - A failed source must not discard successful results from other sources.
 - Item identity is scoped by `(adapter_instance_id, canonical_id)`.
-- RSS and GitHub adapters use direct HTTP APIs. Gmail uses the direct Gmail
-  REST API with an explicit per-instance `authorized_user` credential file
-  bootstrapped externally through Google's Cloud CLI; collection does not
-  execute or depend on `gws` or `gcloud`. Gmail remains experimental until a
-  real authenticated smoke test verifies the token/list/get contract, granted
-  scope, metadata shape, cache behavior, and unchanged read/unread labels.
-  `reddit_rss` is a separate, registered experimental public Atom-feed adapter:
-  it fetches only fixed `new`, `rising`, and `top?t=day` feeds for a configured
-  public subreddit group, uses no OAuth/cookies/private-feed keys/HTML
-  scraping/JSON fallback, and retains bounded observed-pool rank state plus
-  body-free selected items. Complete three-feed successes atomically replace
-  that instance's selected snapshot and advance bounded state; cache hits and
-  failures leave the prior selected set and state intact. Its denominator is
-  the observed local candidate pool, not a population-wide percentile, and a
-  real public RSS smoke test remains required for permission, availability,
-  feed shape, publication-time meaning, returned ordering, combined-group
-  behavior, and limits before unattended use. The separate `reddit` adapter
-  uses documented OAuth Data API endpoints only: subscriptions plus a
-  bounded personalized `/hot` sample, explicit single-subreddit `/r/<name>/hot`
-  calls, and the legacy unread-message listing. Reddit Chat is unsupported by
-  the documented read surface. Reddit complete remote successes opt into the
-  generic current-snapshot replacement contract; cache hits and failures leave
-  the prior selected set intact. Reddit storage is body-free and author-free,
-  retaining only titles/subjects, canonical URLs, timestamps, visible scores,
-  comment totals, and typed ranking metadata. The joined-community sample is
-  intentionally bounded rather than exhaustive; include/exclude rules are
-  resolved before outbound subreddit calls. A real authenticated Reddit smoke
-  test remains a release gate for token scopes, response shapes, rate headers,
-  documented paths, and unchanged qualifying unread state with `mark=false`.
-  `apple_health` is a separate experimental append-only time-series adapter
-  limited to one instance per installation and one person's dedicated
-  immediate-child ZIP directory. Archive fingerprints identify imports and
-  normalized content-derived keys identify observations; omitted or corrected
-  records never trigger snapshot deletion, and only explicit purge deletes
-  canonical observations. Archive copies, ZIP/XML streaming, and disposable
-  spools stay under the local installation `tmp/` directory rather than an
-  iCloud-backed source directory. Source, device, profile, and free-form
-  metadata values are identity-only and never readable provenance. Keep the
-  adapter experimental until sanitized real-export shape, repeat-import, and
-  operational gates pass.
-  Scheduling, dashboards, and analysis/LLM workflows are not currently
-  implemented or architected.
-- The collector CLI supports `init`, a normal fetch, and `--force-fetch`.
-  Normal collection emits atomic, newline-terminated diagnostic progress and
-  error messages while sources run; `--json` explicitly requests the
-  machine-readable run summary. Dashboards are a separate, not-yet-designed
-  presentation pillar. Exit status `0` means success, `1` means source failure
-  or partial failure, and `2` means configuration or usage error.
-- Command-backed adapters declare executable dependencies. Startup validates all
-  source configuration before persistence registration, freezes each cache vs
-  remote decision once, and resolves each unique executable/version once per
-  run only for instances that need remote data. Missing tools fail only the
-  affected source and include safe, grouped install/auth guidance. This slice
-  supports macOS/POSIX process semantics; Windows support requires a separate
-  design.
+- The installation root is mode `0700`; configuration, canonical databases,
+  and reset backups are mode `0600` regardless of umask. Symlinked canonical
+  files are refused.
+- The collector supports `init`, normal fetch, `--force-fetch`, `--json`, and
+  `purge`. Exit status `0` is success, `1` is source/partial failure, and `2`
+  is configuration/usage error.
+- Command-backed adapters declare dependencies. Startup validates configuration,
+  freezes cache-vs-remote decisions, resolves each unique executable/version
+  once per run, and reports missing tools only for affected sources. This slice
+  supports macOS/POSIX process semantics.
 - Tests use local fixtures and injected clients; they must not contact external
-  services. Run them with `bundle exec rake test`. Do not assert exact
-  human-facing debugging or diagnostic prose, including connector progress
-  wording; it is nonessential and expected to change frequently. Test the
-  durable contract instead: failures are surfaced, useful typed or sanitized
-  diagnostic information is available, promised output framing is preserved,
-  and secrets or raw response bodies are absent.
-- `docs/spitballing/initial-spitballing.md` is historical exploratory material. Treat the
-  current design spec and accepted ADRs as authoritative design records, and do
-  not modify the spitballing document unless the user explicitly requests it.
+  services. Do not assert exact diagnostic/debugging prose. Test durable
+  behavior: failures surface, useful typed/sanitized information is available,
+  output framing is preserved, and secrets/raw response bodies are absent.
+- `docs/spitballing/initial-spitballing.md` is historical. Current ADRs and
+  design records are authoritative.
+
+Connector-specific contracts, experimental status, and live release gates are
+in [`docs/current-state.md`](docs/current-state.md) and the relevant ADRs. Do
+not copy those details back into this file unless they become cross-cutting
+invariants.
 
 ## Git workflow
 
-- While Cybort remains a single-developer repository, explicitly authorized
+- While this remains a single-developer repository, explicitly authorized
   implementation work defaults to the current `main` branch. Do not create a
-  feature branch or worktree unless the user requests one.
-- This branch-selection default does not authorize commits, pushes, or work
-  outside the requested task. Follow the user's requested commit and push
-  checkpoints.
-- Revisit this policy before another developer begins contributing or parallel
-  branches become useful.
+  feature branch or worktree unless requested.
+- That default does not authorize commits, pushes, or work outside the task.
+  Follow the user's requested commit/push checkpoints.
+- Never run concurrent writing agents in the shared worktree. A reviewer starts
+  only after the implementation agent is idle.
+- Revisit this policy before another developer contributes.
 
-## Subagent delegation and review roles
+## Delegation and review roles
 
-To conserve usage quotas, Codex MUST delegate the following work to a
-`gpt-5.6-luna` subagent using medium reasoning effort when it would save
-tokens. Luna tokens are substantially less expensive than Sol or Astra tokens.
+- Delegate test commands and exploration of noisy test/log output to a Luna
+  subagent when that saves tokens. Test-only Luna jobs are read-only.
+- An implementation Luna may edit source/tests/docs only when the user
+  explicitly authorizes implementation; the primary agent remains responsible
+  for interpretation, review, commits, and pushes.
+- Require concise subagent reports containing: command, pass/fail, relevant
+  failure, first actionable error, clearly labeled inference, and next step.
+  Keep raw logs out of the conversation.
+- Use `gpt-5.6-luna` medium for test/log work and the reasoning level requested
+  for implementation. Use Astra for architectural, concurrency, security, or
+  data-loss review when risk justifies it; use Sol for final code review when
+  requested or warranted. Do not add reviewers to low-risk documentation or
+  one-line changes.
+- Review findings must be explicitly accepted, rejected, or deferred. If a
+  reviewer hits a usage limit, continue with a bounded primary review and note
+  the fallback rather than waiting indefinitely.
 
-- Running any test command, including focused tests and full test suites.
-- Exploring, filtering, or analyzing test output, build logs, server logs, stack traces, or other noisy command output.
+## Autonomy and planning
 
-The Luna subagent should operate read-only: it may run tests and inspect files or logs, but must not modify source code, tests, configuration, or git state.
-
-Keep raw output out of the main conversation whenever possible. The subagent must return a concise, bounded summary containing:
-
-1. Command executed.
-2. Pass/fail status.
-3. Failing tests or relevant log entries.
-4. The first actionable error.
-5. Likely cause, clearly labeled as an inference.
-6. Recommended next diagnostic or implementation step.
-
-Do not paste complete logs into the main conversation unless explicitly requested. The primary Codex agent remains responsible for interpreting the summary, making changes, and performing final verification.
-
-Use higher-cost independent reviewers only when the user explicitly requests
-them or the task's architectural, concurrency, security, or data-loss risk
-justifies them:
-
-- use `gpt-6-astra` with high reasoning effort for adversarial design or
-  implementation-plan review;
-- use `gpt-5.6-sol` with high reasoning effort for final implementation and
-  code-quality review.
-
-Review agents operate read-only. The primary agent verifies each recommendation
-against the repository, pushes back when it is unsound, and implements accepted
-feedback. Small, low-risk changes do not require Astra or Sol review by default.
+- “Proceed,” “go ahead,” or an explicit end-to-end authorization means continue
+  through the named design, implementation, review, verification, commit, and
+  push phases without repeated approval prompts. Pause only for a genuine
+  blocker or a materially ambiguous choice.
+- Classify work before acting. Use a short in-chat design for bounded changes;
+  use the full design/spec/plan process for architectural changes. During
+  planning, inspect tests but do not run the project suite merely for a
+  baseline. Run tests for implementation work or when investigating a known
+  failure.
 
 ## General
 
-- Include units in identifier names when applicable, ie "ttl_minutes" instead of
-  "ttl" or "length_km" instead of "length"
-- Update inline comments when changing corresponding code
+- Prefer `ast-grep` for supported structural searches and `rg` for text,
+  comments, prose, and unsupported file types. Never use ast-grep rewrite
+  without interactive mode and explicit permission.
+- Include units in identifiers where applicable (`ttl_minutes`, `length_km`).
+- Update inline comments when changing corresponding code.
+- Use `apply_patch` for local edits. Preserve unrelated worktree changes.
 
-## Planning and execution boundary
+## Documentation authority and required reading
 
-- During design, specification, or implementation-plan work, inspect existing
-  tests but do not run tests, linters, builds, or other project execution merely
-  to establish a baseline. Run them only when the user explicitly requests it
-  or when execution is necessary to investigate a known failure that materially
-  affects the document.
-- Validate documentation-only work with relevant read-only checks such as diff
-  review, formatting checks, link checks, and consistency checks. Reserve the
-  project test suite for implementation work and explicit user requests.
+When documents disagree: code/tests describe actual behavior; accepted ADRs
+describe architectural decisions; current design specs describe intended
+architecture; README describes user-facing setup; historical spitballing is
+exploration only.
 
-# Memory/Decision/Documentation system
+At task start:
 
-## Documentation authority
+1. Read this file fully.
+2. Read only the relevant README sections; use `rg -n '^##|^###' README.md`
+   to locate them. Read the whole README only when changing user-facing setup.
+3. Read `docs/adr/README.md` and the ADRs relevant to the task.
+4. Read relevant headings in `docs/LEARNINGS.md`; read the full file only for
+   broad cross-cutting work.
+5. For connector or release-gate work, read the relevant sections of
+   `docs/current-state.md`. For architectural work, read the current design
+   spec and implementation plan.
 
-When documents disagree, use this hierarchy to distinguish actual behavior
-from intended design:
+Use index documents to locate records; filenames alone do not establish status.
 
-1. Code and tests describe actual behavior.
-2. Accepted ADRs describe architectural decisions and their rationale.
-3. The current design spec describes intended architecture and scope.
-4. `README.md` describes current user-facing setup and usage.
-5. `docs/spitballing/initial-spitballing.md` is historical exploration only.
+Durable knowledge belongs in the right place: stable invariant in this file,
+architectural choice in an ADR and its index, user procedure in README, and
+implementation gotcha in `docs/LEARNINGS.md` with date, status, evidence,
+impact, and any next action. Keep task-only details in the plan or issue.
 
-Do not silently resolve a contradiction by rewriting history. Update the
-affected document, or create a new ADR when an accepted decision changes.
-
-## Required reading before work
-
-At the beginning of a task:
-
-1. Read this file.
-2. Read `README.md` for current commands and user-facing behavior.
-3. Read `docs/adr/README.md`, then the ADRs relevant to the task.
-4. Read `docs/LEARNINGS.md` for dated implementation discoveries and known
-   gotchas.
-5. Read the current design spec and implementation plan when the task changes
-   architecture or follows planned work.
-
-Use the index documents to locate relevant records; do not assume that a
-filename alone communicates an ADR's status or whether it has been superseded.
-
-## Recording new knowledge
-
-At the end of each task, classify durable knowledge and write it down. Future
-agents are expected to both read and maintain these files:
-
-- stable invariant -> update `AGENTS.md`;
-- architectural choice -> create or update an ADR in `docs/adr/`, and update
-  `docs/adr/README.md`. If an existing ADR is superseded, mark its status as
-  `Superseded` in the index and link that row to the replacement ADR;
-- user-facing procedure -> update `README.md`;
-- implementation gotcha -> add an entry to `docs/LEARNINGS.md` and a regression
-  test when the behavior is testable;
-- temporary task detail -> keep it in the implementation plan or issue, not in
-  permanent memory.
-
-Every learning entry should include a date, status, observation, evidence
-(file, test, or command), impact, and next action if one remains. Do not add
-speculation as a settled fact.
-
-When a change makes an existing note stale, mark it superseded or resolved and
-link to the replacement. For ADRs specifically, the old ADR must remain in the
-index with status `Superseded` and a link to the newer ADR. Do not delete useful
-history merely because the code has evolved. Keep memory updates in the same
-commit as the implementation or decision they explain whenever practical.
-
-Before handing off implementation work, verify documentation links, run the
-relevant tests, and ensure that new decisions are represented in the ADR index.
-Before handing off design, specification, or plan-only work, verify the changed
-documents without running the project test suite unless the planning boundary
-above permits it.
+Before handoff, verify relevant tests and documentation links, and ensure new
+decisions are represented in the ADR index. Do not run the project suite for
+documentation-only work unless explicitly requested.
