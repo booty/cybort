@@ -61,6 +61,9 @@ in [`docs/current-state.md`](docs/current-state.md) and the relevant ADRs. Do
 not copy those details back into this file unless they become cross-cutting
 invariants.
 
+Reusable implementation/review handoff templates are in
+[`docs/WORKFLOW.md`](docs/WORKFLOW.md).
+
 ## Git workflow
 
 - While this remains a single-developer repository, explicitly authorized
