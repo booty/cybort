@@ -51,6 +51,15 @@ modify files. Report only concrete actionable findings with severity, file/line,
 rationale, and recommended fix. State explicitly when no issue remains.
 ```
 
+## Review artifacts
+
+For reviews that affect implementation decisions, save the bounded result as
+`docs/reviews/YYYY-MM-DD-<scope>-<reviewer>.md` using
+[`reviews/TEMPLATE.md`](reviews/TEMPLATE.md). Keep the report concise. The
+primary agent records whether each finding was accepted, rejected, or deferred;
+the implementation agent reads the file instead of receiving a copied review
+transcript.
+
 ## Review and autonomy rules
 
 - The primary agent explicitly records each finding as accepted, rejected, or
