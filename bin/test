@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+if [[ $# -eq 0 ]]; then
+  exec bundle exec rake test
+fi
+
+test_files=()
+test_options=()
+for argument in "$@"; do
+  case "$argument" in
+    test/*_test.rb|./test/*_test.rb)
+      test_files+=("$argument")
+      ;;
+    *)
+      test_options+=("$argument")
+      ;;
+  esac
+done
+
+if [[ ${#test_files[@]} -eq 0 ]]; then
+  echo "usage: bin/test [test/path_test.rb ...] [ruby test options]" >&2
+  exit 2
+fi
+
+for test_file in "${test_files[@]}"; do
+  if [[ ${#test_options[@]} -eq 0 ]]; then
+    bundle exec ruby -Itest "$test_file"
+  else
+    bundle exec ruby -Itest "$test_file" "${test_options[@]}"
+  fi
+done

@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+log_file=$(mktemp "${TMPDIR:-/tmp}/cybort-verify.XXXXXX")
+cleanup() {
+  rm -f "$log_file"
+}
+trap cleanup EXIT
+
+if ! bundle exec rake test >"$log_file" 2>&1; then
+  echo "Test suite failed; last 80 lines:"
+  tail -n 80 "$log_file"
+  exit 1
+fi
+
+shopt -s nullglob globstar
+for ruby_file in lib/**/*.rb test/**/*.rb bin/cybort; do
+  ruby -c "$ruby_file" >/dev/null
+done
+
+git diff --check
+
+tail -n 4 "$log_file"
+echo "Ruby syntax and git diff checks passed."

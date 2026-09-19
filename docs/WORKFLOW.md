@@ -22,6 +22,11 @@ For an explicitly authorized implementation task:
 For low-risk documentation or one-line changes, skip expensive reviewers and
 use a concise primary review. Do not run RuboCop when the user excludes it.
 
+Use the repository wrappers for verification: `bin/test` with no arguments
+runs the full suite; `bin/test test/path_test.rb --name /pattern/` runs focused
+tests; and `bin/verify` runs the suite plus syntax and whitespace checks without
+invoking RuboCop.
+
 ## Agent handoff templates
 
 ### Luna implementation
